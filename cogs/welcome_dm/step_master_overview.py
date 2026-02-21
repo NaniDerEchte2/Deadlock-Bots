@@ -15,9 +15,7 @@ class MasterBotIntroView(StepView):
         style=discord.ButtonStyle.primary,
         custom_id="wdm:q1:masterbot",
     )
-    async def confirm(
-        self, interaction: discord.Interaction, _button: discord.ui.Button
-    ):
+    async def confirm(self, interaction: discord.Interaction, _button: discord.ui.Button):
         if not await self._enforce_min_wait(interaction):
             return
         await self._finish(interaction)
@@ -31,9 +29,7 @@ class ServerTourView(StepView):
         style=discord.ButtonStyle.success,
         custom_id="wdm:q2:servertour",
     )
-    async def next_step(
-        self, interaction: discord.Interaction, _button: discord.ui.Button
-    ):
+    async def next_step(self, interaction: discord.Interaction, _button: discord.ui.Button):
         if not await self._enforce_min_wait(interaction):
             return
         await self._finish(interaction)

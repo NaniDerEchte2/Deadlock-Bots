@@ -4,14 +4,15 @@ import asyncio
 import logging
 import os
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from bot_core.lifecycle import BotLifecycle
 
 import datetime as _dt
-import pytz
+
 import discord
+import pytz
 from discord.ext import commands
 
 from bot_core.bootstrap import _init_db_if_available, _log_secret_present
@@ -26,16 +27,12 @@ try:
     from service.dashboard import DashboardServer
 except Exception as _dashboard_import_error:
     DashboardServer = None  # type: ignore[assignment]
-    logging.getLogger(__name__).warning(
-        "Dashboard module unavailable: %s", _dashboard_import_error
-    )
+    logging.getLogger(__name__).warning("Dashboard module unavailable: %s", _dashboard_import_error)
 
 __all__ = ["MasterBot"]
 
 
-class MasterBot(
-    LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, commands.Bot
-):
+class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, commands.Bot):
     """
     Master Discord Bot mit:
      - Auto-Discovery + Blocklist
@@ -45,7 +42,7 @@ class MasterBot(
      - Dashboard als Cog
     """
 
-    def __init__(self, lifecycle: Optional["BotLifecycle"] = None):
+    def __init__(self, lifecycle: BotLifecycle | None = None):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
@@ -88,8 +85,8 @@ class MasterBot(
         self.startup_time = _dt.datetime.now(tz=tz)
 
         # Dashboard is now loaded as a Cog (cogs/dashboard_cog.py)
-        self.dashboard: Optional[DashboardServer] = None  # Set by DashboardCog
-        self._dashboard_start_task: Optional[asyncio.Task[None]] = (
+        self.dashboard: DashboardServer | None = None  # Set by DashboardCog
+        self._dashboard_start_task: asyncio.Task[None] | None = (
             None  # Legacy, kept for compatibility
         )
 
@@ -97,9 +94,7 @@ class MasterBot(
         self.setup_standalone_manager()
 
         try:
-            self.per_cog_unload_timeout = float(
-                os.getenv("PER_COG_UNLOAD_TIMEOUT", "3.0")
-            )
+            self.per_cog_unload_timeout = float(os.getenv("PER_COG_UNLOAD_TIMEOUT", "3.0"))
         except ValueError:
             self.per_cog_unload_timeout = 3.0
 
@@ -108,9 +103,7 @@ class MasterBot(
         Delegate a full-process restart to the lifecycle supervisor if available.
         """
         if not self.lifecycle:
-            logging.warning(
-                "Restart requested (%s) aber kein Lifecycle vorhanden", reason
-            )
+            logging.warning("Restart requested (%s) aber kein Lifecycle vorhanden", reason)
             return False
         return await self.lifecycle.request_restart(reason=reason)
 
@@ -121,9 +114,7 @@ class MasterBot(
         _log_secret_present(
             "Steam API Key", ["STEAM_API_KEY", "STEAM_WEB_API_KEY"], mode=secret_mode
         )
-        _log_secret_present(
-            "Discord Token (Master)", ["DISCORD_TOKEN", "BOT_TOKEN"], mode="off"
-        )
+        _log_secret_present("Discord Token (Master)", ["DISCORD_TOKEN", "BOT_TOKEN"], mode="off")
         _log_secret_present(
             "Twitch Client Credentials",
             ["TWITCH_CLIENT_ID", "TWITCH_CLIENT_SECRET"],
@@ -161,9 +152,7 @@ class MasterBot(
             except Exception as exc:
                 logging.error(f"Fehler beim Stoppen des Standalone-Managers: {exc}")
 
-        to_unload = [
-            ext for ext in list(self.extensions.keys()) if ext.startswith("cogs.")
-        ]
+        to_unload = [ext for ext in list(self.extensions.keys()) if ext.startswith("cogs.")]
         if to_unload:
             logging.info(
                 f"Unloading {len(to_unload)} cogs with timeout {self.per_cog_unload_timeout:.1f}s each ..."
@@ -177,7 +166,7 @@ class MasterBot(
         try:
             await asyncio.wait_for(super().close(), timeout=timeout)
             logging.info("discord.Client.close() returned")
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logging.error(
                 f"discord.Client.close() timed out after {timeout:.1f}s; continuing shutdown"
             )

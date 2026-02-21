@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from .. import storage
 
@@ -15,9 +15,7 @@ class AnalyticsBackend:
     """Backend queries for advanced analytics dashboard."""
 
     @staticmethod
-    async def get_streamer_analytics_data(
-        streamer_login: str, days: int = 30
-    ) -> Dict[str, Any]:
+    async def get_streamer_analytics_data(streamer_login: str, days: int = 30) -> dict[str, Any]:
         """
         Comprehensive analytics data for a specific streamer or all tracked streamers.
 
@@ -34,9 +32,7 @@ class AnalyticsBackend:
         try:
             with storage.get_conn() as conn:
                 # Determine filter
-                since_date = (
-                    datetime.now(timezone.utc) - timedelta(days=days)
-                ).isoformat()
+                since_date = (datetime.now(UTC) - timedelta(days=days)).isoformat()
 
                 # Check if we have any data
                 if streamer_login:
@@ -65,9 +61,7 @@ class AnalyticsBackend:
                     return {"empty": True}
 
                 # Get metrics
-                metrics = AnalyticsBackend._calculate_metrics(
-                    conn, since_date, streamer_login
-                )
+                metrics = AnalyticsBackend._calculate_metrics(conn, since_date, streamer_login)
 
                 # Get timelines
                 retention_timeline = AnalyticsBackend._get_retention_timeline(
@@ -98,9 +92,7 @@ class AnalyticsBackend:
             return {"error": "Internal error", "empty": True}
 
     @staticmethod
-    def _calculate_metrics(
-        conn, since_date: str, streamer_login: Optional[str]
-    ) -> Dict[str, Any]:
+    def _calculate_metrics(conn, since_date: str, streamer_login: str | None) -> dict[str, Any]:
         """Calculate summary metrics for KPI cards."""
         normalized_login = streamer_login.lower().strip() if streamer_login else None
 
@@ -176,9 +168,7 @@ class AnalyticsBackend:
         session_count = int(row[2]) if row and row[2] else 0
         total_duration_hours = (int(row[3]) if row and row[3] else 0) / 3600.0
 
-        followers_per_session = (
-            total_followers / session_count if session_count > 0 else 0.0
-        )
+        followers_per_session = total_followers / session_count if session_count > 0 else 0.0
         followers_per_hour = (
             total_followers / total_duration_hours if total_duration_hours > 0 else 0.0
         )
@@ -223,8 +213,7 @@ class AnalyticsBackend:
 
         # Calculate trends (compare to previous period)
         prev_since = (
-            datetime.fromisoformat(since_date.replace("Z", "+00:00"))
-            - timedelta(days=30)
+            datetime.fromisoformat(since_date.replace("Z", "+00:00")) - timedelta(days=30)
         ).isoformat()
         if normalized_login:
             prev_row = conn.execute(
@@ -249,9 +238,7 @@ class AnalyticsBackend:
             ).fetchone()
         prev_ret_5m = float(prev_row[0]) if prev_row and prev_row[0] else 0.0
 
-        retention_trend = (
-            ((ret_5m - prev_ret_5m) / prev_ret_5m * 100) if prev_ret_5m > 0 else 0.0
-        )
+        retention_trend = ((ret_5m - prev_ret_5m) / prev_ret_5m * 100) if prev_ret_5m > 0 else 0.0
 
         return {
             "retention_5m": ret_5m / 100.0,  # Convert to 0-1 range
@@ -274,8 +261,8 @@ class AnalyticsBackend:
 
     @staticmethod
     def _get_retention_timeline(
-        conn, since_date: str, streamer_login: Optional[str], days: int
-    ) -> List[Dict[str, Any]]:
+        conn, since_date: str, streamer_login: str | None, days: int
+    ) -> list[dict[str, Any]]:
         """Get daily retention metrics timeline."""
         if streamer_login:
             rows = conn.execute(
@@ -329,8 +316,8 @@ class AnalyticsBackend:
 
     @staticmethod
     def _get_discovery_timeline(
-        conn, since_date: str, streamer_login: Optional[str], days: int
-    ) -> List[Dict[str, Any]]:
+        conn, since_date: str, streamer_login: str | None, days: int
+    ) -> list[dict[str, Any]]:
         """Get daily discovery/growth metrics timeline."""
         if streamer_login:
             rows = conn.execute(
@@ -381,8 +368,8 @@ class AnalyticsBackend:
 
     @staticmethod
     def _get_chat_timeline(
-        conn, since_date: str, streamer_login: Optional[str], days: int
-    ) -> List[Dict[str, Any]]:
+        conn, since_date: str, streamer_login: str | None, days: int
+    ) -> list[dict[str, Any]]:
         """Get daily chat health metrics timeline."""
         if streamer_login:
             rows = conn.execute(
@@ -438,11 +425,11 @@ class AnalyticsBackend:
 
     @staticmethod
     def _generate_insights(
-        metrics: Dict[str, Any],
-        retention_timeline: List[Dict[str, Any]],
-        discovery_timeline: List[Dict[str, Any]],
-        chat_timeline: List[Dict[str, Any]],
-    ) -> List[Dict[str, str]]:
+        metrics: dict[str, Any],
+        retention_timeline: list[dict[str, Any]],
+        discovery_timeline: list[dict[str, Any]],
+        chat_timeline: list[dict[str, Any]],
+    ) -> list[dict[str, str]]:
         """Generate actionable insights based on metrics."""
         insights = []
 
@@ -568,7 +555,7 @@ class AnalyticsBackend:
         return insights
 
     @staticmethod
-    async def get_streamer_overview(login: str) -> Dict[str, Any]:
+    async def get_streamer_overview(login: str) -> dict[str, Any]:
         """Get comprehensive overview data for a specific streamer."""
         try:
             with storage.get_conn() as conn:
@@ -599,9 +586,7 @@ class AnalyticsBackend:
                 }
 
                 # Get 30-day stats
-                since_30d = (
-                    datetime.now(timezone.utc) - timedelta(days=30)
-                ).isoformat()
+                since_30d = (datetime.now(UTC) - timedelta(days=30)).isoformat()
 
                 stats_query = """
                     SELECT 
@@ -617,30 +602,16 @@ class AnalyticsBackend:
                       AND s.started_at >= ?
                       AND s.ended_at IS NOT NULL
                 """
-                stats_row = conn.execute(
-                    stats_query, [normalized_login, since_30d]
-                ).fetchone()
+                stats_row = conn.execute(stats_query, [normalized_login, since_30d]).fetchone()
 
                 stats_30d = {
-                    "total_streams": int(stats_row[0])
-                    if stats_row and stats_row[0]
-                    else 0,
-                    "avg_avg_viewers": float(stats_row[1])
-                    if stats_row and stats_row[1]
-                    else 0.0,
+                    "total_streams": int(stats_row[0]) if stats_row and stats_row[0] else 0,
+                    "avg_avg_viewers": float(stats_row[1]) if stats_row and stats_row[1] else 0.0,
                     "max_peak": int(stats_row[2]) if stats_row and stats_row[2] else 0,
-                    "total_follower_delta": int(stats_row[3])
-                    if stats_row and stats_row[3]
-                    else 0,
-                    "total_unique_chatters": int(stats_row[4])
-                    if stats_row and stats_row[4]
-                    else 0,
-                    "avg_ret_5m": float(stats_row[5])
-                    if stats_row and stats_row[5]
-                    else 0.0,
-                    "avg_ret_10m": float(stats_row[6])
-                    if stats_row and stats_row[6]
-                    else 0.0,
+                    "total_follower_delta": int(stats_row[3]) if stats_row and stats_row[3] else 0,
+                    "total_unique_chatters": int(stats_row[4]) if stats_row and stats_row[4] else 0,
+                    "avg_ret_5m": float(stats_row[5]) if stats_row and stats_row[5] else 0.0,
+                    "avg_ret_10m": float(stats_row[6]) if stats_row and stats_row[6] else 0.0,
                 }
 
                 # Get recent sessions
@@ -693,7 +664,7 @@ class AnalyticsBackend:
             return {"error": "Internal error"}
 
     @staticmethod
-    async def get_session_detail(session_id: int) -> Dict[str, Any]:
+    async def get_session_detail(session_id: int) -> dict[str, Any]:
         """Get detailed analytics for a specific stream session."""
         try:
             with storage.get_conn() as conn:
@@ -744,12 +715,8 @@ class AnalyticsBackend:
                     "dropoff_pct": float(session_row[13]) if session_row[13] else 0.0,
                     "dropoff_label": session_row[14] if session_row[14] else "",
                     "unique_chatters": int(session_row[15]) if session_row[15] else 0,
-                    "first_time_chatters": int(session_row[16])
-                    if session_row[16]
-                    else 0,
-                    "returning_chatters": int(session_row[17])
-                    if session_row[17]
-                    else 0,
+                    "first_time_chatters": int(session_row[16]) if session_row[16] else 0,
+                    "returning_chatters": int(session_row[17]) if session_row[17] else 0,
                     "follower_delta": int(session_row[18]) if session_row[18] else 0,
                 }
 
@@ -806,13 +773,11 @@ class AnalyticsBackend:
             return {"error": "Internal error"}
 
     @staticmethod
-    async def get_comparison_stats() -> Dict[str, Any]:
+    async def get_comparison_stats() -> dict[str, Any]:
         """Get comparison statistics for benchmarking."""
         try:
             with storage.get_conn() as conn:
-                since_30d = (
-                    datetime.now(timezone.utc) - timedelta(days=30)
-                ).isoformat()
+                since_30d = (datetime.now(UTC) - timedelta(days=30)).isoformat()
 
                 # Category average (Deadlock)
                 category_query = """
@@ -842,12 +807,8 @@ class AnalyticsBackend:
                 track_row = conn.execute(tracked_query, [since_30d]).fetchone()
 
                 tracked_avg = {
-                    "avg_viewers": float(track_row[0])
-                    if track_row and track_row[0]
-                    else 0.0,
-                    "peak_viewers": int(track_row[1])
-                    if track_row and track_row[1]
-                    else 0,
+                    "avg_viewers": float(track_row[0]) if track_row and track_row[0] else 0.0,
+                    "peak_viewers": int(track_row[1]) if track_row and track_row[1] else 0,
                 }
 
                 # Top streamers

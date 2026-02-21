@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from discord.ext import commands
 
@@ -22,16 +22,14 @@ class DashboardCog(commands.Cog):
 
     def __init__(self, bot: MasterBot) -> None:
         self.bot = bot
-        self.dashboard: Optional[object] = None
-        self._start_task: Optional[asyncio.Task] = None
+        self.dashboard: object | None = None
+        self._start_task: asyncio.Task | None = None
 
         # Import and create dashboard server
         try:
             from service.dashboard import DashboardServer
 
-            self.dashboard = DashboardServer(
-                self.bot, host=DASHBOARD_HOST, port=DASHBOARD_PORT
-            )
+            self.dashboard = DashboardServer(self.bot, host=DASHBOARD_HOST, port=DASHBOARD_PORT)
             log.info(
                 "Dashboard initialized in cog (Host %s, Port %s)",
                 DASHBOARD_HOST,

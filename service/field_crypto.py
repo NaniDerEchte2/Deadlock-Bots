@@ -26,7 +26,6 @@ from __future__ import annotations
 import logging
 import secrets
 import struct
-from typing import Dict, Optional
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -66,7 +65,7 @@ class FieldCrypto:
 
     def __init__(self):
         """Initialize crypto with keys from Windows Credential Manager."""
-        self._keys: Dict[str, bytes] = {}
+        self._keys: dict[str, bytes] = {}
         self._load_keys()
 
     def _load_keys(self) -> None:
@@ -74,9 +73,7 @@ class FieldCrypto:
         try:
             import keyring
         except ImportError:
-            raise KeyMissing(
-                "keyring package not installed. Install with: pip install keyring"
-            )
+            raise KeyMissing("keyring package not installed. Install with: pip install keyring")
 
         # Load v1 master key
         key_v1 = keyring.get_password("DeadlockBot", "DB_MASTER_KEY_V1")
@@ -96,8 +93,7 @@ class FieldCrypto:
         # Validate key size
         if len(self._keys["v1"]) != self.KEY_SIZE:
             raise KeyMissing(
-                f"Key v1 has invalid size: {len(self._keys['v1'])} bytes "
-                f"(expected {self.KEY_SIZE})"
+                f"Key v1 has invalid size: {len(self._keys['v1'])} bytes (expected {self.KEY_SIZE})"
             )
 
     def encrypt_field(self, plaintext: str, aad: str, kid: str = "v1") -> bytes:
@@ -128,9 +124,7 @@ class FieldCrypto:
         # Encrypt with AAD binding
         aesgcm = AESGCM(key)
         try:
-            ciphertext = aesgcm.encrypt(
-                nonce, plaintext.encode("utf-8"), aad.encode("utf-8")
-            )
+            ciphertext = aesgcm.encrypt(nonce, plaintext.encode("utf-8"), aad.encode("utf-8"))
         except Exception as e:
             log.error("Encryption failed: %s", e)
             raise CryptoError(f"Encryption failed: {e}")
@@ -174,9 +168,7 @@ class FieldCrypto:
         version, kid_len = struct.unpack("BB", blob[:2])
 
         if version != self.VERSION:
-            raise InvalidPayload(
-                f"Unknown version: {version} (expected {self.VERSION})"
-            )
+            raise InvalidPayload(f"Unknown version: {version} (expected {self.VERSION})")
 
         # Extract kid
         kid_start = 2
@@ -220,7 +212,7 @@ class FieldCrypto:
 
 
 # Singleton instance
-_crypto: Optional[FieldCrypto] = None
+_crypto: FieldCrypto | None = None
 
 
 def get_crypto() -> FieldCrypto:

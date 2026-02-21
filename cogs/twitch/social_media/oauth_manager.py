@@ -19,19 +19,19 @@ import logging
 import os
 import secrets
 from base64 import urlsafe_b64encode
-from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
 
 import aiohttp
 
-from ..storage import get_conn
 from service.field_crypto import get_crypto
+
+from ..storage import get_conn
 
 log = logging.getLogger("TwitchStreams.OAuthManager")
 
 
-def _sanitize_log_value(value: Optional[str]) -> str:
+def _sanitize_log_value(value: str | None) -> str:
     """Prevent CRLF log-forging via untrusted values."""
     if value is None:
         return "<none>"
@@ -46,7 +46,7 @@ class SocialMediaOAuthManager:
         self.crypto = get_crypto()
 
     def generate_auth_url(
-        self, platform: str, streamer_login: Optional[str], redirect_uri: str
+        self, platform: str, streamer_login: str | None, redirect_uri: str
     ) -> str:
         """
         Generate OAuth authorization URL.
@@ -63,12 +63,10 @@ class SocialMediaOAuthManager:
         state = secrets.token_urlsafe(32)
 
         # Generate PKCE verifier (TikTok v2 and YouTube both require PKCE)
-        pkce_verifier = (
-            secrets.token_urlsafe(64) if platform in ("tiktok", "youtube") else None
-        )
+        pkce_verifier = secrets.token_urlsafe(64) if platform in ("tiktok", "youtube") else None
 
         # Store state in DB (expires in 10 minutes)
-        expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+        expires_at = datetime.now(UTC) + timedelta(minutes=10)
 
         with get_conn() as conn:
             conn.execute(
@@ -108,9 +106,7 @@ class SocialMediaOAuthManager:
 
         # PKCE challenge (S256)
         challenge = (
-            urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
-            .decode()
-            .rstrip("=")
+            urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
         )
 
         scopes = "user.info.basic,video.upload,video.publish"
@@ -138,9 +134,7 @@ class SocialMediaOAuthManager:
 
         # PKCE challenge
         challenge = (
-            urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
-            .decode()
-            .rstrip("=")
+            urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
         )
 
         scopes = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly"
@@ -179,7 +173,7 @@ class SocialMediaOAuthManager:
 
         return f"https://api.instagram.com/oauth/authorize?{urlencode(params)}"
 
-    async def handle_callback(self, code: str, state: str) -> Dict:
+    async def handle_callback(self, code: str, state: str) -> dict:
         """
         Handle OAuth callback, exchange code for tokens.
 
@@ -202,16 +196,14 @@ class SocialMediaOAuthManager:
                 WHERE state_token = ?
                   AND expires_at > ?
                 """,
-                (state, datetime.now(timezone.utc).isoformat()),
+                (state, datetime.now(UTC).isoformat()),
             ).fetchone()
 
             if not state_row:
                 raise ValueError("Invalid or expired state token")
 
             # Delete state (one-time use)
-            conn.execute(
-                "DELETE FROM oauth_state_tokens WHERE state_token = ?", (state,)
-            )
+            conn.execute("DELETE FROM oauth_state_tokens WHERE state_token = ?", (state,))
 
         platform = state_row["platform"]
         streamer_login = state_row["streamer_login"]
@@ -222,9 +214,7 @@ class SocialMediaOAuthManager:
         if platform == "tiktok":
             tokens = await self._tiktok_exchange_code(code, redirect_uri, pkce_verifier)
         elif platform == "youtube":
-            tokens = await self._youtube_exchange_code(
-                code, redirect_uri, pkce_verifier
-            )
+            tokens = await self._youtube_exchange_code(code, redirect_uri, pkce_verifier)
         elif platform == "instagram":
             tokens = await self._instagram_exchange_code(code, redirect_uri)
         else:
@@ -238,9 +228,7 @@ class SocialMediaOAuthManager:
             "streamer_login": streamer_login,
         }
 
-    async def _tiktok_exchange_code(
-        self, code: str, redirect_uri: str, verifier: str
-    ) -> Dict:
+    async def _tiktok_exchange_code(self, code: str, redirect_uri: str, verifier: str) -> dict:
         """Exchange TikTok authorization code for tokens (with PKCE code_verifier)."""
         client_key = os.environ.get("TIKTOK_CLIENT_KEY", "")
         client_secret = os.environ.get("TIKTOK_CLIENT_SECRET", "")
@@ -266,17 +254,14 @@ class SocialMediaOAuthManager:
                 return {
                     "access_token": data["data"]["access_token"],
                     "refresh_token": data["data"]["refresh_token"],
-                    "expires_at": datetime.now(timezone.utc)
-                    + timedelta(seconds=data["data"]["expires_in"]),
+                    "expires_at": datetime.now(UTC) + timedelta(seconds=data["data"]["expires_in"]),
                     "scopes": data["data"]["scope"],
                     "user_id": data["data"].get("open_id"),
                     "client_id": client_key,
                     "client_secret": client_secret,
                 }
 
-    async def _youtube_exchange_code(
-        self, code: str, redirect_uri: str, verifier: str
-    ) -> Dict:
+    async def _youtube_exchange_code(self, code: str, redirect_uri: str, verifier: str) -> dict:
         """Exchange YouTube authorization code for tokens (with PKCE)."""
         client_id = os.environ.get("YOUTUBE_CLIENT_ID", "")
         client_secret = os.environ.get("YOUTUBE_CLIENT_SECRET", "")
@@ -301,14 +286,13 @@ class SocialMediaOAuthManager:
                 return {
                     "access_token": data["access_token"],
                     "refresh_token": data.get("refresh_token"),  # Only on first auth
-                    "expires_at": datetime.now(timezone.utc)
-                    + timedelta(seconds=data["expires_in"]),
+                    "expires_at": datetime.now(UTC) + timedelta(seconds=data["expires_in"]),
                     "scopes": data["scope"],
                     "client_id": client_id,
                     "client_secret": client_secret,
                 }
 
-    async def _instagram_exchange_code(self, code: str, redirect_uri: str) -> Dict:
+    async def _instagram_exchange_code(self, code: str, redirect_uri: str) -> dict:
         """Exchange Instagram authorization code for tokens."""
         client_id = os.environ.get("INSTAGRAM_CLIENT_ID", "")
         client_secret = os.environ.get("INSTAGRAM_CLIENT_SECRET", "")
@@ -332,15 +316,12 @@ class SocialMediaOAuthManager:
                 return {
                     "access_token": data["access_token"],
                     "user_id": data["user_id"],
-                    "expires_at": datetime.now(timezone.utc)
-                    + timedelta(days=60),  # Long-lived token
+                    "expires_at": datetime.now(UTC) + timedelta(days=60),  # Long-lived token
                     "client_id": client_id,
                     "client_secret": client_secret,
                 }
 
-    async def save_encrypted_tokens(
-        self, platform: str, streamer_login: Optional[str], tokens: Dict
-    ):
+    async def save_encrypted_tokens(self, platform: str, streamer_login: str | None, tokens: dict):
         """
         Save tokens with encryption.
 
@@ -355,9 +336,7 @@ class SocialMediaOAuthManager:
 
             # Encrypt access token
             aad_access = f"social_media_platform_auth|access_token|{row_id}|1"
-            access_enc = self.crypto.encrypt_field(
-                tokens["access_token"], aad_access, kid="v1"
-            )
+            access_enc = self.crypto.encrypt_field(tokens["access_token"], aad_access, kid="v1")
 
             # Encrypt refresh token (if exists)
             refresh_enc = None
@@ -419,7 +398,7 @@ class SocialMediaOAuthManager:
 
     async def refresh_token(
         self, platform: str, refresh_token: str, client_id: str, client_secret: str
-    ) -> Dict:
+    ) -> dict:
         """
         Refresh an access token.
 
@@ -433,19 +412,15 @@ class SocialMediaOAuthManager:
             New token data
         """
         if platform == "tiktok":
-            return await self._refresh_tiktok_token(
-                refresh_token, client_id, client_secret
-            )
+            return await self._refresh_tiktok_token(refresh_token, client_id, client_secret)
         elif platform == "youtube":
-            return await self._refresh_youtube_token(
-                refresh_token, client_id, client_secret
-            )
+            return await self._refresh_youtube_token(refresh_token, client_id, client_secret)
         else:
             raise ValueError(f"Token refresh not supported for platform: {platform}")
 
     async def _refresh_tiktok_token(
         self, refresh_token: str, client_key: str, client_secret: str
-    ) -> Dict:
+    ) -> dict:
         """Refresh TikTok access token."""
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -465,13 +440,12 @@ class SocialMediaOAuthManager:
                 return {
                     "access_token": data["data"]["access_token"],
                     "refresh_token": data["data"]["refresh_token"],
-                    "expires_at": datetime.now(timezone.utc)
-                    + timedelta(seconds=data["data"]["expires_in"]),
+                    "expires_at": datetime.now(UTC) + timedelta(seconds=data["data"]["expires_in"]),
                 }
 
     async def _refresh_youtube_token(
         self, refresh_token: str, client_id: str, client_secret: str
-    ) -> Dict:
+    ) -> dict:
         """Refresh YouTube access token."""
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -490,6 +464,5 @@ class SocialMediaOAuthManager:
 
                 return {
                     "access_token": data["access_token"],
-                    "expires_at": datetime.now(timezone.utc)
-                    + timedelta(seconds=data["expires_in"]),
+                    "expires_at": datetime.now(UTC) + timedelta(seconds=data["expires_in"]),
                 }

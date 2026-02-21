@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import html
-from datetime import datetime, timezone
-from typing import List, Optional
+from datetime import UTC, datetime
 from urllib.parse import quote_plus
 
 from aiohttp import web
 
-from ..constants import log
 from .. import storage as _storage
+from ..constants import log
 
 # Alle Scopes die ein vollständig autorisierter Streamer haben sollte
 _REQUIRED_SCOPES: list[str] = [
@@ -78,8 +77,7 @@ class DashboardLiveMixin:
         total_count = sum(
             1
             for st in items
-            if not bool(st.get("manual_partner_opt_out"))
-            and not bool(st.get("archived_at"))
+            if not bool(st.get("manual_partner_opt_out")) and not bool(st.get("archived_at"))
         )
         raid_bot_available = bool(getattr(self, "_raid_bot", None))
         token_value = ""
@@ -90,9 +88,9 @@ class DashboardLiveMixin:
         def raid_auth_link(login: str) -> str:
             return f"/twitch/raid/auth?login={quote_plus(login)}{token_query}"
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
-        def _parse_dt(value: Optional[str]) -> Optional[datetime]:
+        def _parse_dt(value: str | None) -> datetime | None:
             if not value:
                 return None
             try:
@@ -100,16 +98,16 @@ class DashboardLiveMixin:
             except ValueError:
                 return None
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt.astimezone(timezone.utc)
+                dt = dt.replace(tzinfo=UTC)
+            return dt.astimezone(UTC)
 
-        rows: List[str] = []
-        non_partner_entries: List[dict] = []
-        archived_entries: List[dict] = []
+        rows: list[str] = []
+        non_partner_entries: list[dict] = []
+        archived_entries: list[dict] = []
         filtered_count = 0
         raid_authorized_count = 0
         raid_ready_count = 0
-        raid_missing_logins: List[str] = []
+        raid_missing_logins: list[str] = []
         for st in items:
             login = st.get("twitch_login", "")
             login_html = html.escape(login)
@@ -121,16 +119,14 @@ class DashboardLiveMixin:
             archived_dt = _parse_dt(archived_at_raw)
             is_archived = archived_dt is not None
             last_deadlock_dt = _parse_dt(st.get("last_deadlock_stream_at"))
-            inactive_days: Optional[int] = None
+            inactive_days: int | None = None
             if last_deadlock_dt:
                 inactive_days = (now.date() - last_deadlock_dt.date()).days
             partner_opt_out = bool(st.get("manual_partner_opt_out"))
             raid_auth_enabled = st.get("raid_auth_enabled")
             raid_authorized_at = st.get("raid_authorized_at")
             raid_bot_enabled = bool(st.get("raid_bot_enabled"))
-            raid_is_authorized = raid_auth_enabled is not None or bool(
-                raid_authorized_at
-            )
+            raid_is_authorized = raid_auth_enabled is not None or bool(raid_authorized_at)
             raid_auto_active = bool(raid_auth_enabled) and raid_bot_enabled
 
             if not partner_opt_out and not is_archived:
@@ -156,33 +152,27 @@ class DashboardLiveMixin:
 
             status_badge = "<span class='badge badge-neutral'>Nicht verifiziert</span>"
             status_text = "Nicht verifiziert"
-            meta_parts: List[str] = []
+            meta_parts: list[str] = []
             countdown_label = "—"
-            countdown_classes: List[str] = []
+            countdown_classes: list[str] = []
 
             if partner_opt_out:
                 status_badge = "<span class='badge badge-neutral'>Kein Partner</span>"
                 status_text = "Kein Partner"
                 meta_parts.append("Nicht als Partner gelistet")
             elif permanent:
-                status_badge = (
-                    "<span class='badge badge-ok'>Dauerhaft verifiziert</span>"
-                )
+                status_badge = "<span class='badge badge-ok'>Dauerhaft verifiziert</span>"
                 status_text = "Dauerhaft verifiziert"
             elif until_dt:
                 day_diff = (until_dt.date() - now.date()).days
                 if day_diff >= 0:
-                    status_badge = (
-                        "<span class='badge badge-ok'>Verifiziert (30 Tage)</span>"
-                    )
+                    status_badge = "<span class='badge badge-ok'>Verifiziert (30 Tage)</span>"
                     status_text = "Verifiziert (30 Tage)"
                     countdown_label = f"{day_diff} Tage"
                     countdown_classes.append("countdown-ok")
                     meta_parts.append(f"Bis {until_dt.date().isoformat()}")
                 else:
-                    status_badge = (
-                        "<span class='badge badge-warn'>Verifizierung überfällig</span>"
-                    )
+                    status_badge = "<span class='badge badge-warn'>Verifizierung überfällig</span>"
                     status_text = "Verifizierung überfällig"
                     countdown_label = f"Überfällig {abs(day_diff)} Tage"
                     countdown_classes.append("countdown-warn")
@@ -200,14 +190,14 @@ class DashboardLiveMixin:
                 meta_parts.append("Noch kein Deadlock-Stream erfasst")
 
             meta_html = (
-                f"<div class='status-meta'>{' • '.join(meta_parts)}</div>"
-                if meta_parts
-                else ""
+                f"<div class='status-meta'>{' • '.join(meta_parts)}</div>" if meta_parts else ""
             )
 
             countdown_html = html.escape(countdown_label)
             if countdown_classes:
-                countdown_html = f"<span class='{' '.join(countdown_classes)}'>{countdown_html}</span>"
+                countdown_html = (
+                    f"<span class='{' '.join(countdown_classes)}'>{countdown_html}</span>"
+                )
 
             missing_discord_id = not discord_user_id
             discord_warning = ""
@@ -247,18 +237,12 @@ class DashboardLiveMixin:
                 if not is_on_discord
                 else "Discord-Markierung entfernen"
             )
-            toggle_classes = (
-                "btn btn-small" if not is_on_discord else "btn btn-small btn-secondary"
-            )
+            toggle_classes = "btn btn-small" if not is_on_discord else "btn btn-small btn-secondary"
 
             archived_at_label = (
-                archived_dt.date().isoformat()
-                if archived_dt
-                else (archived_at_raw or "—")
+                archived_dt.date().isoformat() if archived_dt else (archived_at_raw or "—")
             )
-            last_stream_label = (
-                last_deadlock_dt.date().isoformat() if last_deadlock_dt else "—"
-            )
+            last_stream_label = last_deadlock_dt.date().isoformat() if last_deadlock_dt else "—"
 
             if is_archived:
                 raid_status = (
@@ -306,7 +290,7 @@ class DashboardLiveMixin:
                 )
                 continue
 
-            discord_preview_rows: List[str] = []
+            discord_preview_rows: list[str] = []
             if discord_display_name:
                 discord_preview_rows.append(
                     f"<span class='preview-label'>Name</span><span>{html.escape(discord_display_name)}</span>"
@@ -321,8 +305,7 @@ class DashboardLiveMixin:
                 )
 
             discord_preview_html = "".join(
-                f"<div class='discord-preview-row'>{row}</div>"
-                for row in discord_preview_rows
+                f"<div class='discord-preview-row'>{row}</div>" for row in discord_preview_rows
             )
 
             advanced_html = (
@@ -350,7 +333,7 @@ class DashboardLiveMixin:
                 "  </details>"
             )
 
-            raid_cell_parts: List[str] = []
+            raid_cell_parts: list[str] = []
             if raid_bot_available:
                 if raid_is_authorized:
                     badge_class = "badge-ok" if raid_auto_active else "badge-neutral"
@@ -359,13 +342,9 @@ class DashboardLiveMixin:
                         f"<span class='badge {badge_class}'>{badge_label}</span>"
                     )
                     if raid_auto_active:
-                        raid_cell_parts.append(
-                            "<div class='status-meta'>Auto-Raid aktiv</div>"
-                        )
+                        raid_cell_parts.append("<div class='status-meta'>Auto-Raid aktiv</div>")
                     else:
-                        raid_cell_parts.append(
-                            "<div class='status-meta'>Auto-Raid aus</div>"
-                        )
+                        raid_cell_parts.append("<div class='status-meta'>Auto-Raid aus</div>")
                 else:
                     raid_cell_parts.append(
                         "<span class='badge badge-warn'>Nicht autorisiert</span>"
@@ -387,16 +366,10 @@ class DashboardLiveMixin:
                         + "' data-same-tab='1'>Anforderungen senden</a>"
                     )
             else:
-                raid_cell_parts.append(
-                    "<span class='badge badge-warn'>Bot offline</span>"
-                )
-                raid_cell_parts.append(
-                    "<div class='status-meta'>Raids nicht verfügbar</div>"
-                )
+                raid_cell_parts.append("<span class='badge badge-warn'>Bot offline</span>")
+                raid_cell_parts.append("<div class='status-meta'>Raids nicht verfügbar</div>")
 
-            raid_cell_html = (
-                "<div class='raid-cell'>" + "".join(raid_cell_parts) + "</div>"
-            )
+            raid_cell_html = "<div class='raid-cell'>" + "".join(raid_cell_parts) + "</div>"
 
             rows.append(
                 "<tr>"
@@ -490,14 +463,16 @@ class DashboardLiveMixin:
         )
 
         if non_partner_entries:
-            non_partner_rows: List[str] = []
+            non_partner_rows: list[str] = []
             for entry in non_partner_entries:
                 countdown_badge = ""
                 countdown_label = entry.get("countdown") or ""
                 if countdown_label and countdown_label != "—":
-                    countdown_badge = f"<span class='badge badge-neutral'>{html.escape(countdown_label)}</span>"
+                    countdown_badge = (
+                        f"<span class='badge badge-neutral'>{html.escape(countdown_label)}</span>"
+                    )
 
-                discord_details: List[str] = []
+                discord_details: list[str] = []
                 if entry.get("discord_label"):
                     discord_details.append(entry["discord_label"])
                 if entry.get("discord_display_name"):
@@ -522,7 +497,7 @@ class DashboardLiveMixin:
                 if entry.get("warning"):
                     warning_line = f"    <span class='non-partner-warning'>{html.escape(entry['warning'])}</span>"
 
-                preview_rows: List[str] = []
+                preview_rows: list[str] = []
                 if entry.get("discord_display_name"):
                     preview_rows.append(
                         f"<span class='preview-label'>Name</span><span>{html.escape(entry['discord_display_name'])}</span>"
@@ -536,8 +511,7 @@ class DashboardLiveMixin:
                         "<span class='preview-empty'>Keine zusätzlichen Discord-Angaben hinterlegt.</span>"
                     )
                 preview_html = "".join(
-                    f"<div class='discord-preview-row'>{row}</div>"
-                    for row in preview_rows
+                    f"<div class='discord-preview-row'>{row}</div>" for row in preview_rows
                 )
 
                 non_partner_rows.append(
@@ -606,7 +580,7 @@ class DashboardLiveMixin:
             non_partner_list_html = "<li class='non-partner-item'><span class='non-partner-meta'>Keine zusätzlichen Streamer ohne Partner-Status vorhanden.</span></li>"
 
         if archived_entries:
-            archived_rows: List[str] = []
+            archived_rows: list[str] = []
             for entry in archived_entries:
                 inactive_badge = ""
                 if entry.get("inactive_days") is not None:
@@ -695,19 +669,19 @@ class DashboardLiveMixin:
             }
         )
         login_options_html = "".join(
-            f"<option value='{html.escape(login, quote=True)}'></option>"
-            for login in unique_logins
+            f"<option value='{html.escape(login, quote=True)}'></option>" for login in unique_logins
         )
         token_input = ""
         if token_value:
-            token_input = f"<input type='hidden' name='token' value='{html.escape(token_value, quote=True)}'>"
+            token_input = (
+                f"<input type='hidden' name='token' value='{html.escape(token_value, quote=True)}'>"
+            )
         missing_unique = sorted({login for login in raid_missing_logins if login})
         missing_preview = missing_unique[:6]
         missing_count = max(0, total_count - raid_authorized_count)
         if missing_preview:
             missing_chips = "".join(
-                f"<span class='chip'>{html.escape(login)}</span>"
-                for login in missing_preview
+                f"<span class='chip'>{html.escape(login)}</span>" for login in missing_preview
             )
             raid_missing_html = (
                 "<div class='raid-meta'>"
@@ -716,7 +690,9 @@ class DashboardLiveMixin:
                 "</div>"
             )
         else:
-            raid_missing_html = "<div class='raid-meta'><span class='pill ok'>Alle Partner autorisiert</span></div>"
+            raid_missing_html = (
+                "<div class='raid-meta'><span class='pill ok'>Alle Partner autorisiert</span></div>"
+            )
 
         raid_bot_state_label = "Verfügbar" if raid_bot_available else "Nicht aktiv"
         raid_bot_state_class = "ok" if raid_bot_available else "warn"
@@ -759,7 +735,7 @@ class DashboardLiveMixin:
         )
 
         # --- Scope Status Card ---
-        scope_rows: List[str] = []
+        scope_rows: list[str] = []
         scope_headers_html = "".join(
             (
                 f"<th class='scope-header' title='{html.escape(scope, quote=True)}'>"
@@ -779,19 +755,13 @@ class DashboardLiveMixin:
             for auth_row in auth_rows:
                 total_authorized += 1
                 _login = str(
-                    auth_row[0]
-                    if not hasattr(auth_row, "keys")
-                    else auth_row["twitch_login"]
+                    auth_row[0] if not hasattr(auth_row, "keys") else auth_row["twitch_login"]
                 )
                 _scopes_raw = str(
-                    auth_row[1]
-                    if not hasattr(auth_row, "keys")
-                    else auth_row["scopes"] or ""
+                    auth_row[1] if not hasattr(auth_row, "keys") else auth_row["scopes"] or ""
                 )
                 _needs_reauth = bool(
-                    auth_row[2]
-                    if not hasattr(auth_row, "keys")
-                    else auth_row["needs_reauth"]
+                    auth_row[2] if not hasattr(auth_row, "keys") else auth_row["needs_reauth"]
                 )
                 _token_scopes = set(_scopes_raw.split()) if _scopes_raw else set()
                 _missing = [s for s in _REQUIRED_SCOPES if s not in _token_scopes]
@@ -802,9 +772,7 @@ class DashboardLiveMixin:
                     status_pill = "<span class='pill err'>Re-Auth nötig</span>"
                 elif _missing_critical:
                     row_class = "scope-row scope-critical"
-                    status_pill = (
-                        "<span class='pill warn'>Kritisch unvollständig</span>"
-                    )
+                    status_pill = "<span class='pill warn'>Kritisch unvollständig</span>"
                 elif _missing:
                     row_class = "scope-row scope-partial"
                     status_pill = "<span class='pill neutral'>Unvollständig</span>"
@@ -841,7 +809,9 @@ class DashboardLiveMixin:
             f"<span class='pill ok'>{full_scope_count} vollständig</span>"
             f"<span class='pill warn'>{missing_scope_count} unvollständig</span>"
         )
-        scope_empty_row_html = f"<tr><td colspan='{scope_table_colspan}'>Kein Streamer mit OAuth autorisiert</td></tr>"
+        scope_empty_row_html = (
+            f"<tr><td colspan='{scope_table_colspan}'>Kein Streamer mit OAuth autorisiert</td></tr>"
+        )
         scope_body_html = "".join(scope_rows) if scope_rows else scope_empty_row_html
 
         scope_card_html = (
@@ -888,7 +858,9 @@ class DashboardLiveMixin:
 
         reload_token_input = ""
         if token_value:
-            reload_token_input = f"<input type='hidden' name='token' value='{html.escape(token_value, quote=True)}'>"
+            reload_token_input = (
+                f"<input type='hidden' name='token' value='{html.escape(token_value, quote=True)}'>"
+            )
 
         hero_actions = (
             (raid_history_link + " " if raid_history_link else "")
@@ -949,12 +921,7 @@ class DashboardLiveMixin:
     async def add_any(self, request: web.Request):
         """Flexible Variante: nimmt ?q= … oder ?login= … oder ?url= …"""
         self._require_token(request)
-        raw = (
-            request.query.get("q")
-            or request.query.get("login")
-            or request.query.get("url")
-            or ""
-        )
+        raw = request.query.get("q") or request.query.get("login") or request.query.get("url") or ""
         try:
             msg = await self._do_add(raw)
             raise web.HTTPFound(location="/twitch?ok=" + quote_plus(msg))
@@ -962,9 +929,7 @@ class DashboardLiveMixin:
             raise
         except Exception as e:
             log.exception("dashboard add_any failed: %s", e)
-            raise web.HTTPFound(
-                location="/twitch?err=" + quote_plus("could not add (twitch api)")
-            )
+            raise web.HTTPFound(location="/twitch?err=" + quote_plus("could not add (twitch api)"))
 
     async def add_url(self, request: web.Request):
         """Backward-compatible: nimmt ?url=… (kann jetzt auch Login enthalten)."""
@@ -977,9 +942,7 @@ class DashboardLiveMixin:
             raise
         except Exception as e:
             log.exception("dashboard add_url failed: %s", e)
-            raise web.HTTPFound(
-                location="/twitch?err=" + quote_plus("could not add (twitch api)")
-            )
+            raise web.HTTPFound(location="/twitch?err=" + quote_plus("could not add (twitch api)"))
 
     async def add_login(self, request: web.Request):
         """Pfad-Shortcut: /twitch/add_login/<login>"""
@@ -992,9 +955,7 @@ class DashboardLiveMixin:
             raise
         except Exception as e:
             log.exception("dashboard add_login failed: %s", e)
-            raise web.HTTPFound(
-                location="/twitch?err=" + quote_plus("could not add (twitch api)")
-            )
+            raise web.HTTPFound(location="/twitch?err=" + quote_plus("could not add (twitch api)"))
 
     async def add_streamer(self, request: web.Request):
         self._require_token(request)
@@ -1006,9 +967,7 @@ class DashboardLiveMixin:
         mark_member = member_raw in {"1", "true", "on", "yes"}
 
         if not raw_login:
-            location = self._redirect_location(
-                request, err="Bitte einen Twitch-Login angeben"
-            )
+            location = self._redirect_location(request, err="Bitte einen Twitch-Login angeben")
             raise web.HTTPFound(location=location)
 
         try:
@@ -1025,9 +984,7 @@ class DashboardLiveMixin:
             raise web.HTTPFound(location=location)
 
         profile_message = ""
-        should_update_discord = bool(
-            discord_user_id or discord_display_name or mark_member
-        )
+        should_update_discord = bool(discord_user_id or discord_display_name or mark_member)
         if should_update_discord:
             try:
                 profile_message = await self._discord_profile(
@@ -1056,7 +1013,7 @@ class DashboardLiveMixin:
         data = await request.post()
         login = (data.get("login") or "").strip()
         mode = (data.get("mode") or "").strip().lower()
-        desired: Optional[bool]
+        desired: bool | None
         if mode in {"mark", "on", "enable", "1"}:
             desired = True
         elif mode in {"unmark", "off", "disable", "0"}:
@@ -1134,9 +1091,7 @@ class DashboardLiveMixin:
             raise
         except Exception as e:
             log.exception("dashboard verify failed: %s", e)
-            location = self._redirect_location(
-                request, err="Verifizierung fehlgeschlagen"
-            )
+            location = self._redirect_location(request, err="Verifizierung fehlgeschlagen")
             raise web.HTTPFound(location=location)
 
     async def archive(self, request: web.Request):
@@ -1151,9 +1106,7 @@ class DashboardLiveMixin:
             location = self._redirect_location(request, err=str(exc))
         except Exception as exc:
             log.exception("dashboard archive failed: %s", exc)
-            location = self._redirect_location(
-                request, err="Archivierung fehlgeschlagen"
-            )
+            location = self._redirect_location(request, err="Archivierung fehlgeschlagen")
         raise web.HTTPFound(location=location)
 
 

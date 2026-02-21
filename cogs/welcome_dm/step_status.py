@@ -1,16 +1,15 @@
 # cogs/welcome_dm/step_status.py
 import logging
 from datetime import datetime
-from typing import Optional
 
 import discord
 
 from .base import (
-    StepView,
     STATUS_NEED_BETA,
+    STATUS_NEW_PLAYER,
     STATUS_PLAYING,
     STATUS_RETURNING,
-    STATUS_NEW_PLAYER,
+    StepView,
 )
 
 logger = logging.getLogger(__name__)
@@ -22,22 +21,18 @@ class PlayerStatusView(StepView):
     def __init__(
         self,
         *,
-        allowed_user_id: Optional[int] = None,
-        created_at: Optional[datetime] = None,
+        allowed_user_id: int | None = None,
+        created_at: datetime | None = None,
     ):
         super().__init__(allowed_user_id=allowed_user_id, created_at=created_at)
-        self.choice: Optional[str] = None
+        self.choice: str | None = None
         self._set_next_enabled(False)
 
     def _set_next_enabled(self, enabled: bool):
         for c in self.children:
             if isinstance(c, discord.ui.Button) and c.custom_id == "wdm:qS:next":
                 c.disabled = not enabled
-                c.style = (
-                    discord.ButtonStyle.success
-                    if enabled
-                    else discord.ButtonStyle.primary
-                )
+                c.style = discord.ButtonStyle.success if enabled else discord.ButtonStyle.primary
                 c.label = "Weiter ✅" if enabled else "Weiter"
 
     @discord.ui.select(
@@ -48,21 +43,15 @@ class PlayerStatusView(StepView):
             discord.SelectOption(
                 label="Ich brauche einen Beta Invite", value=STATUS_NEED_BETA, emoji="🎟️"
             ),
-            discord.SelectOption(
-                label="Ich spiele bereits", value=STATUS_PLAYING, emoji="✅"
-            ),
+            discord.SelectOption(label="Ich spiele bereits", value=STATUS_PLAYING, emoji="✅"),
             discord.SelectOption(
                 label="Ich fange gerade wieder an", value=STATUS_RETURNING, emoji="🔁"
             ),
-            discord.SelectOption(
-                label="Neu im Game", value=STATUS_NEW_PLAYER, emoji="✨"
-            ),
+            discord.SelectOption(label="Neu im Game", value=STATUS_NEW_PLAYER, emoji="✨"),
         ],
         custom_id="wdm:qS:status",
     )
-    async def status_select(
-        self, interaction: discord.Interaction, select: discord.ui.Select
-    ):
+    async def status_select(self, interaction: discord.Interaction, select: discord.ui.Select):
         self.choice = select.values[0]
         label_map = {opt.value: opt.label for opt in select.options}
         select.placeholder = f"✅ Ausgewählt: {label_map.get(self.choice, '—')}"
@@ -85,9 +74,7 @@ class PlayerStatusView(StepView):
                 getattr(interaction.user, "id", "?"),
             )
 
-    @discord.ui.button(
-        label="Weiter", style=discord.ButtonStyle.primary, custom_id="wdm:qS:next"
-    )
+    @discord.ui.button(label="Weiter", style=discord.ButtonStyle.primary, custom_id="wdm:qS:next")
     async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._enforce_min_wait(interaction):
             return

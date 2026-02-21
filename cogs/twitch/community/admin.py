@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, Optional, Tuple
+from collections.abc import Iterable
+from datetime import UTC, datetime
+from typing import Any
 
 import discord
 
@@ -15,7 +16,7 @@ class TwitchAdminMixin:
     """Helper methods used by the admin dashboard without Discord commands."""
 
     async def _cmd_set_channel(
-        self, guild: discord.Guild, channel: Optional[discord.TextChannel] = None
+        self, guild: discord.Guild, channel: discord.TextChannel | None = None
     ) -> str:
         """Set the target channel for Twitch notifications."""
         channel = channel or getattr(guild, "system_channel", None)
@@ -29,9 +30,7 @@ class TwitchAdminMixin:
             return "Konnte Kanal nicht speichern."
         return f"Live-Posts gehen jetzt in {channel.mention}"
 
-    async def _cmd_add_wrapper(
-        self, login: str, require_discord_link: Optional[bool] = False
-    ) -> str:
+    async def _cmd_add_wrapper(self, login: str, require_discord_link: bool | None = False) -> str:
         """Wrapper kept for backwards compatibility with removed Discord command."""
         try:
             return await self._cmd_add(login, bool(require_discord_link))
@@ -47,7 +46,7 @@ class TwitchAdminMixin:
             log.exception("twitch remove fehlgeschlagen")
             return "Fehler beim Entfernen."
 
-    async def _cmd_list_streamers(self) -> Tuple[str, Iterable[dict]]:
+    async def _cmd_list_streamers(self) -> tuple[str, Iterable[dict]]:
         """Return a formatted list of streamers and the raw rows."""
         try:
             with storage.get_conn() as c:
@@ -87,7 +86,7 @@ class TwitchAdminMixin:
             return "Fehler beim Forcecheck."
         return "Prüfung durchgeführt."
 
-    async def _cmd_invites(self, guild: discord.Guild) -> Tuple[str, Iterable[str]]:
+    async def _cmd_invites(self, guild: discord.Guild) -> tuple[str, Iterable[str]]:
         """Return the active invite URLs for a guild."""
         try:
             await self._refresh_guild_invites(guild)
@@ -112,7 +111,7 @@ class TwitchAdminMixin:
             log.exception("Invite-Refresh fehlgeschlagen")
             return "❌ Fehler beim Aktualisieren der Invite-Codes."
 
-    async def _get_valid_invite_codes(self, guild_id: Optional[int] = None) -> set[str]:
+    async def _get_valid_invite_codes(self, guild_id: int | None = None) -> set[str]:
         """Get valid invite codes from DB cache (falls back to API if needed)."""
         # Wenn keine Guild-ID angegeben, nehme die erste verfügbare
         if guild_id is None:
@@ -172,7 +171,7 @@ class TwitchAdminMixin:
     # Admin-Commands: Add/Remove Helpers
     # -------------------------------------------------------
     @staticmethod
-    def _parse_db_datetime(value: Optional[str]) -> Optional[datetime]:
+    def _parse_db_datetime(value: str | None) -> datetime | None:
         if not value:
             return None
         try:
@@ -180,11 +179,11 @@ class TwitchAdminMixin:
         except ValueError:
             return None
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
+        return dt.astimezone(UTC)
 
     @classmethod
-    def _is_partner_verified(cls, row: Dict[str, Any], now_utc: datetime) -> bool:
+    def _is_partner_verified(cls, row: dict[str, Any], now_utc: datetime) -> bool:
         try:
             if bool(row.get("manual_verified_permanent")):
                 return True

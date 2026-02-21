@@ -5,7 +5,8 @@ import datetime as dt
 import os
 import signal
 import time
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from collections.abc import Iterable
+from typing import Any
 
 from service.dashboard import DashboardServer
 
@@ -14,18 +15,18 @@ class _DummyBot:
     def __init__(self) -> None:
         self.application_id = 424242
         self.lifecycle = None
-        self.guilds: List[Any] = []
-        self.cogs: Dict[str, Any] = {}
-        self.cogs_list: List[str] = []
-        self.cog_status: Dict[str, str] = {}
+        self.guilds: list[Any] = []
+        self.cogs: dict[str, Any] = {}
+        self.cogs_list: list[str] = []
+        self.cog_status: dict[str, str] = {}
         self.blocked_namespaces: set[str] = set()
         self.per_cog_unload_timeout = 3.0
-        self.startup_time = dt.datetime.now(dt.timezone.utc)
+        self.startup_time = dt.datetime.now(dt.UTC)
         self.user = None
         self.latency = 0.0
-        self.extensions: Dict[str, Any] = {}
+        self.extensions: dict[str, Any] = {}
 
-    def active_cogs(self) -> List[str]:
+    def active_cogs(self) -> list[str]:
         return []
 
     def get_cog(self, _name: str) -> Any:
@@ -37,40 +38,36 @@ class _DummyBot:
     def get_user(self, _user_id: int) -> Any:
         return None
 
-    def resolve_cog_identifier(self, _raw: str) -> Tuple[Optional[str], List[str]]:
+    def resolve_cog_identifier(self, _raw: str) -> tuple[str | None, list[str]]:
         return None, []
 
     def normalize_namespace(self, namespace: Any) -> str:
         return str(namespace or "").strip()
 
-    def is_namespace_blocked(
-        self, _namespace: str, *, assume_normalized: bool = False
-    ) -> bool:
+    def is_namespace_blocked(self, _namespace: str, *, assume_normalized: bool = False) -> bool:
         _ = assume_normalized
         return False
 
     def auto_discover_cogs(self) -> None:
         return None
 
-    async def reload_cog(self, _name: str) -> Tuple[bool, str]:
+    async def reload_cog(self, _name: str) -> tuple[bool, str]:
         return False, "unsupported"
 
-    async def unload_many(
-        self, _names: Iterable[str], *, timeout: float = 3.0
-    ) -> Dict[str, Any]:
+    async def unload_many(self, _names: Iterable[str], *, timeout: float = 3.0) -> dict[str, Any]:
         _ = timeout
         return {}
 
-    async def reload_all_cogs_with_discovery(self) -> Tuple[bool, str]:
+    async def reload_all_cogs_with_discovery(self) -> tuple[bool, str]:
         return False, "unsupported"
 
-    async def reload_namespace(self, _namespace: str) -> List[Any]:
+    async def reload_namespace(self, _namespace: str) -> list[Any]:
         return []
 
-    async def block_namespace(self, _path: str) -> Dict[str, Any]:
+    async def block_namespace(self, _path: str) -> dict[str, Any]:
         return {"ok": False, "error": "unsupported"}
 
-    async def unblock_namespace(self, _path: str) -> Dict[str, Any]:
+    async def unblock_namespace(self, _path: str) -> dict[str, Any]:
         return {"ok": False, "error": "unsupported"}
 
 

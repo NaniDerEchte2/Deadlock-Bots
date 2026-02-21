@@ -1,6 +1,5 @@
 # cogs/welcome_dm/step_intro.py
 from datetime import datetime
-from typing import Optional
 
 import discord
 
@@ -13,8 +12,8 @@ class IntroView(StepView):
     def __init__(
         self,
         *,
-        allowed_user_id: Optional[int] = None,
-        created_at: Optional[datetime] = None,
+        allowed_user_id: int | None = None,
+        created_at: datetime | None = None,
     ):
         super().__init__(allowed_user_id=allowed_user_id, created_at=created_at)
         self.first_click_done = False

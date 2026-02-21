@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
-from .community.admin import TwitchAdminMixin
+from .analytics.legacy_token import LegacyTokenAnalyticsMixin
+from .analytics.mixin import TwitchAnalyticsMixin
 from .base import TwitchBaseCog
-from .dashboard.mixin import TwitchDashboardMixin
+from .community.admin import TwitchAdminMixin
 from .community.leaderboard import (
     LeaderboardOptions,
     TwitchLeaderboardMixin,
     TwitchLeaderboardView,
 )
-from .analytics.legacy_token import LegacyTokenAnalyticsMixin
-from .monitoring.monitoring import TwitchMonitoringMixin
-from .raid.mixin import TwitchRaidMixin
-from .raid.commands import RaidCommandsMixin
-from .analytics.mixin import TwitchAnalyticsMixin
 from .community.partner_recruit import TwitchPartnerRecruitMixin
+from .dashboard.mixin import TwitchDashboardMixin
+from .monitoring.monitoring import TwitchMonitoringMixin
+from .raid.commands import RaidCommandsMixin
+from .raid.mixin import TwitchRaidMixin
 
 __all__ = [
     "TwitchStreamCog",

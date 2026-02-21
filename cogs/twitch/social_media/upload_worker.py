@@ -11,9 +11,8 @@ Workflow:
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Dict
 
 from discord.ext import commands
 
@@ -57,7 +56,7 @@ class UploadWorker(commands.Cog):
         if self._task:
             self._task.cancel()
 
-    def _init_uploaders(self) -> Dict:
+    def _init_uploaders(self) -> dict:
         """Initialize platform uploaders from encrypted database credentials."""
         from .credential_manager import SocialMediaCredentialManager
 
@@ -70,9 +69,7 @@ class UploadWorker(commands.Cog):
             if creds and creds.get("client_id") and creds.get("access_token"):
                 from .uploaders import TikTokUploader
 
-                uploader = TikTokUploader(
-                    creds["client_id"], creds.get("client_secret", "")
-                )
+                uploader = TikTokUploader(creds["client_id"], creds.get("client_secret", ""))
                 uploader.access_token = creds["access_token"]
                 uploaders["tiktok"] = uploader
                 log.info("TikTok uploader initialized (encrypted credentials)")
@@ -85,9 +82,7 @@ class UploadWorker(commands.Cog):
             if creds and creds.get("client_id") and creds.get("access_token"):
                 from .uploaders import YouTubeUploader
 
-                uploader = YouTubeUploader(
-                    creds["client_id"], creds.get("client_secret", "")
-                )
+                uploader = YouTubeUploader(creds["client_id"], creds.get("client_secret", ""))
 
                 # Authenticate with encrypted tokens
                 if creds.get("refresh_token"):
@@ -178,7 +173,7 @@ class UploadWorker(commands.Cog):
                 stats["failed"],
             )
 
-    async def _process_upload(self, queue_item: Dict, uploader) -> bool:
+    async def _process_upload(self, queue_item: dict, uploader) -> bool:
         """
         Process single upload.
 
@@ -217,9 +212,7 @@ class UploadWorker(commands.Cog):
             if hashtags:
                 import json
 
-                hashtags = (
-                    json.loads(hashtags) if isinstance(hashtags, str) else hashtags
-                )
+                hashtags = json.loads(hashtags) if isinstance(hashtags, str) else hashtags
             else:
                 hashtags = []
 
@@ -237,9 +230,7 @@ class UploadWorker(commands.Cog):
                 external_video_id=external_id,
             )
 
-            log.info(
-                "Upload successful: Clip %s -> %s (%s)", clip_id, platform, external_id
-            )
+            log.info("Upload successful: Clip %s -> %s (%s)", clip_id, platform, external_id)
             return True
 
         except Exception as e:
@@ -305,7 +296,7 @@ class UploadWorker(commands.Cog):
                    SET local_file_path = ?, downloaded_at = ?
                  WHERE id = ?
                 """,
-                (str(output_path), datetime.now(timezone.utc).isoformat(), clip_id),
+                (str(output_path), datetime.now(UTC).isoformat(), clip_id),
             )
 
         log.info("Clip downloaded: %s", output_path)

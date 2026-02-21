@@ -6,11 +6,12 @@ import asyncio
 import hashlib
 import hmac
 import logging
-from typing import Awaitable, Callable, Dict, Optional, Set
+from collections.abc import Awaitable, Callable
+from datetime import UTC
 
 from aiohttp import web
 
-EventCallback = Callable[[str, str, Dict], Awaitable[None]]
+EventCallback = Callable[[str, str, dict], Awaitable[None]]
 
 # Twitch EventSub Message-Types
 MSG_TYPE_NOTIFICATION = "notification"
@@ -32,13 +33,13 @@ class EventSubWebhookHandler:
     Callbacks werden per sub_type registriert und bei eingehenden Notifications aufgerufen.
     """
 
-    def __init__(self, secret: str, logger: Optional[logging.Logger] = None):
+    def __init__(self, secret: str, logger: logging.Logger | None = None):
         if not secret:
             raise ValueError("EventSub webhook secret darf nicht leer sein")
         self._secret = secret.encode("utf-8")
         self.log = logger or logging.getLogger("TwitchStreams.EventSubWebhook")
-        self._callbacks: Dict[str, EventCallback] = {}
-        self._seen_message_ids: Set[str] = set()
+        self._callbacks: dict[str, EventCallback] = {}
+        self._seen_message_ids: set[str] = set()
         self._seen_ids_list: list = []  # für LRU-style Begrenzung
 
     def set_callback(self, sub_type: str, callback: EventCallback) -> None:
@@ -64,15 +65,13 @@ class EventSubWebhookHandler:
     def _is_message_too_old(self, timestamp: str) -> bool:
         """Prüft ob der Timestamp älter als _MAX_MESSAGE_AGE_SECONDS ist (Replay-Schutz)."""
         try:
-            from datetime import datetime, timezone
+            from datetime import datetime
 
             dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-            age = (datetime.now(timezone.utc) - dt).total_seconds()
+            age = (datetime.now(UTC) - dt).total_seconds()
             return age > _MAX_MESSAGE_AGE_SECONDS
         except Exception:
-            self.log.debug(
-                "EventSub Webhook: Konnte Timestamp nicht parsen: %r", timestamp
-            )
+            self.log.debug("EventSub Webhook: Konnte Timestamp nicht parsen: %r", timestamp)
             return True  # Bei Parse-Fehler: Nachricht ablehnen
 
     def _is_duplicate(self, message_id: str) -> bool:
@@ -144,9 +143,7 @@ class EventSubWebhookHandler:
         if message_type == MSG_TYPE_CHALLENGE:
             challenge = data.get("challenge", "")
             if not challenge:
-                self.log.error(
-                    "EventSub Webhook: Challenge-Request ohne challenge-Feld"
-                )
+                self.log.error("EventSub Webhook: Challenge-Request ohne challenge-Feld")
                 return web.Response(status=400)
             self.log.debug(
                 "EventSub Webhook: Challenge für '%s' beantwortet",
@@ -178,9 +175,7 @@ class EventSubWebhookHandler:
 
         # --- 7. Duplikat-Schutz ---
         if self._is_duplicate(message_id):
-            self.log.debug(
-                "EventSub Webhook: Duplikat-Nachricht ignoriert (id=%r)", message_id
-            )
+            self.log.debug("EventSub Webhook: Duplikat-Nachricht ignoriert (id=%r)", message_id)
             return web.Response(status=204)
         self._track_message_id(message_id)
 
@@ -196,9 +191,7 @@ class EventSubWebhookHandler:
         # Webhook notifications come as top-level {"subscription": ..., "event": ...}
         # while EventSub WebSocket messages use {"payload": {"subscription": ..., "event": ...}}.
         payload = data.get("payload")
-        if isinstance(payload, dict) and (
-            "event" in payload or "subscription" in payload
-        ):
+        if isinstance(payload, dict) and ("event" in payload or "subscription" in payload):
             envelope = payload
         else:
             envelope = data
@@ -208,9 +201,7 @@ class EventSubWebhookHandler:
 
         callback = self._callbacks.get(actual_sub_type)
         if not callback:
-            self.log.debug(
-                "EventSub Webhook: Kein Callback für type=%r", actual_sub_type
-            )
+            self.log.debug("EventSub Webhook: Kein Callback für type=%r", actual_sub_type)
             return
 
         event = envelope.get("event") or data.get("event") or {}

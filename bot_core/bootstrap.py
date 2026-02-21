@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import builtins
-import inspect
 import hashlib
+import inspect
 import logging
 import os
 import sys
 import types
 from pathlib import Path
-from typing import List
 
 
 def _log_src(modname: str, module: types.ModuleType) -> None:
@@ -30,9 +29,7 @@ def _load_secrets_from_keyring() -> None:
     try:
         import keyring
     except ImportError:
-        logging.getLogger().debug(
-            "keyring nicht installiert, überspringe Tresor-Check."
-        )
+        logging.getLogger().debug("keyring nicht installiert, überspringe Tresor-Check.")
         return
 
     service_name = "DeadlockBot"
@@ -103,7 +100,7 @@ def _load_env_robust() -> str | None:
         logging.getLogger().debug("dotenv Import-Fehler: %r", exc)
         return None
 
-    candidates: List[Path] = []
+    candidates: list[Path] = []
     custom = os.getenv("DOTENV_PATH")
     if custom:
         candidates.append(Path(custom))
@@ -135,7 +132,7 @@ def _mask_tail(secret: str, keep: int = 4) -> str:
     return "*" * (len(text) - keep) + text[-keep:]
 
 
-def _log_secret_present(name: str, env_keys: List[str], mode: str = "off") -> None:
+def _log_secret_present(name: str, env_keys: list[str], mode: str = "off") -> None:
     try:
         value = None
         for key in env_keys:
@@ -153,7 +150,7 @@ def _log_secret_present(name: str, env_keys: List[str], mode: str = "off") -> No
 
 # nosemgrep
 class _RedactSecretsFilter(logging.Filter):
-    def __init__(self, keys: List[str]):
+    def __init__(self, keys: list[str]):
         super().__init__()
         self.secrets = [os.getenv(k) for k in keys if os.getenv(k)]
 
@@ -181,16 +178,14 @@ def _configure_root_logging() -> None:
     root = logging.getLogger()
     if root.handlers:
         return
-    logging.basicConfig(
-        level=logging.INFO, handlers=[logging.StreamHandler(sys.stdout)]
-    )
+    logging.basicConfig(level=logging.INFO, handlers=[logging.StreamHandler(sys.stdout)])
 
 
 def _install_workerproxy_shim() -> None:
     try:
         from shared.worker_client import WorkerProxy  # type: ignore
 
-        setattr(builtins, "WorkerProxy", WorkerProxy)
+        builtins.WorkerProxy = WorkerProxy
         return
     except Exception as exc:
         logging.getLogger().info("WorkerProxy nicht verfügbar – verwende Stub: %r", exc)
@@ -217,13 +212,13 @@ def _install_workerproxy_shim() -> None:
         def bulk(self, *args, **kwargs):
             return {"ok": False, "error": "worker_stub"}
 
-    setattr(builtins, "WorkerProxy", _WorkerProxyStub)
+    builtins.WorkerProxy = _WorkerProxyStub
 
     if "shared" not in sys.modules:
         sys.modules["shared"] = types.ModuleType("shared")
     if "shared.worker_client" not in sys.modules:
         wc_mod = types.ModuleType("shared")
-        setattr(wc_mod, "WorkerProxy", _WorkerProxyStub)
+        wc_mod.WorkerProxy = _WorkerProxyStub
         sys.modules["shared.worker_client"] = wc_mod
 
 
@@ -231,17 +226,13 @@ def _init_db_if_available() -> None:
     try:
         from service import db as _db  # Deadlock-Bots/service/db.py
     except Exception as exc:
-        logging.critical(
-            "Zentrale DB-Modul 'service.db' konnte nicht importiert werden: %s", exc
-        )
+        logging.critical("Zentrale DB-Modul 'service.db' konnte nicht importiert werden: %s", exc)
         return
     try:
         _db.connect()
         logging.info("Zentrale DB initialisiert (quiet) via service.db.")
     except Exception as exc:
-        logging.critical(
-            "Zentrale DB (service.db) konnte nicht initialisiert werden: %s", exc
-        )
+        logging.critical("Zentrale DB (service.db) konnte nicht initialisiert werden: %s", exc)
 
 
 def _log_runtime_info() -> None:

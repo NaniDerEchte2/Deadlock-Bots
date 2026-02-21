@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import os
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from discord.ext import commands
 
@@ -29,13 +29,13 @@ class AIConnector(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self._openai_client: Optional[OpenAI] = None
+        self._openai_client: OpenAI | None = None
         self._openai_init_failed = False
-        self._gemini_client: Optional[object] = None
+        self._gemini_client: object | None = None
         self._gemini_init_failed = False
 
     # ---------- Clients ----------
-    def _get_openai_client(self) -> Optional[OpenAI]:
+    def _get_openai_client(self) -> OpenAI | None:
         if self._openai_init_failed:
             return None
         if self._openai_client:
@@ -57,7 +57,7 @@ class AIConnector(commands.Cog):
             return None
         return self._openai_client
 
-    def _get_gemini_client(self) -> Optional[object]:
+    def _get_gemini_client(self) -> object | None:
         if self._gemini_init_failed:
             return None
         if self._gemini_client:
@@ -86,17 +86,17 @@ class AIConnector(commands.Cog):
         *,
         provider: str,
         prompt: str,
-        system_prompt: Optional[str] = None,
-        model: Optional[str] = None,
-        max_output_tokens: Optional[int] = None,
+        system_prompt: str | None = None,
+        model: str | None = None,
+        max_output_tokens: int | None = None,
         temperature: float = 0.6,
-    ) -> Tuple[Optional[str], Dict[str, Any]]:
+    ) -> tuple[str | None, dict[str, Any]]:
         """
         Einfache Text-Generierung über Gemini oder OpenAI Responses API.
         Returns (text|None, meta)
         """
         provider = provider.lower()
-        meta: Dict[str, Any] = {
+        meta: dict[str, Any] = {
             "provider": provider,
             "model": model,
         }
@@ -138,11 +138,11 @@ class AIConnector(commands.Cog):
         self,
         *,
         prompt: str,
-        system_prompt: Optional[str],
+        system_prompt: str | None,
         model: str,
         max_output_tokens: int,
         temperature: float,
-    ) -> Optional[str]:
+    ) -> str | None:
         client = self._get_gemini_client()
         if not client or genai_types is None:
             return None
@@ -151,7 +151,7 @@ class AIConnector(commands.Cog):
         if system_prompt:
             contents = f"{system_prompt}\n\n{prompt}"
 
-        def _call_model() -> Optional[str]:
+        def _call_model() -> str | None:
             try:
                 response = client.models.generate_content(
                     model=model,
@@ -173,11 +173,11 @@ class AIConnector(commands.Cog):
         self,
         *,
         prompt: str,
-        system_prompt: Optional[str],
+        system_prompt: str | None,
         model: str,
         max_output_tokens: int,
         temperature: float,
-    ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    ) -> tuple[str | None, dict[str, Any] | None]:
         client = self._get_openai_client()
         if not client:
             return None, None
@@ -216,9 +216,7 @@ class AIConnector(commands.Cog):
             if output_text:
                 text = str(output_text).strip()
             else:
-                out = getattr(response, "output", None) or getattr(
-                    response, "outputs", None
-                )
+                out = getattr(response, "output", None) or getattr(response, "outputs", None)
                 if out is None and isinstance(response, dict):
                     out = response.get("output") or response.get("outputs")
                 fragments = []
@@ -284,9 +282,7 @@ class AIConnector(commands.Cog):
                 mention_author=False,
             )
         else:
-            await ctx.reply(
-                "Konnte den AI-Onboarding Test nicht starten.", mention_author=False
-            )
+            await ctx.reply("Konnte den AI-Onboarding Test nicht starten.", mention_author=False)
 
 
 async def setup(bot: commands.Bot):

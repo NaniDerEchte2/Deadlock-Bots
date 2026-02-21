@@ -8,8 +8,8 @@ All data is synthetic and does not reflect any real streamer.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 DEMO_STREAMER = "deadlock_de_demo"
 DEMO_DISPLAY_NAME = "Deadlock_DE_Demo"
@@ -21,12 +21,12 @@ DEMO_DISPLAY_NAME = "Deadlock_DE_Demo"
 
 def _date(offset_days: int = 0) -> str:
     """Return ISO date string relative to today."""
-    d = (datetime.now(timezone.utc) - timedelta(days=offset_days)).date()
+    d = (datetime.now(UTC) - timedelta(days=offset_days)).date()
     return d.isoformat()
 
 
 def _dt(offset_days: int = 0, hour: int = 19) -> str:
-    d = datetime.now(timezone.utc) - timedelta(days=offset_days)
+    d = datetime.now(UTC) - timedelta(days=offset_days)
     d = d.replace(hour=hour, minute=0, second=0, microsecond=0)
     return d.isoformat()
 
@@ -36,7 +36,7 @@ def _dt(offset_days: int = 0, hour: int = 19) -> str:
 # ---------------------------------------------------------------------------
 
 
-def get_auth_status() -> Dict[str, Any]:
+def get_auth_status() -> dict[str, Any]:
     return {
         "authenticated": True,
         "level": "partner",
@@ -55,11 +55,11 @@ def get_auth_status() -> Dict[str, Any]:
     }
 
 
-def get_streamers() -> List[Dict[str, Any]]:
+def get_streamers() -> list[dict[str, Any]]:
     return [{"login": DEMO_STREAMER, "isPartner": True}]
 
 
-def get_overview(days: int = 30) -> Dict[str, Any]:
+def get_overview(days: int = 30) -> dict[str, Any]:
     return {
         "streamer": DEMO_STREAMER,
         "days": days,
@@ -154,7 +154,7 @@ def get_overview(days: int = 30) -> Dict[str, Any]:
     }
 
 
-def _get_sessions() -> List[Dict[str, Any]]:
+def _get_sessions() -> list[dict[str, Any]]:
     sessions = []
     # 14 sessions over past 30 days, streaming Mon/Wed/Fri/Sat
     stream_days = [2, 4, 5, 7, 9, 11, 12, 14, 16, 18, 19, 21, 23, 25]
@@ -226,7 +226,7 @@ def _get_sessions() -> List[Dict[str, Any]]:
     ]
 
     for i, (offset, base, peak, dur, fs, title) in enumerate(
-        zip(stream_days, viewer_bases, peaks, durations, followers_start, titles)
+        zip(stream_days, viewer_bases, peaks, durations, followers_start, titles, strict=False)
     ):
         chatters = int(base * 0.13 + 18)
         sessions.append(
@@ -254,7 +254,7 @@ def _get_sessions() -> List[Dict[str, Any]]:
     return sessions
 
 
-def get_monthly_stats() -> List[Dict[str, Any]]:
+def get_monthly_stats() -> list[dict[str, Any]]:
     months = [
         ("März", 3, 2025, 8, 230, 640, 92, 8, 280),
         ("April", 4, 2025, 10, 280, 790, 104, 10, 305),
@@ -288,7 +288,7 @@ def get_monthly_stats() -> List[Dict[str, Any]]:
     return result
 
 
-def get_weekday_stats() -> List[Dict[str, Any]]:
+def get_weekday_stats() -> list[dict[str, Any]]:
     data = [
         (0, "Sonntag", 2, 2.5, 310, 650, 28),
         (1, "Montag", 3, 3.5, 372, 890, 42),
@@ -312,7 +312,7 @@ def get_weekday_stats() -> List[Dict[str, Any]]:
     ]
 
 
-def get_hourly_heatmap() -> List[Dict[str, Any]]:
+def get_hourly_heatmap() -> list[dict[str, Any]]:
     rows = []
     for wd in range(7):
         for h in range(24):
@@ -336,8 +336,8 @@ def get_hourly_heatmap() -> List[Dict[str, Any]]:
     return rows
 
 
-def get_calendar_heatmap() -> List[Dict[str, Any]]:
-    today = datetime.now(timezone.utc).date()
+def get_calendar_heatmap() -> list[dict[str, Any]]:
+    today = datetime.now(UTC).date()
     rows = []
     base_date = today - timedelta(days=364)
     stream_value = 0
@@ -365,7 +365,7 @@ def get_calendar_heatmap() -> List[Dict[str, Any]]:
     return rows
 
 
-def get_chat_analytics() -> Dict[str, Any]:
+def get_chat_analytics() -> dict[str, Any]:
     return {
         "totalMessages": 84320,
         "uniqueChatters": 634,
@@ -458,7 +458,7 @@ def get_chat_analytics() -> Dict[str, Any]:
     }
 
 
-def get_viewer_overlap() -> List[Dict[str, Any]]:
+def get_viewer_overlap() -> list[dict[str, Any]]:
     peers = [
         ("deadlock_de_1", 142, 340, 0.418),
         ("deadlock_de_2", 118, 280, 0.421),
@@ -482,7 +482,7 @@ def get_viewer_overlap() -> List[Dict[str, Any]]:
     ]
 
 
-def get_tag_analysis() -> List[Dict[str, Any]]:
+def get_tag_analysis() -> list[dict[str, Any]]:
     return [
         {
             "tagName": "Deadlock",
@@ -536,7 +536,7 @@ def get_tag_analysis() -> List[Dict[str, Any]]:
     ]
 
 
-def _tag_analysis_extended() -> List[Dict[str, Any]]:
+def _tag_analysis_extended() -> list[dict[str, Any]]:
     base = get_tag_analysis()
     extras = [
         ("up", 8.4, "19:00-22:00", 3.5, 4),
@@ -548,7 +548,7 @@ def _tag_analysis_extended() -> List[Dict[str, Any]]:
         ("stable", 0.8, "19:00-22:00", 3.3, 5),
     ]
     result = []
-    for tag, (trend, tv, slot, dur, rank) in zip(base, extras):
+    for tag, (trend, tv, slot, dur, rank) in zip(base, extras, strict=False):
         result.append(
             {
                 **tag,
@@ -562,11 +562,11 @@ def _tag_analysis_extended() -> List[Dict[str, Any]]:
     return result
 
 
-def get_tag_analysis_extended() -> List[Dict[str, Any]]:
+def get_tag_analysis_extended() -> list[dict[str, Any]]:
     return _tag_analysis_extended()
 
 
-def _title_performance() -> List[Dict[str, Any]]:
+def _title_performance() -> list[dict[str, Any]]:
     return [
         {
             "title": "Deadlock Ranked Grind | Platin → Diamond",
@@ -616,11 +616,11 @@ def _title_performance() -> List[Dict[str, Any]]:
     ]
 
 
-def get_title_performance() -> List[Dict[str, Any]]:
+def get_title_performance() -> list[dict[str, Any]]:
     return _title_performance()
 
 
-def get_rankings(metric: str = "viewers") -> List[Dict[str, Any]]:
+def get_rankings(metric: str = "viewers") -> list[dict[str, Any]]:
     data = {
         "viewers": [
             (1, "deadlock_de_top1", 892, "up", 12.4),
@@ -678,7 +678,7 @@ def get_rankings(metric: str = "viewers") -> List[Dict[str, Any]]:
     ]
 
 
-def get_category_comparison() -> Dict[str, Any]:
+def get_category_comparison() -> dict[str, Any]:
     return {
         "yourStats": {
             "avgViewers": 382,
@@ -703,7 +703,7 @@ def get_category_comparison() -> Dict[str, Any]:
     }
 
 
-def _watch_time_distribution() -> Dict[str, Any]:
+def _watch_time_distribution() -> dict[str, Any]:
     return {
         "under5min": 12.4,
         "min5to15": 18.7,
@@ -734,11 +734,11 @@ def _watch_time_distribution() -> Dict[str, Any]:
     }
 
 
-def get_watch_time_distribution() -> Dict[str, Any]:
+def get_watch_time_distribution() -> dict[str, Any]:
     return _watch_time_distribution()
 
 
-def _follower_funnel() -> Dict[str, Any]:
+def _follower_funnel() -> dict[str, Any]:
     return {
         "uniqueViewers": 1840,
         "returningViewers": 680,
@@ -750,11 +750,11 @@ def _follower_funnel() -> Dict[str, Any]:
     }
 
 
-def get_follower_funnel() -> Dict[str, Any]:
+def get_follower_funnel() -> dict[str, Any]:
     return _follower_funnel()
 
 
-def get_audience_insights() -> Dict[str, Any]:
+def get_audience_insights() -> dict[str, Any]:
     return {
         "watchTimeDistribution": _watch_time_distribution(),
         "followerFunnel": _follower_funnel(),
@@ -769,7 +769,7 @@ def get_audience_insights() -> Dict[str, Any]:
     }
 
 
-def get_audience_demographics() -> Dict[str, Any]:
+def get_audience_demographics() -> dict[str, Any]:
     return {
         "estimatedRegions": [
             {"region": "DE", "percentage": 58.4},
@@ -793,9 +793,9 @@ def get_audience_demographics() -> Dict[str, Any]:
     }
 
 
-def get_viewer_timeline(days: int = 30) -> List[Dict[str, Any]]:
+def get_viewer_timeline(days: int = 30) -> list[dict[str, Any]]:
     result = []
-    today = datetime.now(timezone.utc)
+    today = datetime.now(UTC)
     for i in range(min(days, 30), 0, -1):
         dt = today - timedelta(days=i)
         wd = dt.weekday()
@@ -809,9 +809,7 @@ def get_viewer_timeline(days: int = 30) -> List[Dict[str, Any]]:
             mn = 0
         result.append(
             {
-                "timestamp": dt.replace(
-                    hour=20, minute=0, second=0, microsecond=0
-                ).isoformat(),
+                "timestamp": dt.replace(hour=20, minute=0, second=0, microsecond=0).isoformat(),
                 "avgViewers": avg,
                 "peakViewers": peak,
                 "minViewers": mn,
@@ -821,7 +819,7 @@ def get_viewer_timeline(days: int = 30) -> List[Dict[str, Any]]:
     return result
 
 
-def get_category_leaderboard() -> Dict[str, Any]:
+def get_category_leaderboard() -> dict[str, Any]:
     entries = [
         (1, "deadlock_de_top1", 892, 2140, True),
         (2, "fps_king_de", 721, 1820, True),
@@ -853,7 +851,7 @@ def get_category_leaderboard() -> Dict[str, Any]:
     }
 
 
-def get_monetization() -> Dict[str, Any]:
+def get_monetization() -> dict[str, Any]:
     return {
         "ads": {
             "total": 38,
@@ -895,7 +893,7 @@ def get_monetization() -> Dict[str, Any]:
     }
 
 
-def get_category_timings() -> Dict[str, Any]:
+def get_category_timings() -> dict[str, Any]:
     hourly = []
     for h in range(24):
         if 17 <= h <= 23:
@@ -956,7 +954,7 @@ def get_category_timings() -> Dict[str, Any]:
     }
 
 
-def get_category_activity_series() -> Dict[str, Any]:
+def get_category_activity_series() -> dict[str, Any]:
     hourly = []
     for h in range(24):
         if 17 <= h <= 23:
@@ -1017,7 +1015,7 @@ def get_category_activity_series() -> Dict[str, Any]:
     return {"hourly": hourly, "weekly": weekly, "windowDays": 30, "source": "mixed"}
 
 
-def get_coaching() -> Dict[str, Any]:
+def get_coaching() -> dict[str, Any]:
     return {
         "streamer": DEMO_STREAMER,
         "days": 30,
@@ -1428,9 +1426,7 @@ def get_coaching() -> Dict[str, Any]:
                     "weekdayLabel": lbl,
                     "activeStreamers": sc,
                     "avgViewers": av,
-                    "yourData": {"count": yc, "avgViewers": ya, "avgPeak": yp}
-                    if yc
-                    else None,
+                    "yourData": {"count": yc, "avgViewers": ya, "avgPeak": yp} if yc else None,
                 }
                 for wd, lbl, sc, av, yc, ya, yp in [
                     (0, "Montag", 14, 310, 3, 372, 890),

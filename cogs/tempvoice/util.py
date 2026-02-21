@@ -1,7 +1,9 @@
 from __future__ import annotations
-from typing import Optional, Tuple
+
 import logging
+
 import discord
+
 from .core import STAGING_CHANNEL_IDS
 
 logger = logging.getLogger(__name__)
@@ -12,9 +14,7 @@ class TempVoiceUtil:
         self.core = core  # TempVoiceCore
 
     # ---------- Helpers ----------
-    async def _find_staging(
-        self, guild: discord.Guild
-    ) -> Optional[discord.VoiceChannel]:
+    async def _find_staging(self, guild: discord.Guild) -> discord.VoiceChannel | None:
         for cid in STAGING_CHANNEL_IDS:
             ch = guild.get_channel(cid)
             if isinstance(ch, discord.VoiceChannel):
@@ -22,9 +22,7 @@ class TempVoiceUtil:
         return None
 
     # ---------- Actions ----------
-    async def kick(
-        self, lane: discord.VoiceChannel, target_id: int
-    ) -> Tuple[bool, str]:
+    async def kick(self, lane: discord.VoiceChannel, target_id: int) -> tuple[bool, str]:
         target = lane.guild.get_member(int(target_id))
         if not target or not target.voice or target.voice.channel != lane:
             return False, "User ist nicht (mehr) in der Lane."
@@ -42,19 +40,13 @@ class TempVoiceUtil:
             )
             return False, "Keine Berechtigung, um Nutzer zu verschieben."
         except discord.HTTPException as e:
-            logger.error(
-                "Kick HTTPException (member=%s, lane=%s): %s", target_id, lane.id, e
-            )
+            logger.error("Kick HTTPException (member=%s, lane=%s): %s", target_id, lane.id, e)
             return False, "Konnte nicht verschieben (HTTP-Fehler)."
         except Exception:
-            logger.exception(
-                "Kick unerwarteter Fehler (member=%s, lane=%s)", target_id, lane.id
-            )
+            logger.exception("Kick unerwarteter Fehler (member=%s, lane=%s)", target_id, lane.id)
             return False, "Konnte nicht verschieben."
 
-    async def ban(
-        self, lane: discord.VoiceChannel, owner_id: int, raw: str
-    ) -> Tuple[bool, str]:
+    async def ban(self, lane: discord.VoiceChannel, owner_id: int, raw: str) -> tuple[bool, str]:
         # @Mention, Name oder ID robust auflösen
         uid, err_msg = await self.core.parse_user_identifier(lane.guild, raw)
         if not uid:
@@ -121,9 +113,7 @@ class TempVoiceUtil:
             "User gebannt (dauerhaft für diesen Owner). Hinweis: User ist aktuell nicht auf dem Server; Sperre greift beim nächsten Join.",
         )
 
-    async def unban(
-        self, lane: discord.VoiceChannel, owner_id: int, raw: str
-    ) -> Tuple[bool, str]:
+    async def unban(self, lane: discord.VoiceChannel, owner_id: int, raw: str) -> tuple[bool, str]:
         uid, err_msg = await self.core.parse_user_identifier(lane.guild, raw)
         if not uid:
             return (
@@ -182,7 +172,7 @@ class TempVoiceUtil:
 
     async def toggle_lurker(
         self, lane: discord.VoiceChannel, member: discord.Member
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """
         Lurker-Status für den klickenden User umschalten.
         Keine Auswahl/Droplist – der Button-Drücker ist immer das Ziel.
@@ -236,9 +226,7 @@ class TempVoiceUtil:
         original_nick = member.nick
 
         try:
-            await self.core.lurkers.add_lurker(
-                lane.guild.id, lane.id, member.id, original_nick
-            )
+            await self.core.lurkers.add_lurker(lane.guild.id, lane.id, member.id, original_nick)
         except Exception as e:
             logger.error("toggle_lurker DB add error: %r", e)
             return False, "Datenbankfehler beim Hinzufügen des Lurker-Status."

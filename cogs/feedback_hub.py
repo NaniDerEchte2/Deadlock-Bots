@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Iterable
+from collections.abc import Iterable
 
 import discord
 from discord.ext import commands
@@ -26,7 +26,7 @@ def _trim(value: str | None, max_length: int = 1024) -> str | None:
 
 
 class FeedbackHubModal(discord.ui.Modal):
-    def __init__(self, cog: "FeedbackHub", *, source_message_id: int | None) -> None:
+    def __init__(self, cog: FeedbackHub, *, source_message_id: int | None) -> None:
         super().__init__(title="Deadlock Feedback")
         self.cog = cog
         self.source_message_id = source_message_id
@@ -100,13 +100,11 @@ class FeedbackHubModal(discord.ui.Modal):
                 ephemeral=True,
             )
         except discord.HTTPException:
-            log.warning(
-                "Antwort auf Feedback-Modal konnte nicht gesendet werden", exc_info=True
-            )
+            log.warning("Antwort auf Feedback-Modal konnte nicht gesendet werden", exc_info=True)
 
 
 class FeedbackHubView(discord.ui.View):
-    def __init__(self, cog: "FeedbackHub") -> None:
+    def __init__(self, cog: FeedbackHub) -> None:
         super().__init__(timeout=None)
         self.cog = cog
 
@@ -156,9 +154,7 @@ class FeedbackHub(commands.Cog):
         channel_reference = f"<#{channel_id}>"
         source_lines = [f"Kanal: {channel_reference}"]
         if guild_id and message_id:
-            interface_url = (
-                f"https://discord.com/channels/{guild_id}/{channel_id}/{message_id}"
-            )
+            interface_url = f"https://discord.com/channels/{guild_id}/{channel_id}/{message_id}"
             source_lines.append(f"[Interface öffnen]({interface_url})")
 
         embed.add_field(
@@ -175,7 +171,7 @@ class FeedbackHub(commands.Cog):
             "Weitere Mitteilungen",
         )
 
-        for label, answer in zip(labels, answers):
+        for label, answer in zip(labels, answers, strict=False):
             embed.add_field(name=label, value=answer or "—", inline=False)
 
         try:
@@ -199,9 +195,7 @@ class FeedbackHub(commands.Cog):
                     "Der Feedback-Kanal konnte nicht gefunden werden. Bitte prüfe die Konfiguration.",
                     mention_author=False,
                 )
-                log.error(
-                    "Feedback-Kanal %s nicht erreichbar: %s", FEEDBACK_CHANNEL_ID, exc
-                )
+                log.error("Feedback-Kanal %s nicht erreichbar: %s", FEEDBACK_CHANNEL_ID, exc)
                 return
 
         embed = discord.Embed(
@@ -271,12 +265,8 @@ class FeedbackHub(commands.Cog):
                 "Du benötigst die Berechtigung 'Server verwalten', um diesen Befehl zu nutzen."
             )
             return
-        log.error(
-            "Fehler beim Erstellen des Feedback-Interfaces: %s", error, exc_info=True
-        )
-        await ctx.reply(
-            "Beim Erstellen des Feedback-Interfaces ist ein Fehler aufgetreten."
-        )
+        log.error("Fehler beim Erstellen des Feedback-Interfaces: %s", error, exc_info=True)
+        await ctx.reply("Beim Erstellen des Feedback-Interfaces ist ein Fehler aufgetreten.")
 
 
 async def setup(bot: commands.Bot) -> None:

@@ -1,9 +1,9 @@
 import asyncio
 import logging
 from collections import defaultdict, deque
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Deque, Dict, Iterable, List, Optional, Set, Tuple
+from datetime import UTC, datetime, timedelta
 
 import discord
 from discord.ext import commands
@@ -11,7 +11,7 @@ from discord.ext import commands
 log = logging.getLogger(__name__)
 
 # ---------------- Static Config (edit here, no ENV needed) ----------------
-SECURITY_CONFIG: Dict[str, object] = {
+SECURITY_CONFIG: dict[str, object] = {
     # ID eines Textkanals, in den Beweise/Embeds gepostet werden.
     "REVIEW_CHANNEL_ID": 0,
     # ID des Mod-Kanals fuer Ban-Logs, Appeals und Unban-Button.
@@ -67,7 +67,7 @@ class RecentMessage:
     channel_id: int
     created_at: datetime
     content: str
-    attachments: List[discord.Attachment]
+    attachments: list[discord.Attachment]
 
 
 @dataclass
@@ -131,9 +131,7 @@ class AppealView(discord.ui.View):
 
 
 class UnbanView(discord.ui.View):
-    def __init__(
-        self, cog: "SecurityGuard", guild_id: int, user_id: int, case_id: str
-    ) -> None:
+    def __init__(self, cog: "SecurityGuard", guild_id: int, user_id: int, case_id: str) -> None:
         super().__init__(timeout=cog.view_timeout_seconds)
         self.cog = cog
         self.guild_id = guild_id
@@ -166,21 +164,15 @@ class SecurityGuard(commands.Cog):
         self.window_seconds = int(cfg.get("WINDOW_SECONDS", 120) or 120)
         self.channel_threshold = max(2, int(cfg.get("CHANNEL_THRESHOLD", 3) or 3))
         self.message_threshold = max(2, int(cfg.get("MESSAGE_THRESHOLD", 3) or 3))
-        self.account_max_age_hours = max(
-            1, int(cfg.get("ACCOUNT_MAX_AGE_HOURS", 24) or 24)
-        )
+        self.account_max_age_hours = max(1, int(cfg.get("ACCOUNT_MAX_AGE_HOURS", 24) or 24))
         self.join_watch_minutes = max(5, int(cfg.get("JOIN_WATCH_MINUTES", 60) or 60))
         self.timeout_minutes = max(5, int(cfg.get("TIMEOUT_MINUTES", 1440) or 1440))
-        self.view_timeout_seconds = max(
-            60, int(cfg.get("VIEW_TIMEOUT_SECONDS", 86400) or 86400)
-        )
+        self.view_timeout_seconds = max(60, int(cfg.get("VIEW_TIMEOUT_SECONDS", 86400) or 86400))
         self.appeal_min_chars = max(1, int(cfg.get("APPEAL_MIN_CHARS", 4) or 4))
         self.appeal_max_chars = max(
             self.appeal_min_chars, int(cfg.get("APPEAL_MAX_CHARS", 800) or 800)
         )
-        self.attachment_forward_limit = max(
-            0, int(cfg.get("ATTACHMENT_FORWARD_LIMIT", 4) or 4)
-        )
+        self.attachment_forward_limit = max(0, int(cfg.get("ATTACHMENT_FORWARD_LIMIT", 4) or 4))
         self.attachment_max_bytes = max(
             1_000_000, int(cfg.get("ATTACHMENT_MAX_BYTES", 7_000_000) or 7_000_000)
         )
@@ -189,26 +181,26 @@ class SecurityGuard(commands.Cog):
             self.punishment = "ban"
 
         raw_guilds = cfg.get("GUILD_IDS", [])
-        guild_ids: List[int] = []
+        guild_ids: list[int] = []
         if isinstance(raw_guilds, (list, tuple, set)):
             for item in raw_guilds:
                 try:
                     guild_ids.append(int(item))
                 except Exception:  # noqa: S112
                     continue
-        self.allowed_guild_ids: Set[int] = set(guild_ids)
+        self.allowed_guild_ids: set[int] = set(guild_ids)
 
-        self._message_history: Dict[int, Deque[RecentMessage]] = defaultdict(
+        self._message_history: dict[int, deque[RecentMessage]] = defaultdict(
             lambda: deque(maxlen=20)
         )
-        self._active_cases: Set[int] = set()
+        self._active_cases: set[int] = set()
         self.case_cache_limit = 250
-        self._cases: Dict[str, IncidentCase] = {}
-        self._case_order: Deque[str] = deque()
+        self._cases: dict[str, IncidentCase] = {}
+        self._case_order: deque[str] = deque()
 
         # Simple keyword net for common scam phrasing
         kw = cfg.get("KEYWORDS", [])
-        kws: Set[str] = set()
+        kws: set[str] = set()
         if isinstance(kw, (list, tuple, set)):
             for item in kw:
                 if isinstance(item, str):
@@ -226,16 +218,11 @@ class SecurityGuard(commands.Cog):
 
         if self.allowed_guild_ids and message.guild.id not in self.allowed_guild_ids:
             return
-        if (
-            member.guild_permissions.manage_messages
-            or member.guild_permissions.manage_guild
-        ):
+        if member.guild_permissions.manage_messages or member.guild_permissions.manage_guild:
             return  # do not police staff
 
         now = discord.utils.utcnow()
-        if not self._is_new_account(member, now) or not self._is_recent_join(
-            member, now
-        ):
+        if not self._is_new_account(member, now) or not self._is_recent_join(member, now):
             self._prune_history(member.id, now)
             return
 
@@ -270,14 +257,14 @@ class SecurityGuard(commands.Cog):
         created = member.created_at
         if not created:
             return False
-        age = now - created.replace(tzinfo=timezone.utc)
+        age = now - created.replace(tzinfo=UTC)
         return age.total_seconds() <= self.account_max_age_hours * 3600
 
     def _is_recent_join(self, member: discord.Member, now: datetime) -> bool:
         joined = member.joined_at
         if not joined:
             return False
-        age = now - joined.replace(tzinfo=timezone.utc)
+        age = now - joined.replace(tzinfo=UTC)
         return age.total_seconds() <= self.join_watch_minutes * 60
 
     def _prune_history(self, user_id: int, now: datetime) -> None:
@@ -305,9 +292,9 @@ class SecurityGuard(commands.Cog):
     def _should_trigger(
         self,
         member: discord.Member,
-        msgs: List[RecentMessage],
+        msgs: list[RecentMessage],
         now: datetime,
-    ) -> Tuple[bool, str, Dict[str, int]]:
+    ) -> tuple[bool, str, dict[str, int]]:
         if not msgs:
             return False, "", {}
 
@@ -318,13 +305,10 @@ class SecurityGuard(commands.Cog):
         keyword_hit = any(self._contains_suspicious_text(m.content) for m in msgs)
 
         multi_channel_burst = (
-            len(unique_channels) >= self.channel_threshold
-            and total_msgs >= self.message_threshold
+            len(unique_channels) >= self.channel_threshold and total_msgs >= self.message_threshold
         )
         two_channel_sus = (
-            len(unique_channels) >= 2
-            and total_msgs >= 2
-            and (keyword_hit or attachment_count > 0)
+            len(unique_channels) >= 2 and total_msgs >= 2 and (keyword_hit or attachment_count > 0)
         )
         attachment_multi_channel = len(attachment_channels) >= 2
 
@@ -354,9 +338,9 @@ class SecurityGuard(commands.Cog):
     async def _handle_incident(
         self,
         member: discord.Member,
-        msgs: List[RecentMessage],
+        msgs: list[RecentMessage],
         reason: str,
-        meta: Dict[str, int],
+        meta: dict[str, int],
     ) -> None:
         now = discord.utils.utcnow()
         case_id = self._make_case_id(member, now)
@@ -391,9 +375,7 @@ class SecurityGuard(commands.Cog):
             dm_sent,
         )
 
-    async def _send_user_dm(
-        self, member: discord.Member, reason: str, case_id: str
-    ) -> bool:
+    async def _send_user_dm(self, member: discord.Member, reason: str, case_id: str) -> bool:
         action_label = "banned" if self.punishment == "ban" else "timed out"
         action_title = "Ban" if self.punishment == "ban" else "Timeout"
         embed = discord.Embed(
@@ -402,9 +384,7 @@ class SecurityGuard(commands.Cog):
             timestamp=discord.utils.utcnow(),
         )
         embed.add_field(name="Guild", value=member.guild.name, inline=False)
-        embed.add_field(
-            name="Reason", value=reason or "auto-detected burst", inline=False
-        )
+        embed.add_field(name="Reason", value=reason or "auto-detected burst", inline=False)
         embed.add_field(name="Case ID", value=case_id, inline=True)
         footer = (
             "If you believe this is a mistake, use the Appeal button."
@@ -423,14 +403,12 @@ class SecurityGuard(commands.Cog):
 
     async def _apply_action(
         self, member: discord.Member, reason: str, case_id: str
-    ) -> Tuple[str, bool]:
+    ) -> tuple[str, bool]:
         if self.punishment == "ban":
             return "ban", await self._apply_ban(member, reason, case_id)
         return "timeout", await self._apply_timeout(member, reason, case_id)
 
-    async def _apply_ban(
-        self, member: discord.Member, reason: str, case_id: str
-    ) -> bool:
+    async def _apply_ban(self, member: discord.Member, reason: str, case_id: str) -> bool:
         guild = member.guild
         me = guild.me
         if me is None:
@@ -457,9 +435,7 @@ class SecurityGuard(commands.Cog):
             log.warning("Failed to ban member %s: %s", member.id, exc)
         return False
 
-    async def _apply_timeout(
-        self, member: discord.Member, reason: str, case_id: str
-    ) -> bool:
+    async def _apply_timeout(self, member: discord.Member, reason: str, case_id: str) -> bool:
         guild = member.guild
         me = guild.me
         if me is None:
@@ -485,9 +461,9 @@ class SecurityGuard(commands.Cog):
             log.warning("Failed to timeout member %s: %s", member.id, exc)
         return False
 
-    async def _delete_messages(self, msgs: List[RecentMessage], reason: str) -> int:
+    async def _delete_messages(self, msgs: list[RecentMessage], reason: str) -> int:
         deleted = 0
-        seen: Set[int] = set()
+        seen: set[int] = set()
         for msg in msgs:
             if msg.message.id in seen:
                 continue
@@ -496,19 +472,15 @@ class SecurityGuard(commands.Cog):
                 await msg.message.delete(reason=f"[SecurityGuard] {reason}")
                 deleted += 1
             except discord.NotFound:
-                log.debug(
-                    "Message %s already removed before deletion step", msg.message.id
-                )
+                log.debug("Message %s already removed before deletion step", msg.message.id)
             except discord.HTTPException as exc:
                 log.warning("Failed to delete message %s: %s", msg.message.id, exc)
             await asyncio.sleep(0.2)
         return deleted
 
-    async def _collect_attachments(
-        self, msgs: List[RecentMessage]
-    ) -> List[discord.File]:
-        files: List[discord.File] = []
-        per_channel_taken: Dict[int, int] = {}
+    async def _collect_attachments(self, msgs: list[RecentMessage]) -> list[discord.File]:
+        files: list[discord.File] = []
+        per_channel_taken: dict[int, int] = {}
         for msg in msgs:
             for att in msg.attachments:
                 taken = per_channel_taken.get(msg.channel_id, 0)
@@ -530,9 +502,7 @@ class SecurityGuard(commands.Cog):
                     log.debug("Failed to mirror attachment %s: %s", att.filename, exc)
         return files
 
-    async def _resolve_review_channel(
-        self, guild: discord.Guild
-    ) -> Optional[discord.TextChannel]:
+    async def _resolve_review_channel(self, guild: discord.Guild) -> discord.TextChannel | None:
         if not self.review_channel_id:
             return None
         ch = guild.get_channel(self.review_channel_id)
@@ -543,14 +513,10 @@ class SecurityGuard(commands.Cog):
             if isinstance(fetched, discord.TextChannel):
                 return fetched
         except discord.HTTPException as exc:
-            log.warning(
-                "Could not fetch review channel %s: %s", self.review_channel_id, exc
-            )
+            log.warning("Could not fetch review channel %s: %s", self.review_channel_id, exc)
         return None
 
-    async def _resolve_mod_channel(
-        self, guild: discord.Guild
-    ) -> Optional[discord.TextChannel]:
+    async def _resolve_mod_channel(self, guild: discord.Guild) -> discord.TextChannel | None:
         if not self.mod_channel_id:
             return None
         ch = guild.get_channel(self.mod_channel_id)
@@ -597,17 +563,11 @@ class SecurityGuard(commands.Cog):
                 color=0x3498DB,
                 timestamp=discord.utils.utcnow(),
             )
-            embed.add_field(
-                name="Member", value=f"{user.mention} ({user.id})", inline=False
-            )
+            embed.add_field(name="Member", value=f"{user.mention} ({user.id})", inline=False)
             embed.add_field(name="Case ID", value=case_id, inline=True)
             if case:
-                embed.add_field(
-                    name="Original reason", value=case.reason or "n/a", inline=False
-                )
-            embed.add_field(
-                name="Appeal reason", value=safe_appeal[:1000], inline=False
-            )
+                embed.add_field(name="Original reason", value=case.reason or "n/a", inline=False)
+            embed.add_field(name="Appeal reason", value=safe_appeal[:1000], inline=False)
             try:
                 await mod_channel.send(embed=embed)
             except discord.HTTPException as exc:
@@ -617,9 +577,7 @@ class SecurityGuard(commands.Cog):
             log.info("Appeal %s by %s: %s", case_id, user.id, safe_appeal)
 
         try:
-            await interaction.response.send_message(
-                "Your appeal was sent to the moderators."
-            )
+            await interaction.response.send_message("Your appeal was sent to the moderators.")
         except discord.HTTPException as exc:
             log.debug("Could not send appeal ack to user %s: %s", user.id, exc)
 
@@ -660,16 +618,12 @@ class SecurityGuard(commands.Cog):
             try:
                 await interaction.message.edit(view=view)
             except discord.HTTPException as exc:
-                log.debug(
-                    "Unable to update unban message view for case %s: %s", case_id, exc
-                )
+                log.debug("Unable to update unban message view for case %s: %s", case_id, exc)
             await interaction.followup.send("Unban completed.", ephemeral=True)
         except discord.NotFound:
             await interaction.followup.send("User is not banned.", ephemeral=True)
         except discord.Forbidden:
-            await interaction.followup.send(
-                "Bot lacks permission to unban.", ephemeral=True
-            )
+            await interaction.followup.send("Bot lacks permission to unban.", ephemeral=True)
         except discord.HTTPException as exc:
             log.warning("Unban failed for case %s: %s", case_id, exc)
             await interaction.followup.send("Unban failed.", ephemeral=True)
@@ -677,20 +631,19 @@ class SecurityGuard(commands.Cog):
     async def _log_incident(
         self,
         member: discord.Member,
-        msgs: List[RecentMessage],
+        msgs: list[RecentMessage],
         reason: str,
-        meta: Dict[str, int],
+        meta: dict[str, int],
         action: str,
         action_ok: bool,
         deleted: int,
-        files: List[discord.File],
+        files: list[discord.File],
         case_id: str,
         dm_sent: bool,
     ) -> None:
         now = discord.utils.utcnow()
         channel_names = {
-            m.channel_id: getattr(m.message.channel, "mention", f"#{m.channel_id}")
-            for m in msgs
+            m.channel_id: getattr(m.message.channel, "mention", f"#{m.channel_id}") for m in msgs
         }
         lines = []
         for idx, msg in enumerate(sorted(msgs, key=lambda m: m.created_at)):
@@ -699,9 +652,7 @@ class SecurityGuard(commands.Cog):
             snippet = msg.content.strip().replace("`", "'")
             if len(snippet) > 160:
                 snippet = snippet[:157] + "..."
-            attach_note = (
-                f" [attachments: {len(msg.attachments)}]" if msg.attachments else ""
-            )
+            attach_note = f" [attachments: {len(msg.attachments)}]" if msg.attachments else ""
             if not snippet:
                 snippet = "(kein Text)"
             lines.append(f"{idx + 1}. {ts} {channel_display}: {snippet}{attach_note}")
@@ -714,18 +665,14 @@ class SecurityGuard(commands.Cog):
         if action == "ban":
             action_text = f"Ban: {'yes' if action_ok else 'failed'}"
         else:
-            action_text = (
-                f"Timeout {self.timeout_minutes}m: {'yes' if action_ok else 'failed'}"
-            )
+            action_text = f"Timeout {self.timeout_minutes}m: {'yes' if action_ok else 'failed'}"
 
         embed = discord.Embed(
             title=f"Auto-{action_label}: possible scam/spam burst",
             color=0xE74C3C,
             timestamp=now,
         )
-        embed.add_field(
-            name="Member", value=f"{member.mention} ({member.id})", inline=False
-        )
+        embed.add_field(name="Member", value=f"{member.mention} ({member.id})", inline=False)
         embed.add_field(name="Case ID", value=case_id, inline=True)
         embed.add_field(
             name="Account age",
@@ -752,9 +699,7 @@ class SecurityGuard(commands.Cog):
             value=f"{action_text}\nDeleted: {deleted}\nDM sent: {'yes' if dm_sent else 'no'}",
             inline=True,
         )
-        embed.add_field(
-            name="Reason", value=reason or "auto-detected burst", inline=False
-        )
+        embed.add_field(name="Reason", value=reason or "auto-detected burst", inline=False)
 
         sent_any = False
         if mod_channel:
@@ -789,8 +734,8 @@ class SecurityGuard(commands.Cog):
             log.warning("No log channel set; incident logged to stdout.")
             log.info("Incident %s: %s", member.id, "\n".join(lines))
 
-    def _chunk_lines(self, lines: Iterable[str], max_len: int) -> List[str]:
-        chunks: List[str] = []
+    def _chunk_lines(self, lines: Iterable[str], max_len: int) -> list[str]:
+        chunks: list[str] = []
         buf = ""
         for line in lines:
             if len(buf) + len(line) + 1 > max_len:
@@ -801,10 +746,10 @@ class SecurityGuard(commands.Cog):
             chunks.append(buf.rstrip())
         return chunks
 
-    def _fmt_delta(self, now: datetime, past: Optional[datetime]) -> str:
+    def _fmt_delta(self, now: datetime, past: datetime | None) -> str:
         if not past:
             return "n/a"
-        delta = now - past.replace(tzinfo=timezone.utc)
+        delta = now - past.replace(tzinfo=UTC)
         days = delta.days
         hours, remainder = divmod(delta.seconds, 3600)
         minutes, _ = divmod(remainder, 60)
@@ -815,16 +760,10 @@ class SecurityGuard(commands.Cog):
         return f"{minutes}m"
 
     # ---------------- Commands ----------------
-    @commands.command(
-        name="security_diag", help="Zeigt die aktiven Spam-Guard Schwellen."
-    )
+    @commands.command(name="security_diag", help="Zeigt die aktiven Spam-Guard Schwellen.")
     @commands.has_permissions(administrator=True)
     async def security_diag(self, ctx: commands.Context):
-        review = (
-            f"<#{self.review_channel_id}>"
-            if self.review_channel_id
-            else "nicht gesetzt"
-        )
+        review = f"<#{self.review_channel_id}>" if self.review_channel_id else "nicht gesetzt"
         mod = f"<#{self.mod_channel_id}>" if self.mod_channel_id else "nicht gesetzt"
         guilds = (
             ", ".join(str(g) for g in sorted(self.allowed_guild_ids))

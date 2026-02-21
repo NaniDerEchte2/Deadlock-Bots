@@ -8,7 +8,6 @@ from typing import Optional
 
 from discord.ext import commands
 
-
 log = logging.getLogger("TwitchStreams")
 
 
@@ -35,7 +34,7 @@ async def setup(bot: commands.Bot):
 
     # 3) Dünner Prefix-Proxy (!twl) → ruft IMMER die Cog-Methode auf (keine Doppel-Registrierung)
     async def _twl_proxy(ctx: commands.Context, *, filters: str = ""):
-        active_cog: Optional[TwitchStreamCog] = bot.get_cog(cog.__cog_name__)  # type: ignore[assignment]
+        active_cog: TwitchStreamCog | None = bot.get_cog(cog.__cog_name__)  # type: ignore[assignment]
         if not isinstance(active_cog, TwitchStreamCog):
             await ctx.reply("Twitch-Statistiken sind derzeit nicht verfügbar.")
             return

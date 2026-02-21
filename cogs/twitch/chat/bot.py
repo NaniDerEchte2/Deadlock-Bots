@@ -15,15 +15,15 @@ import copy
 import logging
 import logging.handlers
 import os
-from datetime import datetime, timezone
+from collections import deque
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Deque, Dict, Optional, Set, Tuple
 
 import discord
 
+from ..api.token_manager import TwitchBotTokenManager
 from ..constants import TWITCH_NOTIFY_CHANNEL_ID, TWITCH_TARGET_GAME_NAME
 from ..storage import get_conn
-from ..api.token_manager import TwitchBotTokenManager
 from .commands import RaidCommandsMixin
 from .connection import ConnectionMixin
 from .constants import (
@@ -33,9 +33,9 @@ from .constants import (
     PROMO_VIEWER_SPIKE_ENABLED,
     SPAM_MIN_MATCHES,
     TWITCHIO_AVAILABLE,
+    WHITELISTED_BOTS,
     twitchio_commands,
     twitchio_web,
-    WHITELISTED_BOTS,
 )
 from .moderation import ModerationMixin
 from .promos import PromoMixin
@@ -57,9 +57,9 @@ def _setup_twitch_logging():
     # Prüfe ob Handler bereits existiert (um Duplikate bei Reloads zu vermeiden)
     exists = False
     for h in twitch_log.handlers:
-        if isinstance(h, logging.handlers.RotatingFileHandler) and str(
-            h.baseFilename
-        ).endswith("twitch_bot.log"):
+        if isinstance(h, logging.handlers.RotatingFileHandler) and str(h.baseFilename).endswith(
+            "twitch_bot.log"
+        ):
             h.setLevel(logging.INFO)
             exists = True
             break
@@ -71,9 +71,7 @@ def _setup_twitch_logging():
             backupCount=5,
             encoding="utf-8",
         )
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
+        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         handler.setFormatter(formatter)
         handler.setLevel(logging.INFO)
         twitch_log.addHandler(handler)
@@ -117,12 +115,12 @@ if TWITCHIO_AVAILABLE:
             token: str,
             client_id: str,
             client_secret: str,
-            bot_id: Optional[str] = None,
+            bot_id: str | None = None,
             prefix: str = "!",
-            initial_channels: Optional[list] = None,
-            refresh_token: Optional[str] = None,
-            web_adapter: Optional[object] = None,
-            token_manager: Optional[TwitchBotTokenManager] = None,
+            initial_channels: list | None = None,
+            refresh_token: str | None = None,
+            web_adapter: object | None = None,
+            token_manager: TwitchBotTokenManager | None = None,
         ):
             # In 3.x ist bot_id ein positionales/keyword Argument in Client, aber REQUIRED in Bot
             base_kwargs = {"adapter": web_adapter} if web_adapter is not None else {}
@@ -146,38 +144,36 @@ if TWITCHIO_AVAILABLE:
                 self._token_manager.set_refresh_callback(self._on_token_manager_refresh)
             self._raid_bot = None  # Wird später gesetzt
             self._initial_channels = initial_channels or []
-            self._monitored_streamers: Set[str] = set()
-            self._session_cache: Dict[str, Tuple[int, datetime]] = {}
-            self._last_autoban: Dict[str, Dict[str, str]] = {}
+            self._monitored_streamers: set[str] = set()
+            self._session_cache: dict[str, tuple[int, datetime]] = {}
+            self._last_autoban: dict[str, dict[str, str]] = {}
             # Cooldown: Verhindert, dass _ensure_bot_is_mod auf einem
             # gebannten Channel sekundlich wiederholt wird.
             # Key = channel_login (lowercase), Value = nächster erlaubter Zeitpunkt.
-            self._mod_retry_cooldown: Dict[str, datetime] = {}
+            self._mod_retry_cooldown: dict[str, datetime] = {}
             self._autoban_log = Path("logs") / "twitch_autobans.log"
             self._suspicious_log = Path("logs") / "twitch_suspicious.log"
             self._init_service_pitch_warning()
             self._target_game_lower = (TWITCH_TARGET_GAME_NAME or "").strip().lower()
             # Cache for category checks in chat tracking (login -> (monotonic_ts, is_target_game))
-            self._chat_category_cache: Dict[str, Tuple[float, bool]] = {}
+            self._chat_category_cache: dict[str, tuple[float, bool]] = {}
             self._chat_category_cache_ttl_sec = 15.0
             # Periodische Chat-Promos
-            self._channel_ids: Dict[str, str] = {}  # login -> broadcaster_id
-            self._last_promo_sent: Dict[str, float] = {}  # login -> monotonic timestamp
-            self._last_promo_attempt: Dict[
-                str, float
-            ] = {}  # login -> monotonic timestamp
-            self._last_raw_chat_message_ts: Dict[str, float] = {}
-            self._raw_msg_count_since_promo: Dict[str, int] = {}
-            self._promo_activity: Dict[str, Deque[Tuple[float, str]]] = {}
-            self._promo_chatter_dedupe: Dict[str, Dict[str, float]] = {}
-            self._last_promo_viewer_spike: Dict[str, float] = {}
-            self._promo_task: Optional[asyncio.Task] = None
-            self._last_invite_reply: Dict[str, float] = {}
-            self._last_invite_reply_user: Dict[Tuple[str, str], float] = {}
-            self._discord_bot: Optional[discord.Client] = None
-            self._discord_invite_channel_id: Optional[int] = None
-            self._promo_invite_cache: Dict[str, str] = {}
-            self._monitored_only_channels: Set[str] = set()
+            self._channel_ids: dict[str, str] = {}  # login -> broadcaster_id
+            self._last_promo_sent: dict[str, float] = {}  # login -> monotonic timestamp
+            self._last_promo_attempt: dict[str, float] = {}  # login -> monotonic timestamp
+            self._last_raw_chat_message_ts: dict[str, float] = {}
+            self._raw_msg_count_since_promo: dict[str, int] = {}
+            self._promo_activity: dict[str, deque[tuple[float, str]]] = {}
+            self._promo_chatter_dedupe: dict[str, dict[str, float]] = {}
+            self._last_promo_viewer_spike: dict[str, float] = {}
+            self._promo_task: asyncio.Task | None = None
+            self._last_invite_reply: dict[str, float] = {}
+            self._last_invite_reply_user: dict[tuple[str, str], float] = {}
+            self._discord_bot: discord.Client | None = None
+            self._discord_invite_channel_id: int | None = None
+            self._promo_invite_cache: dict[str, str] = {}
+            self._monitored_only_channels: set[str] = set()
             self._register_inline_commands()
             log.info(
                 "Twitch Chat Bot initialized with %d initial channels",
@@ -221,7 +217,7 @@ if TWITCHIO_AVAILABLE:
                         )
 
         @property
-        def bot_id_safe(self) -> Optional[str]:
+        def bot_id_safe(self) -> str | None:
             """Gibt eine sichere bot_id zurück (None statt leerer String)."""
             # Prüfe zuerst die gespeicherte ID
             if self._bot_id_stored and str(self._bot_id_stored).strip():
@@ -238,13 +234,13 @@ if TWITCHIO_AVAILABLE:
 
         def set_discord_bot(
             self,
-            discord_bot: Optional[discord.Client],
+            discord_bot: discord.Client | None,
             *,
-            invite_channel_id: Optional[int] = None,
+            invite_channel_id: int | None = None,
         ) -> None:
             """Assign the Discord bot instance for promo invite creation."""
             self._discord_bot = discord_bot
-            channel_id: Optional[int] = None
+            channel_id: int | None = None
             if invite_channel_id:
                 try:
                     channel_id = int(invite_channel_id)
@@ -263,7 +259,7 @@ if TWITCHIO_AVAILABLE:
                 str(channel_id) if channel_id else "-",
             )
 
-        def _load_streamer_invite_from_db(self, login: str) -> Optional[str]:
+        def _load_streamer_invite_from_db(self, login: str) -> str | None:
             login_norm = (login or "").strip().lower()
             if not login_norm:
                 return None
@@ -286,9 +282,7 @@ if TWITCHIO_AVAILABLE:
                 if invite_code:
                     return f"https://discord.gg/{invite_code}"
             except Exception:
-                log.debug(
-                    "Promo invite DB lookup failed for %s", login_norm, exc_info=True
-                )
+                log.debug("Promo invite DB lookup failed for %s", login_norm, exc_info=True)
             return None
 
         def _store_streamer_invite(
@@ -303,7 +297,7 @@ if TWITCHIO_AVAILABLE:
             login_norm = (login or "").strip().lower()
             if not login_norm:
                 return
-            now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            now = datetime.now(UTC).isoformat(timespec="seconds")
             try:
                 with get_conn() as conn:
                     conn.execute(
@@ -349,15 +343,13 @@ if TWITCHIO_AVAILABLE:
                     )
                     conn.commit()
             except Exception:
-                log.debug(
-                    "Could not store promo invite for %s", login_norm, exc_info=True
-                )
+                log.debug("Could not store promo invite for %s", login_norm, exc_info=True)
 
         def _mark_streamer_invite_sent(self, login: str) -> None:
             login_norm = (login or "").strip().lower()
             if not login_norm:
                 return
-            now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            now = datetime.now(UTC).isoformat(timespec="seconds")
             try:
                 with get_conn() as conn:
                     conn.execute(
@@ -393,9 +385,7 @@ if TWITCHIO_AVAILABLE:
                 channel = bot.get_channel(self._discord_invite_channel_id)
                 if channel is None and hasattr(bot, "fetch_channel"):
                     try:
-                        channel = await bot.fetch_channel(
-                            self._discord_invite_channel_id
-                        )
+                        channel = await bot.fetch_channel(self._discord_invite_channel_id)
                     except Exception:
                         channel = None
                 _add_channel(channel)
@@ -409,7 +399,7 @@ if TWITCHIO_AVAILABLE:
 
             return channels
 
-        async def _create_streamer_invite(self, login: str) -> Optional[str]:
+        async def _create_streamer_invite(self, login: str) -> str | None:
             bot = self._discord_bot
             if not bot:
                 return None
@@ -474,9 +464,7 @@ if TWITCHIO_AVAILABLE:
 
             return None
 
-        async def _resolve_streamer_invite(
-            self, login: str
-        ) -> tuple[Optional[str], bool]:
+        async def _resolve_streamer_invite(self, login: str) -> tuple[str | None, bool]:
             login_norm = (login or "").strip().lower()
             if not login_norm:
                 return None, False
@@ -566,9 +554,7 @@ if TWITCHIO_AVAILABLE:
                             e,
                         )
 
-            if PROMO_MESSAGES and (
-                _PROMO_ACTIVITY_ENABLED or PROMO_VIEWER_SPIKE_ENABLED
-            ):
+            if PROMO_MESSAGES and (_PROMO_ACTIVITY_ENABLED or PROMO_VIEWER_SPIKE_ENABLED):
                 if not self._promo_task or self._promo_task.done():
                     self._promo_task = asyncio.create_task(
                         self._periodic_promo_loop(),
@@ -589,9 +575,7 @@ if TWITCHIO_AVAILABLE:
                 except asyncio.CancelledError:
                     log.debug("Promo-Task wurde beim Shutdown abgebrochen")
                 except Exception:
-                    log.debug(
-                        "Promo-Task konnte nicht sauber beendet werden", exc_info=True
-                    )
+                    log.debug("Promo-Task konnte nicht sauber beendet werden", exc_info=True)
             await super().close()
 
         async def event_command_error(self, payload):
@@ -637,15 +621,13 @@ if TWITCHIO_AVAILABLE:
                     user_id=payload.user_id,
                 )
             except Exception:
-                log.debug(
-                    "Konnte refreshed Bot-Token nicht persistieren", exc_info=True
-                )
+                log.debug("Konnte refreshed Bot-Token nicht persistieren", exc_info=True)
 
         async def _on_token_manager_refresh(
             self,
             access_token: str,
-            refresh_token: Optional[str],
-            _expires_at: Optional[datetime],
+            refresh_token: str | None,
+            _expires_at: datetime | None,
         ) -> None:
             """Registriert neue Tokens aus dem Token Manager und updated TwitchIO."""
             self._bot_token = access_token
@@ -682,9 +664,7 @@ if TWITCHIO_AVAILABLE:
                 author = message.author
                 if not hasattr(author, "moderator") and hasattr(author, "is_moderator"):
                     author.moderator = author.is_moderator
-                if not hasattr(author, "broadcaster") and hasattr(
-                    author, "is_broadcaster"
-                ):
+                if not hasattr(author, "broadcaster") and hasattr(author, "is_broadcaster"):
                     author.broadcaster = author.is_broadcaster
 
                 # In 3.x EventSub payloads there is no message.channel by default.
@@ -719,9 +699,7 @@ if TWITCHIO_AVAILABLE:
             # Fallback for echo if still missing (unlikely in 3.x)
             if not hasattr(message, "echo"):
                 safe_bot_id = self.bot_id_safe or self.bot_id or ""
-                message.echo = str(getattr(message, "chatter", message).id) == str(
-                    safe_bot_id
-                )
+                message.echo = str(getattr(message, "chatter", message).id) == str(safe_bot_id)
 
             # Ignoriere Bot-Nachrichten
             if message.echo:
@@ -738,18 +716,14 @@ if TWITCHIO_AVAILABLE:
                 await self.process_commands(message)
                 return
 
-            channel_login = self._normalize_channel_login_safe(
-                getattr(message, "channel", None)
-            )
+            channel_login = self._normalize_channel_login_safe(getattr(message, "channel", None))
 
             # --- DATENSAMMLUNG FÜR ALLE, BOT-FUNKTIONEN NUR FÜR ECHTE PARTNER ---
             # WICHTIG: Monitored-Only Channels sind KEINE Partner!
             # _is_partner_channel_for_chat_tracking() ist in dieser Klasse überschrieben
             # und gibt True für monitored-only zurück (für Datensammlung), daher explizit
             # ausschließen, damit monitored-only Channels KEINE Bot-Funktionen bekommen.
-            is_monitored_only_ch = bool(
-                channel_login and self._is_monitored_only(channel_login)
-            )
+            is_monitored_only_ch = bool(channel_login and self._is_monitored_only(channel_login))
             is_partner = (
                 bool(channel_login)
                 and not is_monitored_only_ch
@@ -776,16 +750,12 @@ if TWITCHIO_AVAILABLE:
             # AB HIER: Nur noch Partner! (Volle Bot-Funktionen)
             if is_partner:
                 try:
-                    await self._maybe_warn_service_pitch(
-                        message, channel_login=channel_login
-                    )
+                    await self._maybe_warn_service_pitch(message, channel_login=channel_login)
                 except Exception:
                     log.debug("Service-Pitch-Warnung fehlgeschlagen", exc_info=True)
 
                 try:
-                    spam_score, spam_reasons = self._calculate_spam_score(
-                        message.content or ""
-                    )
+                    spam_score, spam_reasons = self._calculate_spam_score(message.content or "")
                     has_phrase_or_fragment_signal = any(
                         reason.startswith("Phrase(") or reason.startswith("Fragment(")
                         for reason in spam_reasons
@@ -810,16 +780,12 @@ if TWITCHIO_AVAILABLE:
                                 if users and users[0].created_at:
                                     created_at = users[0].created_at
                                     if created_at.tzinfo is None:
-                                        created_at = created_at.replace(
-                                            tzinfo=timezone.utc
-                                        )
+                                        created_at = created_at.replace(tzinfo=UTC)
 
-                                    age = datetime.now(timezone.utc) - created_at
+                                    age = datetime.now(UTC) - created_at
                                     if age.days < 90:  # Jünger als 3 Monate
                                         spam_score += 1
-                                        spam_reasons.append(
-                                            f"Account-Alter: {age.days} Tage"
-                                        )
+                                        spam_reasons.append(f"Account-Alter: {age.days} Tage")
                         except Exception:
                             log.debug(
                                 "Konnte User-Alter für Spam-Check nicht laden",
@@ -886,9 +852,7 @@ if TWITCHIO_AVAILABLE:
                 if login_for_raw:
                     self._record_raw_chat_message(login_for_raw)
             except Exception:
-                log.debug(
-                    "Raw-Chat-Activity konnte nicht erfasst werden", exc_info=True
-                )
+                log.debug("Raw-Chat-Activity konnte nicht erfasst werden", exc_info=True)
 
             sent_invite = False
             try:
@@ -905,7 +869,7 @@ if TWITCHIO_AVAILABLE:
             # Verarbeite Commands
             await self.process_commands(message)
 
-        def _get_streamer_by_channel(self, channel_name: str) -> Optional[tuple]:
+        def _get_streamer_by_channel(self, channel_name: str) -> tuple | None:
             """
             Findet Streamer-Daten anhand des Channel-Namens.
 
@@ -929,11 +893,11 @@ if TWITCHIO_AVAILABLE:
         def _normalize_channel_login(channel_name: str) -> str:
             return (channel_name or "").lower().lstrip("#")
 
-        def _resolve_session_id(self, login: str) -> Optional[int]:
+        def _resolve_session_id(self, login: str) -> int | None:
             """Best-effort Mapping von Channel zu offener Twitch-Session."""
             cache_key = login.lower()
             cached = self._session_cache.get(cache_key)
-            now_ts = datetime.now(timezone.utc)
+            now_ts = datetime.now(UTC)
             if cached:
                 cached_id, cached_at = cached
                 if (now_ts - cached_at).total_seconds() < 60:
@@ -970,11 +934,11 @@ async def create_twitch_chat_bot(
     client_secret: str,
     redirect_uri: str,
     raid_bot=None,
-    bot_token: Optional[str] = None,
-    bot_refresh_token: Optional[str] = None,
+    bot_token: str | None = None,
+    bot_refresh_token: str | None = None,
     log_missing: bool = True,
-    token_manager: Optional[TwitchBotTokenManager] = None,
-) -> Optional[RaidChatBot]:
+    token_manager: TwitchBotTokenManager | None = None,
+) -> RaidChatBot | None:
     """
     Erstellt einen Twitch Chat Bot mit Bot-Account-Token.
 
@@ -1024,9 +988,7 @@ async def create_twitch_chat_bot(
 
     bot_id = None
     if token_mgr:
-        initialised = await token_mgr.initialize(
-            access_token=token, refresh_token=refresh_token
-        )
+        initialised = await token_mgr.initialize(access_token=token, refresh_token=refresh_token)
         if not initialised:
             log.error(
                 "Twitch Bot Token Manager konnte nicht initialisiert werden (kein Refresh-Token?)."
@@ -1069,8 +1031,7 @@ async def create_twitch_chat_bot(
             continue
         scopes = [s.strip().lower() for s in (scopes_raw or "").split() if s.strip()]
         has_chat_scope = any(
-            s in {"user:read:chat", "user:write:chat", "chat:read", "chat:edit"}
-            for s in scopes
+            s in {"user:read:chat", "user:write:chat", "chat:read", "chat:edit"} for s in scopes
         )
         if not has_chat_scope:
             continue

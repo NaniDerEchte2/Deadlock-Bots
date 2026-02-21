@@ -1,10 +1,10 @@
 # cogs/steam_verified_role.py
 # Kurzfassung: identisch zur letzten Version, plus Diagnose & bessere Zusammenfassungen.
 
-import os
-import logging
 import asyncio
-from typing import Set, List, Tuple
+import logging
+import os
+
 import discord
 from discord.ext import commands, tasks
 
@@ -17,12 +17,8 @@ class SteamVerifiedRole(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.guild_id = int(os.getenv("GUILD_ID", "1289721245281292288"))
-        self.verified_role_id = int(
-            os.getenv("VERIFIED_ROLE_ID", "1419608095533043774")
-        )
-        self.log_channel_id = int(
-            os.getenv("VERIFIED_LOG_CHANNEL_ID", "1374364800817303632")
-        )
+        self.verified_role_id = int(os.getenv("VERIFIED_ROLE_ID", "1419608095533043774"))
+        self.log_channel_id = int(os.getenv("VERIFIED_LOG_CHANNEL_ID", "1374364800817303632"))
         self.db_path = central_db.db_path()
         self.dry_run = os.getenv("DRY_RUN", "0") == "1"
         interval_min = int(os.getenv("POLL_INTERVAL_MINUTES", "15"))
@@ -55,7 +51,7 @@ class SteamVerifiedRole(commands.Cog):
         )
 
     # ---------- DB ----------
-    def _fetch_verified_discord_ids(self) -> Set[int]:
+    def _fetch_verified_discord_ids(self) -> set[int]:
         try:
             with central_db.get_conn() as con:
                 cur = con.execute(
@@ -66,7 +62,7 @@ class SteamVerifiedRole(commands.Cog):
             log.exception("DB-Fehler beim Lesen verifizierter IDs: %s", e)
             return set()
 
-        ids: Set[int] = set()
+        ids: set[int] = set()
         for r in rows:
             if r["user_id"] is None:
                 continue
@@ -76,9 +72,7 @@ class SteamVerifiedRole(commands.Cog):
                 if val >= 10_000_000_000_000_000:  # 1e16 ~ 17 Stellen
                     ids.add(val)
             except (TypeError, ValueError) as exc:
-                log.debug(
-                    "Kann user_id nicht in int wandeln: %r (%s)", r.get("user_id"), exc
-                )
+                log.debug("Kann user_id nicht in int wandeln: %r (%s)", r.get("user_id"), exc)
                 continue
         return ids
 
@@ -127,15 +121,11 @@ class SteamVerifiedRole(commands.Cog):
         now = self._monotonic_now()
         if self._missing_member_retry_until:
             self._missing_member_retry_until = {
-                uid: ts
-                for uid, ts in self._missing_member_retry_until.items()
-                if ts > now
+                uid: ts for uid, ts in self._missing_member_retry_until.items() if ts > now
             }
         if self._transient_member_retry_until:
             self._transient_member_retry_until = {
-                uid: ts
-                for uid, ts in self._transient_member_retry_until.items()
-                if ts > now
+                uid: ts for uid, ts in self._transient_member_retry_until.items() if ts > now
             }
 
     async def _fetch_member_rate_limited(
@@ -153,7 +143,7 @@ class SteamVerifiedRole(commands.Cog):
                 self._last_member_fetch_started_at = loop.time()
             return await guild.fetch_member(user_id)
 
-    async def _resolve_guild_and_role(self) -> Tuple[discord.Guild, discord.Role]:
+    async def _resolve_guild_and_role(self) -> tuple[discord.Guild, discord.Role]:
         if not self.guild_id:
             log.error("GUILD_ID ist nicht konfiguriert.")
             return None, None
@@ -168,9 +158,7 @@ class SteamVerifiedRole(commands.Cog):
             return None, None
         role = guild.get_role(self.verified_role_id)
         if role is None:
-            log.error(
-                "Rolle %s in Guild %s nicht gefunden.", self.verified_role_id, guild.id
-            )
+            log.error("Rolle %s in Guild %s nicht gefunden.", self.verified_role_id, guild.id)
             return None, None
         return guild, role
 
@@ -183,12 +171,10 @@ class SteamVerifiedRole(commands.Cog):
             if isinstance(ch, discord.TextChannel):
                 return ch
         except discord.HTTPException as exc:
-            log.debug(
-                "Konnte Log-Channel nicht abrufen (%s): %s", self.log_channel_id, exc
-            )
+            log.debug("Konnte Log-Channel nicht abrufen (%s): %s", self.log_channel_id, exc)
         return None
 
-    async def _announce_assignments(self, guild: discord.Guild, lines: List[str]):
+    async def _announce_assignments(self, guild: discord.Guild, lines: list[str]):
         if not lines or self.dry_run:
             return
         ch = await self._get_log_channel(guild)
@@ -223,11 +209,9 @@ class SteamVerifiedRole(commands.Cog):
             except discord.NotFound:
                 self._mark_member_missing(user_id)
                 return False
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self._mark_member_transient_error(user_id)
-                log.warning(
-                    "Timeout beim Abrufen von Member %s für Sofort-Zuweisung.", user_id
-                )
+                log.warning("Timeout beim Abrufen von Member %s für Sofort-Zuweisung.", user_id)
                 return False
             except discord.HTTPException as exc:
                 self._mark_member_transient_error(user_id)
@@ -245,9 +229,7 @@ class SteamVerifiedRole(commands.Cog):
             return True
 
         try:
-            await member.add_roles(
-                role, reason="Manuelle Verifizierung / Sofort-Zuweisung"
-            )
+            await member.add_roles(role, reason="Manuelle Verifizierung / Sofort-Zuweisung")
             self._clear_member_retry_state(user_id)
             await self._announce_assignments(
                 guild,
@@ -256,11 +238,9 @@ class SteamVerifiedRole(commands.Cog):
                 ],
             )
             return True
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._mark_member_transient_error(user_id)
-            log.warning(
-                "Timeout beim Rollen-Assign (Sofort-Zuweisung) für Member %s.", user_id
-            )
+            log.warning("Timeout beim Rollen-Assign (Sofort-Zuweisung) für Member %s.", user_id)
             return False
         except discord.HTTPException as exc:
             self._mark_member_transient_error(user_id)
@@ -272,9 +252,7 @@ class SteamVerifiedRole(commands.Cog):
             return False
         except Exception as e:
             self._mark_member_transient_error(user_id)
-            log.error(
-                "Fehler bei Sofort-Zuweisung der Verified-Rolle an %s: %s", user_id, e
-            )
+            log.error("Fehler bei Sofort-Zuweisung der Verified-Rolle an %s: %s", user_id, e)
             return False
 
     # ---------- Core ----------
@@ -343,11 +321,9 @@ class SteamVerifiedRole(commands.Cog):
                     self._mark_member_missing(uid)
                     not_found += 1
                     continue
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     self._mark_member_transient_error(uid)
-                    log.warning(
-                        "Timeout beim fetch_member im Verified-Lauf (uid=%s).", uid
-                    )
+                    log.warning("Timeout beim fetch_member im Verified-Lauf (uid=%s).", uid)
                     continue
                 except RuntimeError as exc:
                     if self._is_session_closed_error(exc):
@@ -370,9 +346,7 @@ class SteamVerifiedRole(commands.Cog):
             if role in member.roles:
                 continue
             if self.dry_run:
-                log.info(
-                    "[DRY] Würde Rolle vergeben an %s (%s)", uid, member.display_name
-                )
+                log.info("[DRY] Würde Rolle vergeben an %s (%s)", uid, member.display_name)
                 changes += 1
                 continue
             try:
@@ -395,11 +369,9 @@ class SteamVerifiedRole(commands.Cog):
                     uid,
                     getattr(member, "display_name", "?"),
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self._mark_member_transient_error(uid)
-                log.warning(
-                    "Timeout beim Rollen-Assign im Verified-Lauf (uid=%s).", uid
-                )
+                log.warning("Timeout beim Rollen-Assign im Verified-Lauf (uid=%s).", uid)
             except discord.HTTPException as e:
                 self._mark_member_transient_error(uid)
                 log.warning("HTTP-Fehler bei %s: %s", uid, e)
@@ -430,7 +402,7 @@ class SteamVerifiedRole(commands.Cog):
                         await self._run_once()
                     except asyncio.CancelledError:
                         raise
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         log.warning(
                             "Verified-Rollenlauf: Timeout bei Discord-API. Neuer Versuch im nächsten Intervall."
                         )
@@ -469,9 +441,7 @@ class SteamVerifiedRole(commands.Cog):
             self._start_loop_once_ready.start()
 
     # ---------- Commands ----------
-    @commands.command(
-        name="verifyrole_run", help="Manueller Lauf (loggt nur Zuweisungen)."
-    )
+    @commands.command(name="verifyrole_run", help="Manueller Lauf (loggt nur Zuweisungen).")
     @commands.has_permissions(administrator=True)
     async def verifyrole_run(self, ctx: commands.Context):
         changes = await self._run_once()
@@ -480,9 +450,7 @@ class SteamVerifiedRole(commands.Cog):
             mention_author=False,
         )
 
-    @commands.command(
-        name="verifyrole_diag", help="Diagnose: prüft IDs, Rechte, DB & Hierarchie."
-    )
+    @commands.command(name="verifyrole_diag", help="Diagnose: prüft IDs, Rechte, DB & Hierarchie.")
     @commands.has_permissions(administrator=True)
     async def verifyrole_diag(self, ctx: commands.Context):
         guild, role = await self._resolve_guild_and_role()

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Optional
 
 from discord.ext import commands
 
@@ -16,8 +15,8 @@ class TurnierPublicCog(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self.server: Optional[object] = None
-        self._start_task: Optional[asyncio.Task] = None
+        self.server: object | None = None
+        self._start_task: asyncio.Task | None = None
 
         try:
             from service.turnier_public import TurnierPublicServer

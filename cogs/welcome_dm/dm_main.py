@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any
 
 import discord
 from discord.ext import commands
@@ -13,9 +13,9 @@ from service import db as service_db
 
 from . import base as base_module
 from .step_intro import IntroView  # Intro info/weiter Button (persistente Steuerung)
+from .step_rules import RulesView
 from .step_status import PlayerStatusView
 from .step_steam_link import SteamLinkStepView
-from .step_rules import RulesView
 
 
 def _fallback_build_step_embed(title, desc, step, total, color=0x5865F2):
@@ -58,7 +58,7 @@ REQUIRED_WELCOME_ROLE_ID = 1304216250649415771
 
 PERSISTENCE_NAMESPACE = "welcome_dm:persistent_views"
 
-_VIEW_REGISTRY: Dict[str, Any] = {
+_VIEW_REGISTRY: dict[str, Any] = {
     "intro": IntroView,
     "status": PlayerStatusView,
     "steam": SteamLinkStepView,
@@ -75,7 +75,7 @@ class WelcomeDM(commands.Cog):
 
     # ---------------- Intern ----------------
 
-    def _view_key_for(self, view: discord.ui.View) -> Optional[str]:
+    def _view_key_for(self, view: discord.ui.View) -> str | None:
         for key, cls in _VIEW_REGISTRY.items():
             try:
                 if isinstance(view, cls):
@@ -89,13 +89,13 @@ class WelcomeDM(commands.Cog):
         message: discord.Message,
         view: discord.ui.View,
         *,
-        target_user_id: Optional[int],
+        target_user_id: int | None,
     ) -> None:
         key = self._view_key_for(view)
         if key is None:
             return
 
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "view": key,
             "user_id": int(target_user_id) if target_user_id is not None else None,
             "created_at": getattr(view, "created_at", datetime.now()).isoformat(),
@@ -107,9 +107,7 @@ class WelcomeDM(commands.Cog):
         try:
             encoded = json.dumps(payload)
         except Exception:
-            logger.exception(
-                "Konnte Persistenz-Payload für View %s nicht serialisieren", key
-            )
+            logger.exception("Konnte Persistenz-Payload für View %s nicht serialisieren", key)
             return
 
         try:
@@ -129,9 +127,7 @@ class WelcomeDM(commands.Cog):
                 try:
                     binder(self, message.id)
                 except Exception:
-                    logger.exception(
-                        "Konnte Persistenz-Bindung für View %s nicht setzen", key
-                    )
+                    logger.exception("Konnte Persistenz-Bindung für View %s nicht setzen", key)
 
     def _unpersist_view(self, message_id: int) -> None:
         try:
@@ -178,13 +174,11 @@ class WelcomeDM(commands.Cog):
             key = data.get("view")
             factory = _VIEW_REGISTRY.get(key)
             if not factory:
-                logger.debug(
-                    "Unbekannter View-Typ %s für message_id=%s", key, message_id
-                )
+                logger.debug("Unbekannter View-Typ %s für message_id=%s", key, message_id)
                 self._unpersist_view(message_id)
                 continue
 
-            kwargs: Dict[str, Any] = {}
+            kwargs: dict[str, Any] = {}
             user_id = data.get("user_id")
             if user_id is not None:
                 try:

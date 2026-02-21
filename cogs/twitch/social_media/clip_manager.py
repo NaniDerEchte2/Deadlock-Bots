@@ -6,9 +6,8 @@ Verwaltet Twitch-Clips und deren Upload auf TikTok, YouTube Shorts, Instagram Re
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Dict, List, Optional
 
 from ..storage import get_conn
 
@@ -44,7 +43,7 @@ class ClipManager:
         created_at: str,
         duration: float,
         view_count: int = 0,
-        game_name: Optional[str] = None,
+        game_name: str | None = None,
     ) -> int:
         """
         Registriert einen neuen Clip im System.
@@ -61,9 +60,7 @@ class ClipManager:
                 ).fetchone()
 
                 if existing:
-                    log.debug(
-                        "Clip %s bereits registriert (ID: %s)", clip_id, existing[0]
-                    )
+                    log.debug("Clip %s bereits registriert (ID: %s)", clip_id, existing[0])
                     return existing[0]
 
                 # Sicherstellen dass Streamer in twitch_streamers existiert (FK-Anforderung).
@@ -114,7 +111,7 @@ class ClipManager:
         streamer_login: str,
         limit: int = 20,
         days: int = 7,
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Fetcht neueste Clips eines Streamers und registriert sie.
 
@@ -149,9 +146,7 @@ class ClipManager:
                 try:
                     data = await self.api._get("/clips", params=params)
                 except Exception:
-                    log.warning(
-                        "Clips fetch failed for %s", streamer_login, exc_info=True
-                    )
+                    log.warning("Clips fetch failed for %s", streamer_login, exc_info=True)
                     break
 
                 page_clips = data.get("data", [])
@@ -191,9 +186,7 @@ class ClipManager:
                     registered_clips.append(clip)
 
                 except Exception:
-                    log.exception(
-                        "Fehler beim Registrieren von Clip %s", clip.get("id")
-                    )
+                    log.exception("Fehler beim Registrieren von Clip %s", clip.get("id"))
                     continue
 
             log.info(
@@ -210,10 +203,10 @@ class ClipManager:
 
     def get_clips_for_dashboard(
         self,
-        streamer_login: Optional[str] = None,
-        status: Optional[str] = None,
+        streamer_login: str | None = None,
+        status: str | None = None,
         limit: int = 50,
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Gibt Clips für Dashboard-Anzeige zurück.
 
@@ -261,10 +254,10 @@ class ClipManager:
         self,
         clip_db_id: int,
         platform: str,
-        title: Optional[str] = None,
-        description: Optional[str] = None,
-        hashtags: Optional[List[str]] = None,
-        scheduled_at: Optional[str] = None,
+        title: str | None = None,
+        description: str | None = None,
+        hashtags: list[str] | None = None,
+        scheduled_at: str | None = None,
         priority: int = 0,
     ) -> int:
         """
@@ -321,7 +314,7 @@ class ClipManager:
                         json.dumps(hashtags) if hashtags else None,
                         scheduled_at,
                         priority,
-                        datetime.now(timezone.utc).isoformat(),
+                        datetime.now(UTC).isoformat(),
                     ),
                 )
 
@@ -336,17 +329,15 @@ class ClipManager:
                 return queue_id
 
         except Exception:
-            log.exception(
-                "Fehler beim Queue-Upload für Clip %s -> %s", clip_db_id, platform
-            )
+            log.exception("Fehler beim Queue-Upload für Clip %s -> %s", clip_db_id, platform)
             raise
 
     def get_upload_queue(
         self,
-        platform: Optional[str] = None,
+        platform: str | None = None,
         status: str = "pending",
         limit: int = 10,
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Gibt Upload-Queue zurück.
 
@@ -387,8 +378,8 @@ class ClipManager:
         self,
         queue_id: int,
         status: str,
-        external_video_id: Optional[str] = None,
-        error: Optional[str] = None,
+        external_video_id: str | None = None,
+        error: str | None = None,
     ) -> None:
         """
         Updated Upload-Status in Queue.
@@ -401,7 +392,7 @@ class ClipManager:
         """
         try:
             with get_conn() as conn:
-                now = datetime.now(timezone.utc).isoformat()
+                now = datetime.now(UTC).isoformat()
 
                 if status == "completed":
                     # Markiere als completed
@@ -458,9 +449,7 @@ class ClipManager:
                                 (external_video_id, now, clip_id),
                             )
 
-                    log.info(
-                        "Upload completed: Queue %s -> %s", queue_id, external_video_id
-                    )
+                    log.info("Upload completed: Queue %s -> %s", queue_id, external_video_id)
 
                 elif status == "failed":
                     conn.execute(
@@ -492,7 +481,7 @@ class ClipManager:
             log.exception("Fehler beim Update von Upload-Status (Queue %s)", queue_id)
             raise
 
-    def get_analytics_summary(self, streamer_login: Optional[str] = None) -> Dict:
+    def get_analytics_summary(self, streamer_login: str | None = None) -> dict:
         """
         Gibt Analytics-Zusammenfassung zurück.
 
@@ -611,8 +600,8 @@ class ClipManager:
         self,
         template_name: str,
         description_template: str,
-        hashtags: List[str],
-        category: Optional[str] = None,
+        hashtags: list[str],
+        category: str | None = None,
         created_by: str = "admin",
     ) -> int:
         """
@@ -645,18 +634,14 @@ class ClipManager:
                     ),
                 )
                 template_id = cursor.lastrowid
-                log.info(
-                    "Global template created: %s (ID: %s)", template_name, template_id
-                )
+                log.info("Global template created: %s (ID: %s)", template_name, template_id)
                 return template_id
 
         except Exception:
-            log.exception(
-                "Fehler beim Erstellen von Global Template: %s", template_name
-            )
+            log.exception("Fehler beim Erstellen von Global Template: %s", template_name)
             raise
 
-    def get_global_templates(self, category: Optional[str] = None) -> List[Dict]:
+    def get_global_templates(self, category: str | None = None) -> list[dict]:
         """
         Holt alle globalen Templates.
 
@@ -706,7 +691,7 @@ class ClipManager:
         streamer_login: str,
         template_name: str,
         description_template: str,
-        hashtags: List[str],
+        hashtags: list[str],
         is_default: bool = False,
     ) -> int:
         """
@@ -724,7 +709,7 @@ class ClipManager:
         """
         try:
             with get_conn() as conn:
-                now = datetime.now(timezone.utc).isoformat()
+                now = datetime.now(UTC).isoformat()
 
                 # If is_default, unset other default templates for this streamer
                 if is_default:
@@ -806,7 +791,7 @@ class ClipManager:
             )
             raise
 
-    def get_streamer_templates(self, streamer_login: str) -> List[Dict]:
+    def get_streamer_templates(self, streamer_login: str) -> list[dict]:
         """
         Holt alle Templates eines Streamers.
 
@@ -910,17 +895,11 @@ class ClipManager:
                 hashtags_raw = json.loads(template["hashtags"])
 
                 description = description.replace("{{title}}", clip["clip_title"] or "")
-                description = description.replace(
-                    "{{streamer}}", clip["streamer_login"] or ""
-                )
-                description = description.replace(
-                    "{{game}}", clip["game_name"] or "Unknown"
-                )
+                description = description.replace("{{streamer}}", clip["streamer_login"] or "")
+                description = description.replace("{{game}}", clip["game_name"] or "Unknown")
 
                 hashtags = [
-                    tag.replace(
-                        "{{game}}", (clip["game_name"] or "Unknown").replace(" ", "")
-                    )
+                    tag.replace("{{game}}", (clip["game_name"] or "Unknown").replace(" ", ""))
                     for tag in hashtags_raw
                 ]
 
@@ -942,7 +921,7 @@ class ClipManager:
             log.exception("Fehler beim Anwenden von Template auf Clip %s", clip_id)
             return False
 
-    def save_last_hashtags(self, streamer_login: str, hashtags: List[str]) -> None:
+    def save_last_hashtags(self, streamer_login: str, hashtags: list[str]) -> None:
         """
         Speichert zuletzt verwendete Hashtags für einen Streamer.
 
@@ -952,7 +931,7 @@ class ClipManager:
         """
         try:
             with get_conn() as conn:
-                now = datetime.now(timezone.utc).isoformat()
+                now = datetime.now(UTC).isoformat()
                 conn.execute(
                     """
                     INSERT INTO clip_last_hashtags (streamer_login, hashtags, last_used_at)
@@ -968,7 +947,7 @@ class ClipManager:
         except Exception:
             log.exception("Fehler beim Speichern von Last Hashtags")
 
-    def get_last_hashtags(self, streamer_login: str) -> List[str]:
+    def get_last_hashtags(self, streamer_login: str) -> list[str]:
         """
         Holt zuletzt verwendete Hashtags für einen Streamer.
 
@@ -995,9 +974,9 @@ class ClipManager:
     async def batch_upload_all_new(
         self,
         streamer_login: str,
-        platforms: List[str],
+        platforms: list[str],
         apply_default_template: bool = True,
-    ) -> Dict[str, int]:
+    ) -> dict[str, int]:
         """
         Queued alle nicht hochgeladenen Clips eines Streamers.
 
@@ -1027,9 +1006,7 @@ class ClipManager:
 
                     if template_row:
                         default_template = dict(template_row)
-                        default_template["hashtags"] = json.loads(
-                            default_template["hashtags"]
-                        )
+                        default_template["hashtags"] = json.loads(default_template["hashtags"])
 
                 # For each platform, queue uploads
                 for platform in platforms:
@@ -1101,16 +1078,12 @@ class ClipManager:
                                 hashtags = [
                                     tag.replace(
                                         "{{game}}",
-                                        (clip_dict["game_name"] or "Unknown").replace(
-                                            " ", ""
-                                        ),
+                                        (clip_dict["game_name"] or "Unknown").replace(" ", ""),
                                     )
                                     for tag in default_template["hashtags"]
                                 ]
                             else:
-                                hashtags = (
-                                    json.loads(hashtags_str) if hashtags_str else []
-                                )
+                                hashtags = json.loads(hashtags_str) if hashtags_str else []
 
                             # Queue upload
                             self.queue_upload(
@@ -1148,7 +1121,7 @@ class ClipManager:
     def mark_clip_uploaded(
         self,
         clip_id: int,
-        platforms: List[str],
+        platforms: list[str],
         manual: bool = True,
     ) -> bool:
         """
@@ -1164,7 +1137,7 @@ class ClipManager:
         """
         try:
             with get_conn() as conn:
-                now = datetime.now(timezone.utc).isoformat()
+                now = datetime.now(UTC).isoformat()
 
                 for platform in platforms:
                     if platform == "tiktok":

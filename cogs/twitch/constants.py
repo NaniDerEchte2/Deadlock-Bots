@@ -13,12 +13,12 @@ TWITCH_DASHBOARD_HOST = "127.0.0.1"
 TWITCH_DASHBOARD_PORT = 8765
 TWITCH_RAID_REDIRECT_URI = "https://raid.earlysalty.com/twitch/raid/callback"
 
-TWITCH_LANGUAGE = "de de-de de-at de-ch"  # Mehrere Varianten via Komma/Leerzeichen (z. B. "de de-at de-ch")
+TWITCH_LANGUAGE = (
+    "de de-de de-at de-ch"  # Mehrere Varianten via Komma/Leerzeichen (z. B. "de de-at de-ch")
+)
 TWITCH_TARGET_GAME_NAME = "Deadlock"
 TWITCH_BRAND_COLOR_HEX = 0x9146FF  # offizielles Twitch-Lila für Embeds
-TWITCH_REQUIRED_DISCORD_MARKER = (
-    ""  # optionaler Marker im Profiltext (zusätzl. zur Discord-URL)
-)
+TWITCH_REQUIRED_DISCORD_MARKER = ""  # optionaler Marker im Profiltext (zusätzl. zur Discord-URL)
 TWITCH_DISCORD_REF_CODE = "DE-Deadlock-Discord"  # Referral-Parameter für Buttons/Links
 TWITCH_BUTTON_LABEL = "Auf Twitch ansehen"  # Standardtext für den Go-Live-Button
 TWITCH_VOD_BUTTON_LABEL = "VOD anschauen"  # Buttontext für die Offline/VOD-Ansicht

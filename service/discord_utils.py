@@ -5,8 +5,8 @@ Shared Discord/Database utilities - eliminiert Duplicate Code über Cogs hinweg.
 import asyncio
 import logging
 import re
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, List, Optional
 
 import discord
 
@@ -21,7 +21,7 @@ _SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 async def resolve_guild_and_role(
     bot: discord.Client, guild_id: int, role_id: int
-) -> tuple[Optional[discord.Guild], Optional[discord.Role]]:
+) -> tuple[discord.Guild | None, discord.Role | None]:
     """
     Shared utility für Guild + Role Resolution.
     Genutzt von: steam_verified_role.py, feedback_hub.py
@@ -44,9 +44,7 @@ async def resolve_guild_and_role(
     return guild, role
 
 
-async def resolve_member(
-    guild: discord.Guild, user_id: int
-) -> Optional[discord.Member]:
+async def resolve_member(guild: discord.Guild, user_id: int) -> discord.Member | None:
     """
     Resolve Member mit Fetch-Fallback.
     Genutzt von: tempvoice/core.py, mehrere andere Cogs
@@ -169,7 +167,7 @@ async def connect_db(db_path: Path | str) -> _CentralAsyncDBAdapter:
 async def ensure_table_exists(
     db: _CentralAsyncDBAdapter,
     create_table_sql_or_name: str,
-    schema: Optional[str] = None,
+    schema: str | None = None,
 ) -> None:
     """
     Ensures a table exists.
@@ -180,9 +178,7 @@ async def ensure_table_exists(
     if schema is not None:
         if not _SQL_IDENTIFIER_RE.fullmatch(create_table_sql_or_name):
             raise ValueError(f"Unsafe SQL table name: {create_table_sql_or_name!r}")
-        create_table_sql = (
-            "CREATE TABLE IF NOT EXISTS " + create_table_sql_or_name + " " + schema
-        )
+        create_table_sql = "CREATE TABLE IF NOT EXISTS " + create_table_sql_or_name + " " + schema
     else:
         create_table_sql = create_table_sql_or_name
 
@@ -193,9 +189,7 @@ async def ensure_table_exists(
 
     normalized = " ".join(stripped.rstrip(";").split())
     if not normalized.upper().startswith("CREATE TABLE IF NOT EXISTS "):
-        raise ValueError(
-            "ensure_table_exists expects a CREATE TABLE IF NOT EXISTS statement"
-        )
+        raise ValueError("ensure_table_exists expects a CREATE TABLE IF NOT EXISTS statement")
 
     remainder = normalized[len("CREATE TABLE IF NOT EXISTS ") :]
     name_match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)(?:\s|\()", remainder)
@@ -224,7 +218,7 @@ def is_tempvoice_lane(channel: discord.VoiceChannel, category_ids: set[int]) -> 
 
 async def get_voice_channel_members(
     channel: discord.VoiceChannel, *, exclude_bots: bool = True
-) -> List[discord.Member]:
+) -> list[discord.Member]:
     """
     Iteriere über Channel-Members mit optionalem Bot-Filter.
     Genutzt von: voice_activity_tracker.py, tempvoice/core.py

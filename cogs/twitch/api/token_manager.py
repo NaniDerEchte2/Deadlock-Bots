@@ -5,12 +5,11 @@ Token manager for the Twitch chat bot with automatic refresh and persistence.
 import asyncio
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Awaitable, Callable, Optional, Tuple
 
 import aiohttp
-
 
 log = logging.getLogger("TwitchStreams.TokenManager")
 
@@ -42,26 +41,26 @@ class TwitchBotTokenManager:
         self.client_secret = client_secret
         self.keyring_service = keyring_service
 
-        self.access_token: Optional[str] = None
-        self.refresh_token: Optional[str] = None
-        self.expires_at: Optional[datetime] = None
-        self.bot_id: Optional[str] = None
+        self.access_token: str | None = None
+        self.refresh_token: str | None = None
+        self.expires_at: datetime | None = None
+        self.bot_id: str | None = None
 
         self._lock = asyncio.Lock()
-        self._refresh_task: Optional[asyncio.Task] = None
-        self._on_refresh: Optional[
-            Callable[[str, Optional[str], Optional[datetime]], Awaitable[None]]
-        ] = None
+        self._refresh_task: asyncio.Task | None = None
+        self._on_refresh: Callable[[str, str | None, datetime | None], Awaitable[None]] | None = (
+            None
+        )
 
     def set_refresh_callback(
         self,
-        callback: Callable[[str, Optional[str], Optional[datetime]], Awaitable[None]],
+        callback: Callable[[str, str | None, datetime | None], Awaitable[None]],
     ) -> None:
         """Register a callback that is invoked after successful refreshes."""
         self._on_refresh = callback
 
     async def initialize(
-        self, access_token: Optional[str] = None, refresh_token: Optional[str] = None
+        self, access_token: str | None = None, refresh_token: str | None = None
     ) -> bool:
         """
         Load tokens, validate them and start the auto-refresh loop.
@@ -81,9 +80,7 @@ class TwitchBotTokenManager:
                 self.refresh_token = self.refresh_token or loaded_refresh
 
             if not self.access_token:
-                log.error(
-                    "No Twitch bot access token available. Chat bot cannot start."
-                )
+                log.error("No Twitch bot access token available. Chat bot cannot start.")
                 return False
 
             is_valid = await self._validate_and_fetch_info()
@@ -107,9 +104,7 @@ class TwitchBotTokenManager:
             log.info("Auth manager initialised. Bot id: %s", self.bot_id or "unknown")
             return True
 
-    async def get_valid_token(
-        self, force_refresh: bool = False
-    ) -> Tuple[str, Optional[str]]:
+    async def get_valid_token(self, force_refresh: bool = False) -> tuple[str, str | None]:
         """
         Return a valid access token (auto-refreshing if needed).
 
@@ -167,9 +162,7 @@ class TwitchBotTokenManager:
 
                     expires_in = data.get("expires_in", 0)
                     if expires_in:
-                        self.expires_at = datetime.now() + timedelta(
-                            seconds=int(expires_in)
-                        )
+                        self.expires_at = datetime.now() + timedelta(seconds=int(expires_in))
                         log.info(
                             "Bot auth valid until %s",
                             self.expires_at.strftime("%Y-%m-%d %H:%M:%S"),
@@ -190,9 +183,7 @@ class TwitchBotTokenManager:
                         if user_resp.status == 200:
                             user_data = await user_resp.json()
                             if user_data.get("data"):
-                                self.bot_id = (
-                                    user_data["data"][0].get("id") or self.bot_id
-                                )
+                                self.bot_id = user_data["data"][0].get("id") or self.bot_id
                                 return True
                         else:
                             log.warning(
@@ -235,9 +226,7 @@ class TwitchBotTokenManager:
 
                     expires_in = data.get("expires_in", 0)
                     if expires_in:
-                        self.expires_at = datetime.now() + timedelta(
-                            seconds=int(expires_in)
-                        )
+                        self.expires_at = datetime.now() + timedelta(seconds=int(expires_in))
 
                     await self._save_tokens()
                     if self._on_refresh and self.access_token:
@@ -267,13 +256,9 @@ class TwitchBotTokenManager:
                 await asyncio.sleep(1800)  # 30 minutes
 
                 if self.expires_at:
-                    time_until_expiry = (
-                        self.expires_at - datetime.now()
-                    ).total_seconds()
+                    time_until_expiry = (self.expires_at - datetime.now()).total_seconds()
                     if time_until_expiry < 3600:
-                        log.info(
-                            "Auto-refresh: bot token expires soon; refreshing now."
-                        )
+                        log.info("Auto-refresh: bot token expires soon; refreshing now.")
                         async with self._lock:
                             await self._refresh_access_token()
                     else:
@@ -285,7 +270,7 @@ class TwitchBotTokenManager:
                 log.error("Auto-refresh loop error (%s).", _exc_name(exc))
                 await asyncio.sleep(300)
 
-    async def _load_tokens(self) -> Tuple[Optional[str], Optional[str]]:
+    async def _load_tokens(self) -> tuple[str | None, str | None]:
         """Load tokens from environment, token file or keyring."""
         access = (os.getenv("TWITCH_BOT_TOKEN") or "").strip()
         refresh = (os.getenv("TWITCH_BOT_REFRESH_TOKEN") or "").strip()
@@ -315,18 +300,14 @@ class TwitchBotTokenManager:
             import keyring  # type: ignore
 
             # Neues Format: service=DeadlockBot, username=TWITCH_BOT_TOKEN
-            access_keyring = keyring.get_password(
-                self.keyring_service, "TWITCH_BOT_TOKEN"
-            )
+            access_keyring = keyring.get_password(self.keyring_service, "TWITCH_BOT_TOKEN")
             # Fallback: altes Format (service=TWITCH_BOT_TOKEN@DeadlockBot)
             if not access_keyring:
                 access_keyring = keyring.get_password(
                     f"TWITCH_BOT_TOKEN@{self.keyring_service}", "TWITCH_BOT_TOKEN"
                 )
 
-            refresh_keyring = keyring.get_password(
-                self.keyring_service, "TWITCH_BOT_REFRESH_TOKEN"
-            )
+            refresh_keyring = keyring.get_password(self.keyring_service, "TWITCH_BOT_REFRESH_TOKEN")
             if not refresh_keyring:
                 refresh_keyring = keyring.get_password(
                     f"TWITCH_BOT_REFRESH_TOKEN@{self.keyring_service}",

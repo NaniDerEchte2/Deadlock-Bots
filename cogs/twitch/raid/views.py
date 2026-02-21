@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 import discord
 
@@ -41,7 +40,7 @@ async def _send_interaction_message(
     interaction: discord.Interaction,
     content: str,
     *,
-    view: Optional[discord.ui.View] = None,
+    view: discord.ui.View | None = None,
 ) -> None:
     """Send a response or follow-up, using ephemeral only in guilds."""
     ephemeral = interaction.guild_id is not None

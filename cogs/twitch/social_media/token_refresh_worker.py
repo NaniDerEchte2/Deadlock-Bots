@@ -13,12 +13,13 @@ Pattern: Similar to TwitchBotTokenManager
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from discord.ext import commands
 
-from ..storage import get_conn
 from service.field_crypto import get_crypto
+
+from ..storage import get_conn
 from .oauth_manager import SocialMediaOAuthManager
 
 log = logging.getLogger("TwitchStreams.TokenRefreshWorker")
@@ -73,9 +74,7 @@ class SocialMediaTokenRefreshWorker(commands.Cog):
 
     async def _refresh_expiring_tokens(self):
         """Refresh tokens expiring within threshold."""
-        threshold = datetime.now(timezone.utc) + timedelta(
-            hours=self.refresh_threshold_hours
-        )
+        threshold = datetime.now(UTC) + timedelta(hours=self.refresh_threshold_hours)
 
         # Find tokens expiring soon
         with get_conn() as conn:
@@ -95,9 +94,7 @@ class SocialMediaTokenRefreshWorker(commands.Cog):
             ).fetchall()
 
         if not expiring:
-            log.debug(
-                "No auth entries expiring within %sh", self.refresh_threshold_hours
-            )
+            log.debug("No auth entries expiring within %sh", self.refresh_threshold_hours)
             return
 
         log.info(
@@ -139,18 +136,14 @@ class SocialMediaTokenRefreshWorker(commands.Cog):
         )
 
         # Decrypt refresh token
-        aad_refresh = (
-            f"social_media_platform_auth|refresh_token|{row_id}|{row['enc_version']}"
-        )
+        aad_refresh = f"social_media_platform_auth|refresh_token|{row_id}|{row['enc_version']}"
         refresh_token = self.crypto.decrypt_field(row["refresh_token_enc"], aad_refresh)
 
         # Decrypt client secret (if exists)
         client_secret = None
         if row["client_secret_enc"]:
             aad_secret = f"social_media_platform_auth|client_secret|{row_id}|{row['enc_version']}"
-            client_secret = self.crypto.decrypt_field(
-                row["client_secret_enc"], aad_secret
-            )
+            client_secret = self.crypto.decrypt_field(row["client_secret_enc"], aad_secret)
 
         # Refresh token via OAuth manager
         try:
@@ -189,9 +182,7 @@ class SocialMediaTokenRefreshWorker(commands.Cog):
         """Save refreshed tokens to database."""
         # Encrypt new access token
         aad_access = f"social_media_platform_auth|access_token|{row_id}|1"
-        access_enc = self.crypto.encrypt_field(
-            new_tokens["access_token"], aad_access, kid="v1"
-        )
+        access_enc = self.crypto.encrypt_field(new_tokens["access_token"], aad_access, kid="v1")
 
         # Encrypt new refresh token (if provided)
         refresh_enc = None

@@ -14,8 +14,8 @@ import math
 import re
 import sqlite3
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Tuple
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 log = logging.getLogger("TwitchStreams.CoachingEngine")
 
@@ -24,11 +24,9 @@ class CoachingEngine:
     """Generates coaching data from the Twitch analytics database."""
 
     @staticmethod
-    def get_coaching_data(
-        conn: sqlite3.Connection, streamer: str, days: int
-    ) -> Dict[str, Any]:
+    def get_coaching_data(conn: sqlite3.Connection, streamer: str, days: int) -> dict[str, Any]:
         streamer_login = streamer.lower()
-        since_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        since_date = (datetime.now(UTC) - timedelta(days=days)).isoformat()
 
         # Check if streamer has any data
         count = conn.execute(
@@ -44,7 +42,7 @@ class CoachingEngine:
                 "aiSummary": None,
             }
 
-        result: Dict[str, Any] = {
+        result: dict[str, Any] = {
             "streamer": streamer,
             "days": days,
             "empty": False,
@@ -52,28 +50,16 @@ class CoachingEngine:
 
         result["efficiency"] = _efficiency(conn, streamer_login, since_date)
         result["titleAnalysis"] = _title_analysis(conn, streamer_login, since_date)
-        result["scheduleOptimizer"] = _schedule_optimizer(
-            conn, streamer_login, since_date
-        )
-        result["durationAnalysis"] = _duration_analysis(
-            conn, streamer_login, since_date
-        )
+        result["scheduleOptimizer"] = _schedule_optimizer(conn, streamer_login, since_date)
+        result["durationAnalysis"] = _duration_analysis(conn, streamer_login, since_date)
         result["crossCommunity"] = _cross_community(conn, streamer_login, since_date)
         result["tagOptimization"] = _tag_optimization(conn, streamer_login, since_date)
-        result["retentionCoaching"] = _retention_coaching(
-            conn, streamer_login, since_date
-        )
-        result["doubleStreamDetection"] = _double_stream_detection(
-            conn, streamer_login, since_date
-        )
-        result["chatConcentration"] = _chat_concentration(
-            conn, streamer_login, since_date
-        )
+        result["retentionCoaching"] = _retention_coaching(conn, streamer_login, since_date)
+        result["doubleStreamDetection"] = _double_stream_detection(conn, streamer_login, since_date)
+        result["chatConcentration"] = _chat_concentration(conn, streamer_login, since_date)
         result["raidNetwork"] = _raid_network(conn, streamer_login, since_date)
         result["peerComparison"] = _peer_comparison(conn, streamer_login, since_date)
-        result["competitionDensity"] = _competition_density(
-            conn, streamer_login, since_date
-        )
+        result["competitionDensity"] = _competition_density(conn, streamer_login, since_date)
         result["recommendations"] = _build_recommendations(result)
         result["aiSummary"] = None  # Hybrid-ready placeholder
 
@@ -85,7 +71,7 @@ class CoachingEngine:
 # ---------------------------------------------------------------------------
 
 
-def _efficiency(conn: sqlite3.Connection, streamer: str, since: str) -> Dict[str, Any]:
+def _efficiency(conn: sqlite3.Connection, streamer: str, since: str) -> dict[str, Any]:
     # Per-streamer efficiency: viewer-hours / stream-hours
     rows = conn.execute(
         """
@@ -149,9 +135,7 @@ def _efficiency(conn: sqlite3.Connection, streamer: str, since: str) -> Dict[str
 # ---------------------------------------------------------------------------
 
 
-def _title_analysis(
-    conn: sqlite3.Connection, streamer: str, since: str
-) -> Dict[str, Any]:
+def _title_analysis(conn: sqlite3.Connection, streamer: str, since: str) -> dict[str, Any]:
     # Your titles
     your_titles = conn.execute(
         """
@@ -200,10 +184,7 @@ def _title_analysis(
         (since, streamer),
     ).fetchall()
 
-    cat_list = [
-        {"title": r[0], "streamer": r[1], "avgViewers": round(r[2], 1)}
-        for r in cat_titles
-    ]
+    cat_list = [{"title": r[0], "streamer": r[1], "avgViewers": round(r[2], 1)} for r in cat_titles]
 
     # Extract keyword patterns
     your_words = _extract_keywords([r[0] for r in your_titles])
@@ -266,7 +247,7 @@ def _title_analysis(
     }
 
 
-def _extract_keywords(titles: List[str]) -> List[str]:
+def _extract_keywords(titles: list[str]) -> list[str]:
     """Extract meaningful keywords from stream titles."""
     stopwords = {
         "der",
@@ -313,9 +294,7 @@ def _extract_keywords(titles: List[str]) -> List[str]:
 # ---------------------------------------------------------------------------
 
 
-def _schedule_optimizer(
-    conn: sqlite3.Connection, streamer: str, since: str
-) -> Dict[str, Any]:
+def _schedule_optimizer(conn: sqlite3.Connection, streamer: str, since: str) -> dict[str, Any]:
     # Category competition heatmap
     competition = conn.execute(
         """
@@ -356,9 +335,7 @@ def _schedule_optimizer(
         (streamer, since),
     ).fetchall()
 
-    current_slots = [
-        {"weekday": int(r[0]), "hour": int(r[1]), "count": r[2]} for r in your_slots
-    ]
+    current_slots = [{"weekday": int(r[0]), "hour": int(r[1]), "count": r[2]} for r in your_slots]
 
     # Sweet spots: high category viewers, low competition
     sweet_spots = []
@@ -391,9 +368,7 @@ def _schedule_optimizer(
 # ---------------------------------------------------------------------------
 
 
-def _duration_analysis(
-    conn: sqlite3.Connection, streamer: str, since: str
-) -> Dict[str, Any]:
+def _duration_analysis(conn: sqlite3.Connection, streamer: str, since: str) -> dict[str, Any]:
     rows = conn.execute(
         """
         SELECT
@@ -482,9 +457,7 @@ def _duration_analysis(
 # ---------------------------------------------------------------------------
 
 
-def _cross_community(
-    conn: sqlite3.Connection, streamer: str, since: str
-) -> Dict[str, Any]:
+def _cross_community(conn: sqlite3.Connection, streamer: str, since: str) -> dict[str, Any]:
     # Your unique chatters
     your_chatters_row = conn.execute(
         """
@@ -573,9 +546,7 @@ def _cross_community(
 # ---------------------------------------------------------------------------
 
 
-def _tag_optimization(
-    conn: sqlite3.Connection, streamer: str, since: str
-) -> Dict[str, Any]:
+def _tag_optimization(conn: sqlite3.Connection, streamer: str, since: str) -> dict[str, Any]:
     # Your tags
     your_rows = conn.execute(
         """
@@ -590,8 +561,7 @@ def _tag_optimization(
     ).fetchall()
 
     your_tags = [
-        {"tags": r[0], "avgViewers": round(r[1], 1), "usageCount": r[2]}
-        for r in your_rows
+        {"tags": r[0], "avgViewers": round(r[1], 1), "usageCount": r[2]} for r in your_rows
     ]
 
     # Extract individual tags from your streams
@@ -613,8 +583,7 @@ def _tag_optimization(
     ).fetchall()
 
     cat_tags = [
-        {"tags": r[0], "avgViewers": round(r[1], 1), "streamerCount": r[2]}
-        for r in cat_rows
+        {"tags": r[0], "avgViewers": round(r[1], 1), "streamerCount": r[2]} for r in cat_rows
     ]
 
     cat_individual = _split_tags_from_rows(cat_rows)
@@ -625,9 +594,7 @@ def _tag_optimization(
     # Find underperforming tags (your tags that perform below your average)
     if your_tags:
         your_avg = sum(t["avgViewers"] for t in your_tags) / len(your_tags)
-        underperforming = [
-            t["tags"] for t in your_tags if t["avgViewers"] < your_avg * 0.8
-        ]
+        underperforming = [t["tags"] for t in your_tags if t["avgViewers"] < your_avg * 0.8]
     else:
         underperforming = []
 
@@ -656,9 +623,7 @@ def _split_tags_from_rows(rows: list) -> set:
 # ---------------------------------------------------------------------------
 
 
-def _retention_coaching(
-    conn: sqlite3.Connection, streamer: str, since: str
-) -> Dict[str, Any]:
+def _retention_coaching(conn: sqlite3.Connection, streamer: str, since: str) -> dict[str, Any]:
     # Your 5-min retention average
     your_ret = conn.execute(
         """
@@ -734,14 +699,14 @@ def _retention_coaching(
 
 
 def _build_viewer_curve(
-    conn: sqlite3.Connection, session_ids: List[int], peak_viewers: List[int]
-) -> List[Dict[str, Any]]:
+    conn: sqlite3.Connection, session_ids: list[int], peak_viewers: list[int]
+) -> list[dict[str, Any]]:
     """Build normalized viewer curve from session_viewers data."""
     if not session_ids:
         return []
 
-    normalized_pairs: List[Tuple[int, int]] = []
-    for sid, peak in zip(session_ids, peak_viewers):
+    normalized_pairs: list[tuple[int, int]] = []
+    for sid, peak in zip(session_ids, peak_viewers, strict=False):
         try:
             normalized_pairs.append((int(sid), int(peak)))
         except (TypeError, ValueError):
@@ -764,7 +729,7 @@ def _build_viewer_curve(
     ).fetchall()
 
     peak_map = {sid: peak for sid, peak in normalized_pairs}
-    by_minute: Dict[int, List[float]] = defaultdict(list)
+    by_minute: dict[int, list[float]] = defaultdict(list)
 
     for sid, minute, vc in rows:
         peak = peak_map.get(sid, 1)
@@ -785,9 +750,7 @@ def _build_viewer_curve(
 # ---------------------------------------------------------------------------
 
 
-def _double_stream_detection(
-    conn: sqlite3.Connection, streamer: str, since: str
-) -> Dict[str, Any]:
+def _double_stream_detection(conn: sqlite3.Connection, streamer: str, since: str) -> dict[str, Any]:
     rows = conn.execute(
         """
         SELECT
@@ -826,9 +789,7 @@ def _double_stream_detection(
         """,
         (streamer, since),
     ).fetchone()
-    single_avg = (
-        round(single_avg_row[0], 1) if single_avg_row and single_avg_row[0] else 0
-    )
+    single_avg = round(single_avg_row[0], 1) if single_avg_row and single_avg_row[0] else 0
 
     double_avg_row = conn.execute(
         """
@@ -842,9 +803,7 @@ def _double_stream_detection(
         """,
         (streamer, since),
     ).fetchone()
-    double_avg = (
-        round(double_avg_row[0], 1) if double_avg_row and double_avg_row[0] else 0
-    )
+    double_avg = round(double_avg_row[0], 1) if double_avg_row and double_avg_row[0] else 0
 
     return {
         "detected": len(occurrences) > 0,
@@ -860,9 +819,7 @@ def _double_stream_detection(
 # ---------------------------------------------------------------------------
 
 
-def _chat_concentration(
-    conn: sqlite3.Connection, streamer: str, since: str
-) -> Dict[str, Any]:
+def _chat_concentration(conn: sqlite3.Connection, streamer: str, since: str) -> dict[str, Any]:
     """Analyse chat dependency and chatter loyalty distribution."""
     # Loyalty buckets
     buckets_raw = conn.execute(
@@ -943,14 +900,10 @@ def _chat_concentration(
 
     own_one_timer_pct = buckets.get("oneTimer", {}).get("pct", 0)
     peer_one_timer_pcts = [
-        round(r[2] / r[1] * 100, 1)
-        for r in peer_loyalty
-        if r[0] != streamer and r[1] > 0
+        round(r[2] / r[1] * 100, 1) for r in peer_loyalty if r[0] != streamer and r[1] > 0
     ]
     avg_peer_one_timer = (
-        round(sum(peer_one_timer_pcts) / len(peer_one_timer_pcts), 1)
-        if peer_one_timer_pcts
-        else 0
+        round(sum(peer_one_timer_pcts) / len(peer_one_timer_pcts), 1) if peer_one_timer_pcts else 0
     )
 
     return {
@@ -972,9 +925,7 @@ def _chat_concentration(
 # ---------------------------------------------------------------------------
 
 
-def _raid_network(
-    conn: sqlite3.Connection, streamer: str, since: str
-) -> Dict[str, Any]:
+def _raid_network(conn: sqlite3.Connection, streamer: str, since: str) -> dict[str, Any]:
     """Analyse raid send/receive balance and partner reciprocity."""
     sent = conn.execute(
         """
@@ -1047,9 +998,7 @@ def _raid_network(
         "totalSentViewers": total_sent_v,
         "totalReceivedViewers": total_recv_v,
         "avgSentViewers": round(total_sent_v / total_sent, 1) if total_sent > 0 else 0,
-        "avgReceivedViewers": round(total_recv_v / total_recv, 1)
-        if total_recv > 0
-        else 0,
+        "avgReceivedViewers": round(total_recv_v / total_recv, 1) if total_recv > 0 else 0,
         "reciprocityRatio": round(total_recv / total_sent, 2) if total_sent > 0 else 0,
         "mutualPartners": mutual,
         "totalPartners": len(partners),
@@ -1062,9 +1011,7 @@ def _raid_network(
 # ---------------------------------------------------------------------------
 
 
-def _peer_comparison(
-    conn: sqlite3.Connection, streamer: str, since: str
-) -> Dict[str, Any]:
+def _peer_comparison(conn: sqlite3.Connection, streamer: str, since: str) -> dict[str, Any]:
     """Multi-metric comparison vs similar and aspirational peers."""
     all_rows = conn.execute(
         """
@@ -1173,9 +1120,7 @@ def _peer_comparison(
 # ---------------------------------------------------------------------------
 
 
-def _competition_density(
-    conn: sqlite3.Connection, streamer: str, since: str
-) -> Dict[str, Any]:
+def _competition_density(conn: sqlite3.Connection, streamer: str, since: str) -> dict[str, Any]:
     """Competition density using actual stream sessions (not aggregated stats)."""
     # How many streamers are active per hour-of-day?
     density = conn.execute(
@@ -1305,9 +1250,9 @@ def _competition_density(
 # ---------------------------------------------------------------------------
 
 
-def _build_recommendations(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _build_recommendations(data: dict[str, Any]) -> list[dict[str, Any]]:
     """Rule-based recommendation engine."""
-    recs: List[Dict[str, Any]] = []
+    recs: list[dict[str, Any]] = []
 
     # Double streams detected
     ds = data.get("doubleStreamDetection", {})
@@ -1323,8 +1268,7 @@ def _build_recommendations(data: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "category": "Schedule",
                 "title": "Doppel-Streams erkannt",
                 "description": f"{ds['count']}x hast du an einem Tag mehrfach gestreamt. Das kann dein Wachstum bremsen, weil Viewer nicht wissen, wann du ON bist.",
-                "estimatedImpact": impact
-                or "Konsistenter Schedule = bessere Zuschauerbindung",
+                "estimatedImpact": impact or "Konsistenter Schedule = bessere Zuschauerbindung",
                 "evidence": f"{ds['count']} Tage mit mehreren Sessions",
                 "icon": "AlertTriangle",
             }
@@ -1402,9 +1346,7 @@ def _build_recommendations(data: Dict[str, Any]) -> List[Dict[str, Any]]:
 
         if your_slots_set and high_comp_set:
             overlap = your_slots_set & high_comp_set
-            overlap_pct = (
-                len(overlap) / len(your_slots_set) * 100 if your_slots_set else 0
-            )
+            overlap_pct = len(overlap) / len(your_slots_set) * 100 if your_slots_set else 0
             if overlap_pct > 70:
                 recs.append(
                     {
@@ -1615,7 +1557,7 @@ def _build_recommendations(data: Dict[str, Any]) -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def _pearson(x: List[float], y: List[float]) -> float:
+def _pearson(x: list[float], y: list[float]) -> float:
     """Simple Pearson correlation coefficient."""
     n = len(x)
     if n < 3:
@@ -1626,5 +1568,5 @@ def _pearson(x: List[float], y: List[float]) -> float:
     sy = math.sqrt(sum((yi - my) ** 2 for yi in y) / n)
     if sx == 0 or sy == 0:
         return 0.0
-    cov = sum((xi - mx) * (yi - my) for xi, yi in zip(x, y)) / n
+    cov = sum((xi - mx) * (yi - my) for xi, yi in zip(x, y, strict=False)) / n
     return cov / (sx * sy)

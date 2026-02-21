@@ -6,34 +6,34 @@ import asyncio
 import logging
 import re
 import time
-from typing import Optional, Dict, Set, List, Tuple, Any
 from datetime import datetime
+from typing import Any
 
 import discord
 from discord.ext import commands
-from service import db
 
+from service import db
 
 log = logging.getLogger("TempVoiceCore")
 
 # --------- IDs / Konfiguration ---------
 CASUAL_STAGING_ID = 1330278323145801758  # Chill/ Casual Staging
-STAGING_CHANNEL_IDS: Set[int] = {
+STAGING_CHANNEL_IDS: set[int] = {
     CASUAL_STAGING_ID,  # Casual Staging
     1357422958544420944,  # Street Brawl Staging
     1412804671432818890,  # Spezial Staging
 }
-FIXED_LANE_IDS: Set[int] = {
+FIXED_LANE_IDS: set[int] = {
     1411391356278018245,  # Dauerhafter Voice-Channel (nicht von TempVoice verwalten)
     1470126503252721845,  # Ausgenommen: nie von TempVoice verwalten/loeschen
 }
-MINRANK_CATEGORY_IDS: Set[int] = {
+MINRANK_CATEGORY_IDS: set[int] = {
     1412804540994162789,  # Grind Lanes
     1289721245281292290,  # Normal Lanes (MinRank freigeschaltet)
     1357422957017698478,  # Ranked Lanes
 }
 # Per-Staging-Speziallogik
-STAGING_RULES: Dict[int, Dict[str, Any]] = {
+STAGING_RULES: dict[int, dict[str, Any]] = {
     1357422958544420944: {  # Street Brawl
         "prefix": "Street Brawl",
         "user_limit": 4,
@@ -49,9 +49,7 @@ CASUAL_RANK_FALLBACK = "Chill"
 # Legacy-Alias für ältere Imports, zeigt weiterhin auf die ursprüngliche Grind-ID
 MINRANK_CATEGORY_ID: int = 1412804540994162789
 RANKED_CATEGORY_ID: int = 1357422957017698478
-INTERFACE_TEXT_CHANNEL_ID: int = (
-    1371927143537315890  # exportiert (wird vom Interface genutzt)
-)
+INTERFACE_TEXT_CHANNEL_ID: int = 1371927143537315890  # exportiert (wird vom Interface genutzt)
 ENGLISH_ONLY_ROLE_ID: int = 1309741866098491479
 
 DEFAULT_CASUAL_CAP = 8
@@ -61,9 +59,7 @@ STARTUP_PURGE_DELAY_SEC = 3
 PURGE_INTERVAL_SECONDS = 180  # Optimiert: 60s → 180s (weniger CPU-Last)
 
 # LiveMatch-Suffix (vom Worker) – NICHT von TempVoice anfassen
-LIVE_SUFFIX_RX = re.compile(
-    r"\s+•\s+\d+/\d+\s+(Im\s+Match|Im\s+Spiel|Lobby/Queue)", re.IGNORECASE
-)
+LIVE_SUFFIX_RX = re.compile(r"\s+•\s+\d+/\d+\s+(Im\s+Match|Im\s+Spiel|Lobby/Queue)", re.IGNORECASE)
 # TempVoice darf nur in diesem Zeitfenster nach Erstellung Namen setzen
 ONLY_SET_NAME_ON_CREATE = True
 CREATE_RENAME_WINDOW_SEC = 45
@@ -84,9 +80,7 @@ RANK_ORDER = [
 ]
 RANK_SET = set(RANK_ORDER)
 SUFFIX_THRESHOLD_RANK = "emissary"
-MANAGED_PREFIXES = {"lane", "street brawl", CASUAL_RANK_FALLBACK.lower()}.union(
-    RANK_SET
-)
+MANAGED_PREFIXES = {"lane", "street brawl", CASUAL_RANK_FALLBACK.lower()}.union(RANK_SET)
 
 # Export-Intent für andere Module (verhindert "unused global variable")
 __all__ = [
@@ -102,7 +96,7 @@ __all__ = [
 
 
 # --------- Hilfen ---------
-def _is_fixed_lane(ch: Optional[discord.abc.GuildChannel | int]) -> bool:
+def _is_fixed_lane(ch: discord.abc.GuildChannel | int | None) -> bool:
     try:
         lane_id = int(ch) if isinstance(ch, int) else int(getattr(ch, "id", 0))
     except Exception:
@@ -110,7 +104,7 @@ def _is_fixed_lane(ch: Optional[discord.abc.GuildChannel | int]) -> bool:
     return lane_id in FIXED_LANE_IDS
 
 
-def _is_managed_lane(ch: Optional[discord.VoiceChannel]) -> bool:
+def _is_managed_lane(ch: discord.VoiceChannel | None) -> bool:
     if not isinstance(ch, discord.VoiceChannel):
         return False
     if _is_fixed_lane(ch):
@@ -132,8 +126,8 @@ def _rank_index(name: str) -> int:
     return RANK_ORDER.index(n) if n in RANK_SET else 0
 
 
-def _rank_roles(guild: discord.Guild) -> Dict[str, discord.Role]:
-    out: Dict[str, discord.Role] = {}
+def _rank_roles(guild: discord.Guild) -> dict[str, discord.Role]:
+    out: dict[str, discord.Role] = {}
     for r in guild.roles:
         n = r.name.lower()
         if n in RANK_SET:
@@ -161,7 +155,7 @@ def _age_seconds(ch: discord.VoiceChannel) -> float:
         return 999999.0
 
 
-def _rank_prefix_for(member: discord.Member) -> Optional[str]:
+def _rank_prefix_for(member: discord.Member) -> str | None:
     """Ermittle den höchsten Rang des Members anhand der Rollen-Namen."""
     best_idx = _member_rank_index(member)
     if best_idx > 0:
@@ -199,7 +193,7 @@ class AsyncBanStore:
             log.warning("is_banned_by_owner failed (%s->%s): %r", owner_id, user_id, e)
             return False
 
-    async def list_bans(self, owner_id: int) -> List[int]:
+    async def list_bans(self, owner_id: int) -> list[int]:
         try:
             rows = await db.query_all_async(
                 "SELECT banned_id FROM tempvoice_bans WHERE owner_id=?",
@@ -235,7 +229,7 @@ class LurkerStore:
         pass
 
     async def add_lurker(
-        self, guild_id: int, channel_id: int, user_id: int, original_nick: Optional[str]
+        self, guild_id: int, channel_id: int, user_id: int, original_nick: str | None
     ):
         try:
             await db.execute_async(
@@ -251,7 +245,7 @@ class LurkerStore:
         except Exception as e:
             log.warning("add_lurker failed (%s in %s): %r", user_id, channel_id, e)
 
-    async def get_lurker(self, channel_id: int, user_id: int) -> Optional[dict]:
+    async def get_lurker(self, channel_id: int, user_id: int) -> dict | None:
         try:
             row = await db.query_one_async(
                 "SELECT * FROM tempvoice_lurkers WHERE channel_id=? AND user_id=?",
@@ -283,42 +277,39 @@ class TempVoiceCore(commands.Cog):
         self.lurkers = LurkerStore()
 
         # Laufzeit-State
-        self.created_channels: Set[int] = set()
-        self.lane_owner: Dict[int, int] = {}
-        self.lane_base: Dict[int, str] = {}
-        self.lane_min_rank: Dict[int, str] = {}
-        self.join_time: Dict[int, Dict[int, float]] = {}
-        self._edit_locks: Dict[int, asyncio.Lock] = {}
-        self._lane_creation_locks: Dict[int, asyncio.Lock] = {}
-        self._last_name_desired: Dict[int, str] = {}
-        self._last_name_patch_ts: Dict[int, float] = {}
-        self._bg_tasks: Set[asyncio.Task] = set()
+        self.created_channels: set[int] = set()
+        self.lane_owner: dict[int, int] = {}
+        self.lane_base: dict[int, str] = {}
+        self.lane_min_rank: dict[int, str] = {}
+        self.join_time: dict[int, dict[int, float]] = {}
+        self._edit_locks: dict[int, asyncio.Lock] = {}
+        self._lane_creation_locks: dict[int, asyncio.Lock] = {}
+        self._last_name_desired: dict[int, str] = {}
+        self._last_name_patch_ts: dict[int, float] = {}
+        self._bg_tasks: set[asyncio.Task] = set()
         self._shutting_down: bool = False
 
         # Performance: Role-Caching (5min TTL)
-        self._rank_roles_cache: Dict[int, Dict[str, discord.Role]] = {}
-        self._cache_timestamp: Dict[int, float] = {}
-        self.lane_rules: Dict[int, Dict[str, Any]] = {}
-        self.minrank_blocked_lanes: Set[int] = set()
-        self.category_rules: Dict[int, Dict[str, Any]] = {}
-        self.category_to_staging: Dict[int, int] = {}
+        self._rank_roles_cache: dict[int, dict[str, discord.Role]] = {}
+        self._cache_timestamp: dict[int, float] = {}
+        self.lane_rules: dict[int, dict[str, Any]] = {}
+        self.minrank_blocked_lanes: set[int] = set()
+        self.category_rules: dict[int, dict[str, Any]] = {}
+        self.category_to_staging: dict[int, int] = {}
 
-    def _rules_for_staging(self, staging: discord.abc.GuildChannel) -> Dict[str, Any]:
+    def _rules_for_staging(self, staging: discord.abc.GuildChannel) -> dict[str, Any]:
         try:
             sid = int(getattr(staging, "id", 0))
         except Exception:
             return {}
         return STAGING_RULES.get(sid, {})
 
-    def _rules_from_base(self, base_name: str) -> Tuple[Dict[str, Any], Optional[int]]:
+    def _rules_from_base(self, base_name: str) -> tuple[dict[str, Any], int | None]:
         base_lower = base_name.lower()
         for sid, rule in STAGING_RULES.items():
             if rule.get("prefix_from_rank"):
                 first_token = base_lower.split(" ", 1)[0]
-                if (
-                    first_token in RANK_SET
-                    or first_token == CASUAL_RANK_FALLBACK.lower()
-                ):
+                if first_token in RANK_SET or first_token == CASUAL_RANK_FALLBACK.lower():
                     return rule, sid
                 continue
             prefix = str(rule.get("prefix") or "Lane").lower()
@@ -326,7 +317,7 @@ class TempVoiceCore(commands.Cog):
                 return rule, sid
         return {}, None
 
-    def _refresh_category_rules(self, guild: Optional[discord.Guild]):
+    def _refresh_category_rules(self, guild: discord.Guild | None):
         if not guild:
             return
         for staging_id, rules in STAGING_RULES.items():
@@ -339,27 +330,19 @@ class TempVoiceCore(commands.Cog):
             self.category_rules[int(cat.id)] = rules
             self.category_to_staging[int(cat.id)] = int(staging_id)
 
-    def _rules_for_category(
-        self, category: Optional[discord.CategoryChannel]
-    ) -> Dict[str, Any]:
+    def _rules_for_category(self, category: discord.CategoryChannel | None) -> dict[str, Any]:
         if not category:
             return {}
         return self.category_rules.get(int(category.id), {})
 
-    def _source_staging_for_category(
-        self, category: Optional[discord.CategoryChannel]
-    ) -> Optional[int]:
+    def _source_staging_for_category(self, category: discord.CategoryChannel | None) -> int | None:
         if not category:
             return None
         return self.category_to_staging.get(int(category.id))
 
-    def _average_rank_prefix_for_lane(
-        self, lane: discord.VoiceChannel
-    ) -> Optional[str]:
+    def _average_rank_prefix_for_lane(self, lane: discord.VoiceChannel) -> str | None:
         """Berechnet den Durchschnittsrang der Lane-Mitglieder (Minimum Initiate=1)."""
-        members = [
-            m for m in getattr(lane, "members", []) if isinstance(m, discord.Member)
-        ]
+        members = [m for m in getattr(lane, "members", []) if isinstance(m, discord.Member)]
         if not members:
             return None
         total = 0
@@ -375,9 +358,7 @@ class TempVoiceCore(commands.Cog):
         avg_idx = max(1, min(avg_idx, len(RANK_ORDER) - 1))
         return RANK_ORDER[avg_idx].capitalize()
 
-    def _desired_prefix_for_rules(
-        self, lane: discord.VoiceChannel, rules: Dict[str, Any]
-    ) -> str:
+    def _desired_prefix_for_rules(self, lane: discord.VoiceChannel, rules: dict[str, Any]) -> str:
         if rules.get("prefix_from_rank"):
             owner_id = self.lane_owner.get(lane.id)
             member = lane.guild.get_member(int(owner_id)) if owner_id else None
@@ -390,7 +371,7 @@ class TempVoiceCore(commands.Cog):
             return CASUAL_RANK_FALLBACK
         return str(rules.get("prefix") or "Lane")
 
-    def _store_lane_rules(self, lane_id: int, rules: Dict[str, Any]):
+    def _store_lane_rules(self, lane_id: int, rules: dict[str, Any]):
         if rules:
             self.lane_rules[lane_id] = rules
         else:
@@ -481,9 +462,7 @@ class TempVoiceCore(commands.Cog):
                 e,
             )
 
-    async def _apply_lane_rules(
-        self, lane: discord.VoiceChannel, rules: Dict[str, Any]
-    ):
+    async def _apply_lane_rules(self, lane: discord.VoiceChannel, rules: dict[str, Any]):
         if not rules:
             self._store_lane_rules(lane.id, {})
             self.minrank_blocked_lanes.discard(lane.id)
@@ -495,9 +474,7 @@ class TempVoiceCore(commands.Cog):
             try:
                 await self._apply_min_rank(lane, "unknown")
             except Exception as e:
-                log.debug(
-                    "apply_lane_rules: reset min rank failed for %s: %r", lane.id, e
-                )
+                log.debug("apply_lane_rules: reset min rank failed for %s: %r", lane.id, e)
             self.minrank_blocked_lanes.add(lane.id)
         else:
             self.minrank_blocked_lanes.discard(lane.id)
@@ -634,9 +611,7 @@ class TempVoiceCore(commands.Cog):
             """)
             await db.execute_async("DROP TABLE IF EXISTS tempvoice_interface_old")
         except Exception as e:
-            log.error(
-                "tempvoice_interface migration copy failed: %r - rolling back!", e
-            )
+            log.error("tempvoice_interface migration copy failed: %r - rolling back!", e)
             try:
                 await db.execute_async("DROP TABLE IF EXISTS tempvoice_interface")
                 await db.execute_async(
@@ -644,9 +619,7 @@ class TempVoiceCore(commands.Cog):
                 )
                 log.info("tempvoice_interface migration rolled back successfully")
             except Exception as rollback_exc:
-                log.critical(
-                    "Failed to rollback tempvoice_interface migration: %r", rollback_exc
-                )
+                log.critical("Failed to rollback tempvoice_interface migration: %r", rollback_exc)
 
     async def _startup(self):
         await self.bot.wait_until_ready()
@@ -658,9 +631,7 @@ class TempVoiceCore(commands.Cog):
         await self._rehydrate_from_db()
         await self._purge_empty_lanes_once()
         self._track(self._delayed_purge(30))
-        log.info(
-            "TempVoiceCore bereit • verwaltete Lanes: %d", len(self.created_channels)
-        )
+        log.info("TempVoiceCore bereit • verwaltete Lanes: %d", len(self.created_channels))
 
     async def _delayed_purge(self, delay: int):
         try:
@@ -678,7 +649,7 @@ class TempVoiceCore(commands.Cog):
             log.exception("TempVoice purge loop crashed: %r", e)
 
     # --------- Rehydrierung / Purge ---------
-    def _first_guild(self) -> Optional[discord.Guild]:
+    def _first_guild(self) -> discord.Guild | None:
         return self.bot.guilds[0] if self.bot.guilds else None
 
     async def _rehydrate_from_db(self):
@@ -699,7 +670,7 @@ class TempVoiceCore(commands.Cog):
             if _is_fixed_lane(lane_id):
                 await self._forget_lane(lane_id)
                 continue
-            lane: Optional[discord.VoiceChannel] = guild.get_channel(lane_id)  # type: ignore
+            lane: discord.VoiceChannel | None = guild.get_channel(lane_id)  # type: ignore
             if not isinstance(lane, discord.VoiceChannel):
                 try:
                     await db.execute_async(
@@ -714,25 +685,21 @@ class TempVoiceCore(commands.Cog):
             self.lane_base[lane.id] = str(r["base_name"])
             self.lane_min_rank.setdefault(lane.id, "unknown")
             self.join_time.setdefault(lane.id, {})
-            rules: Dict[str, Any] = {}
-            source_id: Optional[int] = None
+            rules: dict[str, Any] = {}
+            source_id: int | None = None
             try:
                 if r["source_staging_id"]:
                     rules = STAGING_RULES.get(int(r["source_staging_id"]), {})
                     source_id = int(r["source_staging_id"])
             except Exception as e:
-                log.debug(
-                    "rehydrate: staging lookup failed for lane %s: %r", lane.id, e
-                )
+                log.debug("rehydrate: staging lookup failed for lane %s: %r", lane.id, e)
             if not rules:
                 rules, source_id = self._rules_from_base(self.lane_base[lane.id])
             if rules:
                 try:
                     await self._apply_lane_rules(lane, rules)
                 except Exception as e:
-                    log.debug(
-                        "rehydrate: apply lane rules failed for %s: %r", lane.id, e
-                    )
+                    log.debug("rehydrate: apply lane rules failed for %s: %r", lane.id, e)
                 if source_id and not r["source_staging_id"]:
                     try:
                         await db.execute_async(
@@ -764,7 +731,7 @@ class TempVoiceCore(commands.Cog):
             log.warning("purge: fetch failed: %r", e)
             return
 
-        processed_lane_ids: Set[int] = set()
+        processed_lane_ids: set[int] = set()
         for r in rows:
             lane_id = int(r["channel_id"])
             processed_lane_ids.add(lane_id)
@@ -800,15 +767,11 @@ class TempVoiceCore(commands.Cog):
 
     async def _forget_lane(self, lane_id: int) -> None:
         try:
-            await db.execute_async(
-                "DELETE FROM tempvoice_lanes WHERE channel_id=?", (lane_id,)
-            )
+            await db.execute_async("DELETE FROM tempvoice_lanes WHERE channel_id=?", (lane_id,))
         except Exception as e:
             log.debug("cleanup: delete row %s failed: %r", lane_id, e)
         try:
-            await db.execute_async(
-                "DELETE FROM tempvoice_interface WHERE lane_id=?", (lane_id,)
-            )
+            await db.execute_async("DELETE FROM tempvoice_interface WHERE lane_id=?", (lane_id,))
         except Exception as e:
             log.debug("cleanup: delete interface row %s failed: %r", lane_id, e)
 
@@ -834,7 +797,7 @@ class TempVoiceCore(commands.Cog):
         self,
         lane_id: int,
         *,
-        channel: Optional[discord.VoiceChannel],
+        channel: discord.VoiceChannel | None,
         reason: str,
     ) -> None:
         if _is_fixed_lane(lane_id):
@@ -871,7 +834,7 @@ class TempVoiceCore(commands.Cog):
     # --------- Öffentliche Helfer (von UI aufgerufen) ---------
     async def parse_user_identifier(
         self, guild: discord.Guild, raw: str
-    ) -> Tuple[Optional[int], Optional[str]]:
+    ) -> tuple[int | None, str | None]:
         s = raw.strip()
         if not s:
             return None, "Eingabe ist leer."
@@ -897,7 +860,7 @@ class TempVoiceCore(commands.Cog):
                 return None, "Nach '@' fehlt der Name."
 
         low_name_search = name_search.lower()
-        matches: List[discord.Member] = []
+        matches: list[discord.Member] = []
         for m in guild.members:
             # Check display_name, global_name, and name
             if m.display_name and m.display_name.lower() == low_name_search:
@@ -917,9 +880,7 @@ class TempVoiceCore(commands.Cog):
 
         return None, "Nutzer nicht gefunden."
 
-    async def resolve_member(
-        self, guild: discord.Guild, user_id: int
-    ) -> Optional[discord.Member]:
+    async def resolve_member(self, guild: discord.Guild, user_id: int) -> discord.Member | None:
         """Finde ein Member-Objekt für set_permissions (inkl. Fetch-Fallback)."""
         member = guild.get_member(int(user_id))
         if member:
@@ -927,9 +888,7 @@ class TempVoiceCore(commands.Cog):
         try:
             return await guild.fetch_member(int(user_id))
         except discord.NotFound:
-            log.debug(
-                "resolve_member: user %s not found in guild %s", user_id, guild.id
-            )
+            log.debug("resolve_member: user %s not found in guild %s", user_id, guild.id)
         except discord.HTTPException as exc:
             log.debug(
                 "resolve_member: fetch_member failed for %s in guild %s: %r",
@@ -974,9 +933,7 @@ class TempVoiceCore(commands.Cog):
             if region == "DE":
                 ow = lane.overwrites_for(role)
                 ow.connect = False
-                await lane.set_permissions(
-                    role, overwrite=ow, reason="TempVoice: Deutsch-Only"
-                )
+                await lane.set_permissions(role, overwrite=ow, reason="TempVoice: Deutsch-Only")
             else:
                 await lane.set_permissions(
                     role, overwrite=None, reason="TempVoice: Sprachfilter frei"
@@ -1000,15 +957,11 @@ class TempVoiceCore(commands.Cog):
             try:
                 await self._clear_owner_bans(lane, previous_owner)
             except Exception as e:
-                log.debug(
-                    "claim_owner: clear_owner_bans failed for lane %s: %r", lane.id, e
-                )
+                log.debug("claim_owner: clear_owner_bans failed for lane %s: %r", lane.id, e)
         try:
             await self._apply_owner_settings(lane, member.id)
         except Exception as e:
-            log.debug(
-                "claim_owner: apply_owner_settings failed for lane %s: %r", lane.id, e
-            )
+            log.debug("claim_owner: apply_owner_settings failed for lane %s: %r", lane.id, e)
         try:
             self.bot.dispatch("tempvoice_lane_owner_changed", lane, int(member.id))
         except Exception as e:
@@ -1053,9 +1006,7 @@ class TempVoiceCore(commands.Cog):
     async def set_owner_region(self, owner_id: int, region: str):
         await self.set_region_pref(owner_id, region)
 
-    async def apply_owner_region_to_lane(
-        self, lane: discord.VoiceChannel, owner_id: int
-    ):
+    async def apply_owner_region_to_lane(self, lane: discord.VoiceChannel, owner_id: int):
         region = await self.get_region_pref(owner_id)
         await self.apply_region(lane, region)
 
@@ -1076,19 +1027,17 @@ class TempVoiceCore(commands.Cog):
         self,
         lane: discord.VoiceChannel,
         *,
-        desired_name: Optional[str] = None,
-        desired_limit: Optional[int] = None,
-        reason: Optional[str] = None,
+        desired_name: str | None = None,
+        desired_limit: int | None = None,
+        reason: str | None = None,
         force_name: bool = False,
     ):
         if _is_fixed_lane(lane):
-            log.debug(
-                "TempVoice: skip edit for fixed lane %s", getattr(lane, "id", "?")
-            )
+            log.debug("TempVoice: skip edit for fixed lane %s", getattr(lane, "id", "?"))
             return
         lock = self._lock_for(lane.id)
         async with lock:
-            kwargs: Dict[str, Any] = {}
+            kwargs: dict[str, Any] = {}
             now = time.time()
             may_rename = False
 
@@ -1171,7 +1120,7 @@ class TempVoiceCore(commands.Cog):
             force_name=True,
         )
 
-    async def reset_lane_template(self, lane: discord.VoiceChannel) -> Tuple[str, int]:
+    async def reset_lane_template(self, lane: discord.VoiceChannel) -> tuple[str, int]:
         """
         Stellt die Lane auf den Standard-Namen und das Standard-Limit zur�ck.
         - Name: n�chste freie "Lane X" in der Kategorie (oder vorhandene Lane-Basis, falls schon Lane).
@@ -1180,9 +1129,7 @@ class TempVoiceCore(commands.Cog):
         rules = self.lane_rules.get(lane.id, {})
         base = self.lane_base.get(lane.id) or _strip_suffixes(lane.name)
         prefix = str(rules.get("prefix") or "Lane")
-        if not base.startswith("Lane ") or (
-            rules and not base.lower().startswith(prefix.lower())
-        ):
+        if not base.startswith("Lane ") or (rules and not base.lower().startswith(prefix.lower())):
             base = await self._next_name(lane.category, prefix)
         limit = self._default_limit_for_lane(lane)
         await self.set_lane_template(lane, base_name=base, limit=limit)
@@ -1243,23 +1190,17 @@ class TempVoiceCore(commands.Cog):
 
     def _current_member_and_channel(
         self, guild: discord.Guild, member_id: int
-    ) -> Tuple[Optional[discord.Member], Optional[discord.VoiceChannel]]:
+    ) -> tuple[discord.Member | None, discord.VoiceChannel | None]:
         member = guild.get_member(int(member_id))
-        channel: Optional[discord.VoiceChannel] = None
-        if (
-            member
-            and member.voice
-            and isinstance(member.voice.channel, discord.VoiceChannel)
-        ):
+        channel: discord.VoiceChannel | None = None
+        if member and member.voice and isinstance(member.voice.channel, discord.VoiceChannel):
             channel = member.voice.channel
         return member, channel
 
-    async def _next_name(
-        self, category: Optional[discord.CategoryChannel], prefix: str
-    ) -> str:
+    async def _next_name(self, category: discord.CategoryChannel | None, prefix: str) -> str:
         if not category:
             return f"{prefix} 1"
-        used: Set[int] = set()
+        used: set[int] = set()
         pat = re.compile(rf"^{re.escape(prefix)}\s+(\d+)\b")
         for c in category.voice_channels:
             m = pat.match(c.name)
@@ -1267,9 +1208,7 @@ class TempVoiceCore(commands.Cog):
                 try:
                     used.add(int(m.group(1)))
                 except Exception as e:
-                    log.debug(
-                        "next_name: parse existing index failed for %s: %r", c.name, e
-                    )
+                    log.debug("next_name: parse existing index failed for %s: %r", c.name, e)
         n = 1
         while n in used:
             n += 1
@@ -1324,9 +1263,7 @@ class TempVoiceCore(commands.Cog):
             log.debug("category change: persist failed for lane %s: %r", after.id, e)
 
         try:
-            self.bot.dispatch(
-                "tempvoice_lane_category_changed", after, int(after.category_id or 0)
-            )
+            self.bot.dispatch("tempvoice_lane_category_changed", after, int(after.category_id or 0))
         except Exception as e:
             log.debug("dispatch lane_category_changed failed for %s: %r", after.id, e)
 
@@ -1353,26 +1290,18 @@ class TempVoiceCore(commands.Cog):
                     continue
                 ow = lane.overwrites_for(member)
                 ow.connect = False
-                await lane.set_permissions(
-                    member, overwrite=ow, reason="Owner-Ban (persistent)"
-                )
+                await lane.set_permissions(member, overwrite=ow, reason="Owner-Ban (persistent)")
                 await asyncio.sleep(0.02)
             except Exception as e:
-                log.debug(
-                    "apply_owner_bans: failed for %s in lane %s: %r", uid, lane.id, e
-                )
+                log.debug("apply_owner_bans: failed for %s in lane %s: %r", uid, lane.id, e)
 
-    async def _clear_owner_bans(
-        self, lane: discord.VoiceChannel, owner_id: Optional[int]
-    ):
+    async def _clear_owner_bans(self, lane: discord.VoiceChannel, owner_id: int | None):
         if not owner_id:
             return
         try:
             banned = await self.bans.list_bans(owner_id)
         except Exception as e:
-            log.debug(
-                "clear_owner_bans: list_bans failed for owner %s: %r", owner_id, e
-            )
+            log.debug("clear_owner_bans: list_bans failed for owner %s: %r", owner_id, e)
             return
         for uid in banned:
             try:
@@ -1401,9 +1330,7 @@ class TempVoiceCore(commands.Cog):
         await self.apply_region(lane, region)
         await self._apply_owner_bans(lane, owner_id)
 
-    async def _apply_owner_settings_background(
-        self, lane: discord.VoiceChannel, owner_id: int
-    ):
+    async def _apply_owner_settings_background(self, lane: discord.VoiceChannel, owner_id: int):
         try:
             await self._apply_owner_settings(lane, owner_id)
         except Exception as e:
@@ -1413,7 +1340,7 @@ class TempVoiceCore(commands.Cog):
                 e,
             )
 
-    def _rank_roles_cached(self, guild: discord.Guild) -> Dict[str, discord.Role]:
+    def _rank_roles_cached(self, guild: discord.Guild) -> dict[str, discord.Role]:
         """Cached version of _rank_roles - invalidiert alle 5 Minuten"""
         now = time.time()
         if guild.id in self._rank_roles_cache:
@@ -1439,9 +1366,7 @@ class TempVoiceCore(commands.Cog):
             try:
                 await lane.set_permissions(role, overwrite=overwrite, reason=reason)
             except Exception as e:
-                log.debug(
-                    "apply_min_rank %s failed for role %s: %r", reason, role.id, e
-                )
+                log.debug("apply_min_rank %s failed for role %s: %r", reason, role.id, e)
 
         if min_rank == "unknown":
             # Reset alle Permissions parallel
@@ -1484,14 +1409,8 @@ class TempVoiceCore(commands.Cog):
 
         try:
             async with lock:
-                fresh_member, current_channel = self._current_member_and_channel(
-                    guild, member_id
-                )
-                if (
-                    not fresh_member
-                    or not current_channel
-                    or current_channel.id != staging.id
-                ):
+                fresh_member, current_channel = self._current_member_and_channel(guild, member_id)
+                if not fresh_member or not current_channel or current_channel.id != staging.id:
                     return
                 member = fresh_member
 
@@ -1625,9 +1544,7 @@ class TempVoiceCore(commands.Cog):
                     )
                     return
 
-                asyncio.create_task(
-                    self._apply_owner_settings_background(lane, member.id)
-                )
+                asyncio.create_task(self._apply_owner_settings_background(lane, member.id))
 
                 # NUR hier initial den Namen setzen (innerhalb des Create-Fensters)
                 await self._refresh_name(lane)
@@ -1669,32 +1586,22 @@ class TempVoiceCore(commands.Cog):
         before: discord.VoiceState,
         after: discord.VoiceState,
     ):
-        before_channel: Optional[discord.VoiceChannel] = (
-            before.channel
-            if before and isinstance(before.channel, discord.VoiceChannel)
-            else None
+        before_channel: discord.VoiceChannel | None = (
+            before.channel if before and isinstance(before.channel, discord.VoiceChannel) else None
         )
-        after_channel: Optional[discord.VoiceChannel] = (
-            after.channel
-            if after and isinstance(after.channel, discord.VoiceChannel)
-            else None
+        after_channel: discord.VoiceChannel | None = (
+            after.channel if after and isinstance(after.channel, discord.VoiceChannel) else None
         )
         left_previous_channel = bool(
-            before_channel
-            and (not after_channel or before_channel.id != after_channel.id)
+            before_channel and (not after_channel or before_channel.id != after_channel.id)
         )
         joined_new_channel = bool(
-            after_channel
-            and (not before_channel or before_channel.id != after_channel.id)
+            after_channel and (not before_channel or before_channel.id != after_channel.id)
         )
 
         # Auto-Lane bei Join in Staging
         try:
-            if (
-                joined_new_channel
-                and after_channel
-                and after_channel.id in STAGING_CHANNEL_IDS
-            ):
+            if joined_new_channel and after_channel and after_channel.id in STAGING_CHANNEL_IDS:
                 await self._create_lane(member, after_channel)
         except Exception as e:
             log.warning(f"Auto-lane create failed: {e}")
@@ -1713,9 +1620,7 @@ class TempVoiceCore(commands.Cog):
                     role = discord.utils.get(member.guild.roles, name="Lurker")
                     if role:
                         try:
-                            await member.remove_roles(
-                                role, reason="TempVoice: Lurker left"
-                            )
+                            await member.remove_roles(role, reason="TempVoice: Lurker left")
                         except Exception as e:
                             log.debug("Lurker role remove failed: %r", e)
 
@@ -1723,9 +1628,7 @@ class TempVoiceCore(commands.Cog):
                     orig_nick = lurker_data.get("original_nick")
                     # If orig_nick is None/Empty, we reset to None (remove nickname)
                     try:
-                        await member.edit(
-                            nick=orig_nick, reason="TempVoice: Lurker left"
-                        )
+                        await member.edit(nick=orig_nick, reason="TempVoice: Lurker left")
                     except Exception as e:
                         log.debug("Lurker nick restore failed: %r", e)
 
@@ -1788,9 +1691,7 @@ class TempVoiceCore(commands.Cog):
                             )
                     else:
                         lane_id = int(ch.id)
-                        await self._cleanup_lane(
-                            lane_id, channel=ch, reason="TempVoice: Lane leer"
-                        )
+                        await self._cleanup_lane(lane_id, channel=ch, reason="TempVoice: Lane leer")
 
                 if _is_managed_lane(ch) and len(ch.members) > 0:
                     await self._refresh_name(ch)
@@ -1814,8 +1715,8 @@ class TempVoiceCore(commands.Cog):
                     self.lane_base[ch.id] = base_name
                     self.created_channels.add(ch.id)
                     self.lane_min_rank.setdefault(ch.id, "unknown")
-                    rules: Dict[str, Any] = {}
-                    source_id: Optional[int] = None
+                    rules: dict[str, Any] = {}
+                    source_id: int | None = None
                     try:
                         rules, source_id = self._rules_from_base(base_name)
                         if rules:
@@ -1857,9 +1758,7 @@ class TempVoiceCore(commands.Cog):
                             e,
                         )
                     try:
-                        self.bot.dispatch(
-                            "tempvoice_lane_owner_changed", ch, int(member.id)
-                        )
+                        self.bot.dispatch("tempvoice_lane_owner_changed", ch, int(member.id))
                     except Exception as e:
                         log.debug(
                             "dispatch lane_owner_changed (backfill) failed for %s: %r",

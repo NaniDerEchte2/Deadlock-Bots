@@ -4,11 +4,11 @@ import asyncio
 import sqlite3
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from service import db
 
-RANK_KEYS: List[str] = [
+RANK_KEYS: list[str] = [
     "initiate",
     "seeker",
     "alchemist",
@@ -21,7 +21,7 @@ RANK_KEYS: List[str] = [
     "ascendant",
     "eternus",
 ]
-RANK_VALUES: Dict[str, int] = {rank: idx + 1 for idx, rank in enumerate(RANK_KEYS)}
+RANK_VALUES: dict[str, int] = {rank: idx + 1 for idx, rank in enumerate(RANK_KEYS)}
 
 TEAM_NAME_MIN = 2
 TEAM_NAME_MAX = 32
@@ -47,7 +47,7 @@ def rank_label(rank_key: str) -> str:
     return normalize_rank(rank_key).capitalize()
 
 
-def rank_choices() -> List[tuple[str, str, int]]:
+def rank_choices() -> list[tuple[str, str, int]]:
     return [(rank_label(rank), rank, rank_value(rank)) for rank in RANK_KEYS]
 
 
@@ -71,7 +71,7 @@ def team_name_key(name: str) -> str:
     return clean_team_name(name).casefold()
 
 
-def _row_to_dict(row: Any) -> Dict[str, Any]:
+def _row_to_dict(row: Any) -> dict[str, Any]:
     if row is None:
         return {}
     if isinstance(row, sqlite3.Row):
@@ -170,8 +170,8 @@ async def get_or_create_team_async(
     guild_id: int,
     team_name: str,
     *,
-    created_by: Optional[int] = None,
-) -> Dict[str, Any]:
+    created_by: int | None = None,
+) -> dict[str, Any]:
     clean_name = clean_team_name(team_name)
     key = team_name_key(clean_name)
     guild = int(guild_id)
@@ -221,7 +221,7 @@ async def get_or_create_team_async(
     return data
 
 
-async def list_teams_async(guild_id: int) -> List[Dict[str, Any]]:
+async def list_teams_async(guild_id: int) -> list[dict[str, Any]]:
     rows = await db.query_all_async(
         """
         SELECT
@@ -244,7 +244,7 @@ async def list_teams_async(guild_id: int) -> List[Dict[str, Any]]:
     return [_row_to_dict(row) for row in rows or []]
 
 
-async def list_signups_async(guild_id: int) -> List[Dict[str, Any]]:
+async def list_signups_async(guild_id: int) -> list[dict[str, Any]]:
     rows = await db.query_all_async(
         """
         SELECT
@@ -272,7 +272,7 @@ async def list_signups_async(guild_id: int) -> List[Dict[str, Any]]:
     return [_row_to_dict(row) for row in rows or []]
 
 
-async def get_signup_async(guild_id: int, user_id: int) -> Dict[str, Any]:
+async def get_signup_async(guild_id: int, user_id: int) -> dict[str, Any]:
     row = await db.query_one_async(
         """
         SELECT
@@ -306,22 +306,22 @@ async def upsert_signup_async(
     registration_mode: str,
     rank: str,
     rank_subvalue: int = 0,
-    team_id: Optional[int] = None,
+    team_id: int | None = None,
     assigned_by_admin: bool = False,
-    display_name: Optional[str] = None,
-) -> Dict[str, Any]:
+    display_name: str | None = None,
+) -> dict[str, Any]:
     guild = int(guild_id)
     user = int(user_id)
     mode = normalize_mode(registration_mode)
     rank_key = normalize_rank(rank)
     rank_num = rank_value(rank_key)
     rank_sub = max(0, min(6, int(rank_subvalue)))
-    dname: Optional[str] = str(display_name).strip() if display_name else None
+    dname: str | None = str(display_name).strip() if display_name else None
 
     if mode == "team" and team_id is None:
         raise ValueError("team_id is required for team registrations")
 
-    team_ref: Optional[int] = int(team_id) if team_id is not None else None
+    team_ref: int | None = int(team_id) if team_id is not None else None
     if team_ref is not None and not await team_exists_async(guild, team_ref):
         raise ValueError("team_id does not exist in this guild")
 
@@ -340,9 +340,7 @@ async def upsert_signup_async(
         prev_rank = str(existing["rank"])
         prev_rank_value = int(existing["rank_value"])
         prev_rank_sub = int(existing["rank_subvalue"] or 0)
-        prev_team_id = (
-            int(existing["team_id"]) if existing["team_id"] is not None else None
-        )
+        prev_team_id = int(existing["team_id"]) if existing["team_id"] is not None else None
         prev_assigned = int(existing["assigned_by_admin"] or 0)
         prev_dname = existing["display_name"]
         unchanged = (
@@ -372,7 +370,17 @@ async def upsert_signup_async(
                     updated_at = CURRENT_TIMESTAMP
                 WHERE guild_id = ? AND user_id = ?
                 """,
-                (mode, rank_key, rank_num, rank_sub, team_ref, assigned_flag, effective_dname, guild, user),
+                (
+                    mode,
+                    rank_key,
+                    rank_num,
+                    rank_sub,
+                    team_ref,
+                    assigned_flag,
+                    effective_dname,
+                    guild,
+                    user,
+                ),
             )
             status = "updated"
     else:
@@ -403,11 +411,11 @@ async def assign_signup_team_async(
     guild_id: int,
     user_id: int,
     *,
-    team_id: Optional[int],
+    team_id: int | None,
 ) -> bool:
     guild = int(guild_id)
     user = int(user_id)
-    team_ref: Optional[int] = int(team_id) if team_id is not None else None
+    team_ref: int | None = int(team_id) if team_id is not None else None
 
     exists = await db.query_one_async(
         "SELECT 1 FROM customgames_tournament_signups WHERE guild_id = ? AND user_id = ?",
@@ -449,7 +457,7 @@ async def remove_signup_async(guild_id: int, user_id: int) -> bool:
     return True
 
 
-async def summary_async(guild_id: int) -> Dict[str, int]:
+async def summary_async(guild_id: int) -> dict[str, int]:
     row = await db.query_one_async(
         """
         SELECT
@@ -477,7 +485,7 @@ async def summary_async(guild_id: int) -> Dict[str, int]:
     }
 
 
-async def guild_signup_counts_async() -> Dict[int, int]:
+async def guild_signup_counts_async() -> dict[int, int]:
     rows = await db.query_all_async(
         """
         SELECT guild_id, COUNT(*) AS signups
@@ -485,7 +493,7 @@ async def guild_signup_counts_async() -> Dict[int, int]:
         GROUP BY guild_id
         """
     )
-    counts: Dict[int, int] = {}
+    counts: dict[int, int] = {}
     for row in rows or []:
         counts[int(row["guild_id"])] = int(row["signups"])
     return counts
@@ -533,8 +541,8 @@ async def create_period_async(
     registration_start: str,
     registration_end: str,
     team_size: int = 6,
-    created_by: Optional[int] = None,
-) -> Dict[str, Any]:
+    created_by: int | None = None,
+) -> dict[str, Any]:
     """Create a new tournament period. Deactivates any existing active period first."""
     guild = int(guild_id)
     tsize = max(2, min(20, int(team_size)))
@@ -548,7 +556,14 @@ async def create_period_async(
         INSERT INTO tournament_periods(guild_id, name, registration_start, registration_end, is_active, team_size, created_by)
         VALUES(?, ?, ?, ?, 1, ?, ?)
         """,
-        (guild, str(name), str(registration_start), str(registration_end), tsize, int(created_by) if created_by else None),
+        (
+            guild,
+            str(name),
+            str(registration_start),
+            str(registration_end),
+            tsize,
+            int(created_by) if created_by else None,
+        ),
     )
     row = await db.query_one_async(
         "SELECT * FROM tournament_periods WHERE guild_id = ? AND is_active = 1 ORDER BY id DESC LIMIT 1",
@@ -557,7 +572,7 @@ async def create_period_async(
     return _row_to_dict(row)
 
 
-async def get_active_period_async(guild_id: int) -> Optional[Dict[str, Any]]:
+async def get_active_period_async(guild_id: int) -> dict[str, Any] | None:
     """Get the current active period for a guild (is_active=1), regardless of time window."""
     row = await db.query_one_async(
         """
@@ -589,7 +604,7 @@ async def close_period_async(guild_id: int, period_id: int) -> bool:
     return True
 
 
-async def list_periods_async(guild_id: int) -> List[Dict[str, Any]]:
+async def list_periods_async(guild_id: int) -> list[dict[str, Any]]:
     """List all periods for a guild, newest first."""
     rows = await db.query_all_async(
         """
@@ -603,7 +618,7 @@ async def list_periods_async(guild_id: int) -> List[Dict[str, Any]]:
     return [_row_to_dict(r) for r in rows or []]
 
 
-async def get_team_async(guild_id: int, team_id: int) -> Optional[Dict[str, Any]]:
+async def get_team_async(guild_id: int, team_id: int) -> dict[str, Any] | None:
     """Fetch a single team by ID."""
     row = await db.query_one_async(
         """
@@ -638,9 +653,7 @@ async def rename_team_async(guild_id: int, team_id: int, new_name: str) -> bool:
     return True
 
 
-async def create_auth_token_async(
-    user_id: int, display_name: str, ttl: float = 60
-) -> str:
+async def create_auth_token_async(user_id: int, display_name: str, ttl: float = 60) -> str:
     """Create a one-time auth token for the turnier site. Returns the token string."""
     token = uuid.uuid4().hex
     expires_at = time.time() + ttl
@@ -659,7 +672,7 @@ async def create_auth_token_async(
     return token
 
 
-async def consume_auth_token_async(token: str) -> Optional[Dict[str, Any]]:
+async def consume_auth_token_async(token: str) -> dict[str, Any] | None:
     """Read + delete a one-time auth token. Returns None if missing or expired."""
     row = await db.query_one_async(
         "SELECT user_id, display_name, expires_at FROM turnier_auth_tokens WHERE token = ?",
@@ -668,9 +681,7 @@ async def consume_auth_token_async(token: str) -> Optional[Dict[str, Any]]:
     if not row:
         return None
     # Delete regardless (single-use)
-    await db.execute_async(
-        "DELETE FROM turnier_auth_tokens WHERE token = ?", (str(token),)
-    )
+    await db.execute_async("DELETE FROM turnier_auth_tokens WHERE token = ?", (str(token),))
     if float(row["expires_at"]) < time.time():
         return None
     return {

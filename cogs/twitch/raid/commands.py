@@ -7,9 +7,9 @@ import secrets
 import discord
 from discord.ext import commands
 
-from ..storage import get_conn
-from .views import build_raid_requirements_embed, RaidAuthGenerateView
 from ..chat.constants import PROMO_MESSAGES
+from ..storage import get_conn
+from .views import RaidAuthGenerateView, build_raid_requirements_embed
 
 log = logging.getLogger("TwitchStreams.RaidCommands")
 
@@ -57,9 +57,7 @@ class RaidCommandsMixin:
             view=view,
             ephemeral=True,
         )
-        log.info(
-            "Sent traid auth link to %s (discord_id=%s)", twitch_login, discord_user_id
-        )
+        log.info("Sent traid auth link to %s (discord_id=%s)", twitch_login, discord_user_id)
 
     @commands.hybrid_command(name="raid_enable", aliases=["raidbot"])
     async def cmd_raid_enable(self, ctx: commands.Context):
@@ -99,8 +97,7 @@ class RaidCommandsMixin:
             # Noch nicht autorisiert -> OAuth-Link generieren
             if not hasattr(self, "_raid_bot") or not self._raid_bot:
                 await ctx.send(
-                    "❌ Der Twitch-Bot ist derzeit nicht verfügbar. "
-                    "Bitte kontaktiere einen Admin.",
+                    "❌ Der Twitch-Bot ist derzeit nicht verfügbar. Bitte kontaktiere einen Admin.",
                     ephemeral=True,
                 )
                 return
@@ -250,9 +247,7 @@ class RaidCommandsMixin:
             status_desc = "Auto-Raids sind aktiviert."
         else:
             status = "🛑 Deaktiviert"
-            status_desc = (
-                "Auto-Raids sind deaktiviert. Aktiviere sie mit `/raid_enable`."
-            )
+            status_desc = "Auto-Raids sind deaktiviert. Aktiviere sie mit `/raid_enable`."
 
         embed.add_field(name="Status", value=status, inline=True)
         embed.add_field(name="Beschreibung", value=status_desc, inline=False)
@@ -344,9 +339,7 @@ class RaidCommandsMixin:
             time_str = executed_at[:16] if executed_at else "?"
             duration_min = (duration_sec or 0) // 60
 
-            field_value = (
-                f"{icon} **{viewers}** Viewer, Stream-Dauer: **{duration_min}** Min\n"
-            )
+            field_value = f"{icon} **{viewers}** Viewer, Stream-Dauer: **{duration_min}** Min\n"
             field_value += f"Kandidaten: **{candidates or 0}**\n"
             if not success and error_msg:
                 field_value += f"Fehler: `{error_msg[:100]}`\n"
@@ -381,9 +374,7 @@ class RaidCommandsMixin:
             ).fetchone()
 
         if not row or not row[0]:
-            await ctx.send(
-                f"Streamer **{login}** nicht in der DB gefunden.", ephemeral=True
-            )
+            await ctx.send(f"Streamer **{login}** nicht in der DB gefunden.", ephemeral=True)
             return
 
         channel_id = str(row[0])
@@ -391,9 +382,7 @@ class RaidCommandsMixin:
         # Invite ermitteln
         invite, is_specific = await chat_bot._get_promo_invite(login)
         if not invite:
-            await ctx.send(
-                f"Kein Discord-Invite für **{login}** verfügbar.", ephemeral=True
-            )
+            await ctx.send(f"Kein Discord-Invite für **{login}** verfügbar.", ephemeral=True)
             return
 
         msg = secrets.choice(PROMO_MESSAGES).format(invite=invite)
@@ -410,12 +399,8 @@ class RaidCommandsMixin:
             await ctx.send(f"Promo an **{login}** gesendet:\n> {msg}", ephemeral=True)
             log.info("Manual promo sent to %s by %s", login, ctx.author)
         else:
-            await ctx.send(
-                f"Promo an **{login}** konnte nicht gesendet werden.", ephemeral=True
-            )
-            log.warning(
-                "Manual promo to %s failed (triggered by %s)", login, ctx.author
-            )
+            await ctx.send(f"Promo an **{login}** konnte nicht gesendet werden.", ephemeral=True)
+            log.warning("Manual promo to %s failed (triggered by %s)", login, ctx.author)
 
     @commands.hybrid_command(name="reauth_all")
     @commands.has_permissions(administrator=True)
@@ -449,9 +434,7 @@ class RaidCommandsMixin:
         sent, deleted_total = 0, 0
         failed_list: list[str] = []
         for row in rows:
-            twitch_user_id = (
-                row[0] if not hasattr(row, "keys") else row["twitch_user_id"]
-            )
+            twitch_user_id = row[0] if not hasattr(row, "keys") else row["twitch_user_id"]
             twitch_login = row[1] if not hasattr(row, "keys") else row["twitch_login"]
             discord_uid = row[2] if not hasattr(row, "keys") else row["discord_user_id"]
             if not discord_uid:
@@ -493,9 +476,7 @@ class RaidCommandsMixin:
                         (twitch_user_id,),
                     )
                 sent += 1
-                log.info(
-                    "reauth_all: DM gesendet an %s (%s)", twitch_login, discord_uid
-                )
+                log.info("reauth_all: DM gesendet an %s (%s)", twitch_login, discord_uid)
             except Exception as e:
                 reason = str(e)[:60] if str(e) else "Unbekannt"
                 failed_list.append(f"`{twitch_login}` (<@{discord_uid}>) – {reason}")
@@ -592,15 +573,12 @@ class RaidCommandsMixin:
             ).fetchone()
 
         if not row or not row[0]:
-            await ctx.send(
-                f"❌ Kein Twitch-Account für <@{target.id}> gefunden.", ephemeral=True
-            )
+            await ctx.send(f"❌ Kein Twitch-Account für <@{target.id}> gefunden.", ephemeral=True)
             return
 
         twitch_user_id, twitch_login, error_message, notified, user_dm_sent = row
         error_message = (
-            error_message
-            or 'HTTP 400: {"status":400,"message":"Invalid refresh token"}'
+            error_message or 'HTTP 400: {"status":400,"message":"Invalid refresh token"}'
         )
 
         # Monkey-Patch damit die DM an den richtigen User geht

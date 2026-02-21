@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import csv
+from collections.abc import Generator, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Generator, Iterable
+from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
 
 BASE_URL = "https://forums.playdeadlock.com"
 CHANGELOG_LIST_URL = urljoin(BASE_URL, "/forums/changelog.10/")
@@ -24,7 +24,7 @@ class ThreadMetadata:
     posted_at: str
     content: str
 
-    def as_dict(self) -> Dict[str, str]:
+    def as_dict(self) -> dict[str, str]:
         return {
             "title": self.title,
             "url": self.url,
@@ -88,9 +88,7 @@ def fetch_thread_content(thread_url: str) -> ThreadMetadata:
     else:
         content = ""
 
-    return ThreadMetadata(
-        title=title, url=thread_url, posted_at=posted_at, content=content
-    )
+    return ThreadMetadata(title=title, url=thread_url, posted_at=posted_at, content=content)
 
 
 def export_threads(threads: Iterable[ThreadMetadata], output_path: Path) -> int:
@@ -100,9 +98,7 @@ def export_threads(threads: Iterable[ThreadMetadata], output_path: Path) -> int:
     rows = [thread.as_dict() for thread in threads]
 
     with output_path.open("w", encoding="utf-8", newline="") as csvfile:
-        writer = csv.DictWriter(
-            csvfile, fieldnames=["title", "url", "posted_at", "content"]
-        )
+        writer = csv.DictWriter(csvfile, fieldnames=["title", "url", "posted_at", "content"])
         writer.writeheader()
         writer.writerows(rows)
 
@@ -110,9 +106,7 @@ def export_threads(threads: Iterable[ThreadMetadata], output_path: Path) -> int:
 
 
 def main() -> None:
-    threads = [
-        fetch_thread_content(thread_url) for thread_url in iter_changelog_threads()
-    ]
+    threads = [fetch_thread_content(thread_url) for thread_url in iter_changelog_threads()]
     output_path = Path(__file__).with_name("deadlock_changelogs.csv")
     count = export_threads(threads, output_path)
     print(f"Exported {count} changelog threads to {output_path.name}.")

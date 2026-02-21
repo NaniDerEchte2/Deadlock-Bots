@@ -20,14 +20,13 @@ import json
 import logging
 import socket
 from dataclasses import dataclass
-from typing import Optional, Dict, Any
+from typing import Any
 
 import discord
 from discord.ext import commands, tasks
-from discord.ui import Button, View, Modal, TextInput, Select
+from discord.ui import Button, Modal, Select, TextInput, View
 
 from service import db
-
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +35,7 @@ logger = logging.getLogger(__name__)
 class CoachingConfig:
     channel_id: int = 1357421075188813897
     # Falls vorhanden, wird eine bestehende Bot-Nachricht im Channel mit der View versehen.
-    existing_message_id: Optional[int] = 1383883328385454210
+    existing_message_id: int | None = 1383883328385454210
     socket_host: str = "localhost"
     socket_port: int = 45680
     timeout_seconds: int = 600  # 10 min
@@ -149,7 +148,7 @@ class DlCoachingCog(commands.Cog):
             return
 
         existing = await self._db_get(user_id)
-        merged: Dict[str, Any] = {}
+        merged: dict[str, Any] = {}
         for key in allowed_fields:
             if key in sanitized_fields:
                 merged[key] = sanitized_fields[key]
@@ -190,12 +189,12 @@ class DlCoachingCog(commands.Cog):
             ),
         )
 
-    async def _db_get(self, user_id: int) -> Optional[db.Row]:
+    async def _db_get(self, user_id: int) -> db.Row | None:
         return await db.query_one_async(
             "SELECT * FROM coaching_sessions WHERE user_id=?", (user_id,)
         )
 
-    async def _db_get_by_thread(self, thread_id: int) -> Optional[db.Row]:
+    async def _db_get_by_thread(self, thread_id: int) -> db.Row | None:
         return await db.query_one_async(
             "SELECT * FROM coaching_sessions WHERE thread_id=?", (thread_id,)
         )
@@ -209,8 +208,8 @@ class DlCoachingCog(commands.Cog):
     # ----------------- Emoji helpers -----------------
     @staticmethod
     def _safe_option_emoji(
-        guild: Optional[discord.Guild], mention: str
-    ) -> Optional[discord.PartialEmoji]:
+        guild: discord.Guild | None, mention: str
+    ) -> discord.PartialEmoji | None:
         try:
             if not guild or not mention or not mention.startswith("<:"):
                 return None
@@ -227,7 +226,7 @@ class DlCoachingCog(commands.Cog):
         return None
 
     # ----------------- Socket notify -----------------
-    def _notify_claim_bot(self, thread_data: Dict[str, Any]) -> None:
+    def _notify_claim_bot(self, thread_data: dict[str, Any]) -> None:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.connect((self.cfg.socket_host, self.cfg.socket_port))
@@ -307,9 +306,7 @@ class DlCoachingCog(commands.Cog):
                 description=f"Match-ID: **{self.match_id.value}**\n\nBitte wähle deinen Rang.",
                 color=discord.Color.blue(),
             )
-            await thread.send(
-                embed=emb, view=DlCoachingCog.RankView(self.cog, thread.guild)
-            )
+            await thread.send(embed=emb, view=DlCoachingCog.RankView(self.cog, thread.guild))
 
             try:
                 await interaction.followup.send(
@@ -321,15 +318,13 @@ class DlCoachingCog(commands.Cog):
                 logger.debug("match modal followup send failed: %r", e)
 
     class RankSelect(Select):
-        def __init__(self, cog: "DlCoachingCog", guild: Optional[discord.Guild]):
+        def __init__(self, cog: "DlCoachingCog", guild: discord.Guild | None):
             self.cog = cog
             self.guild = guild
             options = []
             for key, mention in cog.RANKS.items():
                 em = DlCoachingCog._safe_option_emoji(guild, mention)
-                options.append(
-                    discord.SelectOption(label=key.title(), value=key, emoji=em)
-                )
+                options.append(discord.SelectOption(label=key.title(), value=key, emoji=em))
             super().__init__(
                 placeholder="Wähle deinen Rang",
                 min_values=1,
@@ -354,7 +349,7 @@ class DlCoachingCog(commands.Cog):
             )
 
     class RankView(View):
-        def __init__(self, cog: "DlCoachingCog", guild: Optional[discord.Guild]):
+        def __init__(self, cog: "DlCoachingCog", guild: discord.Guild | None):
             super().__init__(timeout=None)
             self.add_item(DlCoachingCog.RankSelect(cog, guild))
 
@@ -398,15 +393,13 @@ class DlCoachingCog(commands.Cog):
             self.add_item(DlCoachingCog.SubrankSelect(cog))
 
     class HeroSelectPage1(Select):
-        def __init__(self, cog: "DlCoachingCog", guild: Optional[discord.Guild]):
+        def __init__(self, cog: "DlCoachingCog", guild: discord.Guild | None):
             self.cog = cog
             options = []
             for name, mention in cog.HEROES_PAGE_1.items():
                 em = DlCoachingCog._safe_option_emoji(guild, mention)
                 options.append(
-                    discord.SelectOption(
-                        label=name.replace("_", " ").title(), value=name, emoji=em
-                    )
+                    discord.SelectOption(label=name.replace("_", " ").title(), value=name, emoji=em)
                 )
             super().__init__(
                 placeholder="Helden (A–M)",
@@ -420,15 +413,13 @@ class DlCoachingCog(commands.Cog):
             await DlCoachingCog._hero_selected(self.cog, interaction, self.values[0])
 
     class HeroSelectPage2(Select):
-        def __init__(self, cog: "DlCoachingCog", guild: Optional[discord.Guild]):
+        def __init__(self, cog: "DlCoachingCog", guild: discord.Guild | None):
             self.cog = cog
             options = []
             for name, mention in cog.HEROES_PAGE_2.items():
                 em = DlCoachingCog._safe_option_emoji(guild, mention)
                 options.append(
-                    discord.SelectOption(
-                        label=name.replace("_", " ").title(), value=name, emoji=em
-                    )
+                    discord.SelectOption(label=name.replace("_", " ").title(), value=name, emoji=em)
                 )
             super().__init__(
                 placeholder="Helden (N–Z)",
@@ -442,7 +433,7 @@ class DlCoachingCog(commands.Cog):
             await DlCoachingCog._hero_selected(self.cog, interaction, self.values[0])
 
     class HeroView(View):
-        def __init__(self, cog: "DlCoachingCog", guild: Optional[discord.Guild]):
+        def __init__(self, cog: "DlCoachingCog", guild: discord.Guild | None):
             super().__init__(timeout=None)
             self.add_item(DlCoachingCog.HeroSelectPage1(cog, guild))
             self.add_item(DlCoachingCog.HeroSelectPage2(cog, guild))
@@ -467,9 +458,7 @@ class DlCoachingCog(commands.Cog):
             ),
             color=discord.Color.blue(),
         )
-        await interaction.response.edit_message(
-            embed=emb, view=DlCoachingCog.CommentView(cog)
-        )
+        await interaction.response.edit_message(embed=emb, view=DlCoachingCog.CommentView(cog))
 
     class CommentModal(Modal):
         def __init__(self, cog: "DlCoachingCog"):
@@ -494,9 +483,7 @@ class DlCoachingCog(commands.Cog):
                 except Exception as e:
                     logger.debug("comment modal defer failed: %r", e)
 
-                await self.cog._db_upsert(
-                    uid, comment=str(self.comment.value), step="finish"
-                )
+                await self.cog._db_upsert(uid, comment=str(self.comment.value), step="finish")
                 row = await self.cog._db_get(uid)
 
                 rank_key = row["rank"] or ""
@@ -507,14 +494,10 @@ class DlCoachingCog(commands.Cog):
                     color=discord.Color.green(),
                 )
                 emb.add_field(name="Match ID", value=row["match_id"], inline=False)
-                emb.add_field(
-                    name="Rang", value=f"{row['rank']} {rank_emoji}", inline=False
-                )
+                emb.add_field(name="Rang", value=f"{row['rank']} {rank_emoji}", inline=False)
                 emb.add_field(name="Subrang", value=row["subrank"], inline=False)
                 emb.add_field(name="Held", value=row["hero"], inline=False)
-                emb.add_field(
-                    name="Kommentar", value=row["comment"] or "-", inline=False
-                )
+                emb.add_field(name="Kommentar", value=row["comment"] or "-", inline=False)
 
                 await interaction.followup.send(
                     embed=emb, view=DlCoachingCog.FinishView(self.cog), ephemeral=True
@@ -568,16 +551,12 @@ class DlCoachingCog(commands.Cog):
             uid = interaction.user.id
             row = await self.cog._db_get(uid)
             if not row:
-                await interaction.response.send_message(
-                    "Keine Daten gefunden.", ephemeral=True
-                )
+                await interaction.response.send_message("Keine Daten gefunden.", ephemeral=True)
                 return  # <- kein Wert zurückgeben (CodeQL fix)
 
             channel = interaction.channel
             if not isinstance(channel, (discord.Thread, discord.TextChannel)):
-                await interaction.response.send_message(
-                    "Ungültiger Kanal.", ephemeral=True
-                )
+                await interaction.response.send_message("Ungültiger Kanal.", ephemeral=True)
                 return  # <- kein Wert zurückgeben (CodeQL fix)
 
             content = (
@@ -623,9 +602,7 @@ class DlCoachingCog(commands.Cog):
                 logger.debug("thread archive failed: %r", e)
 
             try:
-                await interaction.followup.send(
-                    "✅ Coaching abgeschlossen.", ephemeral=True
-                )
+                await interaction.followup.send("✅ Coaching abgeschlossen.", ephemeral=True)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -648,9 +625,7 @@ class DlCoachingCog(commands.Cog):
                         thread = self.bot.get_channel(int(r["thread_id"]))
                         if isinstance(thread, discord.Thread):
                             try:
-                                await thread.send(
-                                    "⏱️ Timeout erreicht. Thread wird geschlossen."
-                                )
+                                await thread.send("⏱️ Timeout erreicht. Thread wird geschlossen.")
                                 await thread.edit(archived=True, locked=True)
                             except asyncio.CancelledError:
                                 raise
@@ -730,9 +705,9 @@ def _parse_ts(val) -> datetime.datetime:
         except ValueError:
             try:
                 # ISO fallback
-                return datetime.datetime.fromisoformat(
-                    val.replace("Z", "+00:00")
-                ).replace(tzinfo=None)
+                return datetime.datetime.fromisoformat(val.replace("Z", "+00:00")).replace(
+                    tzinfo=None
+                )
             except Exception as e:
                 logger.debug("parse_ts iso parse failed: %r", e)
     return datetime.datetime.utcnow()

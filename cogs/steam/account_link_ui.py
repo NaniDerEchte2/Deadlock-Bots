@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Wiederverwendbares Steam-Account-Verknüpfen UI.
 
@@ -27,6 +26,7 @@ __all__ = ("make_link_embed", "make_link_view", "send_link_panel")
 # ---------------------------------------------------------------------------
 # Embed
 # ---------------------------------------------------------------------------
+
 
 def make_link_embed(
     *,
@@ -61,6 +61,7 @@ def make_link_embed(
 # View
 # ---------------------------------------------------------------------------
 
+
 def make_link_view(user_id: int, *, timeout: float | None = 3600) -> discord.ui.View:
     """
     Erstellt einen View mit den 2 Link-Buttons für die Steam-Verknüpfung.
@@ -73,26 +74,30 @@ def make_link_view(user_id: int, *, timeout: float | None = 3600) -> discord.ui.
     view = discord.ui.View(timeout=timeout)
 
     if discord_url:
-        view.add_item(discord.ui.Button(
-            label="Via Discord bei Steam anmelden",
-            style=discord.ButtonStyle.link,
-            url=discord_url,
-            emoji="🔗",
-            row=0,
-        ))
+        view.add_item(
+            discord.ui.Button(
+                label="Via Discord bei Steam anmelden",
+                style=discord.ButtonStyle.link,
+                url=discord_url,
+                emoji="🔗",
+                row=0,
+            )
+        )
     if steam_url:
-        view.add_item(discord.ui.Button(
-            label="Direkt bei Steam anmelden",
-            style=discord.ButtonStyle.link,
-            url=steam_url,
-            emoji="🎮",
-            row=0,
-        ))
+        view.add_item(
+            discord.ui.Button(
+                label="Direkt bei Steam anmelden",
+                style=discord.ButtonStyle.link,
+                url=steam_url,
+                emoji="🎮",
+                row=0,
+            )
+        )
 
     if not discord_url and not steam_url:
         log.warning(
-            "account_link_ui: Keine OAuth-URLs generiert (PUBLIC_BASE_URL gesetzt?) "
-            "für user_id=%s", user_id
+            "account_link_ui: Keine OAuth-URLs generiert (PUBLIC_BASE_URL gesetzt?) für user_id=%s",
+            user_id,
         )
 
     return view
@@ -101,6 +106,7 @@ def make_link_view(user_id: int, *, timeout: float | None = 3600) -> discord.ui.
 # ---------------------------------------------------------------------------
 # Convenience send
 # ---------------------------------------------------------------------------
+
 
 async def send_link_panel(
     target: discord.Interaction | discord.abc.Messageable,
@@ -121,9 +127,7 @@ async def send_link_panel(
 
     if isinstance(target, discord.Interaction):
         if target.response.is_done():
-            await target.followup.send(
-                content=content, embed=embed, view=view, ephemeral=ephemeral
-            )
+            await target.followup.send(content=content, embed=embed, view=view, ephemeral=ephemeral)
         else:
             await target.response.send_message(
                 content=content, embed=embed, view=view, ephemeral=ephemeral
@@ -135,6 +139,7 @@ async def send_link_panel(
 # ---------------------------------------------------------------------------
 # Interna
 # ---------------------------------------------------------------------------
+
 
 def _get_urls(user_id: int) -> tuple[str, str]:
     """Gibt (discord_url, steam_url) zurück. Leere Strings bei Fehler."""

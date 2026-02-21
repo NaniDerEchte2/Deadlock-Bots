@@ -3,13 +3,15 @@ import logging
 import secrets
 import time
 from collections import deque
-from typing import Deque, List, Optional, Tuple
 
 from service import db
 
 from ..storage import get_conn
 from .constants import (
     _PROMO_ACTIVITY_ENABLED,
+    _PROMO_COOLDOWN_MAX,
+    _PROMO_COOLDOWN_MIN,
+    _PROMO_INTERVAL_MIN,
     PROMO_ACTIVITY_CHATTER_DEDUP_SEC,
     PROMO_ACTIVITY_MIN_CHATTERS,
     PROMO_ACTIVITY_MIN_MSGS,
@@ -18,11 +20,8 @@ from .constants import (
     PROMO_ACTIVITY_WINDOW_MIN,
     PROMO_ATTEMPT_COOLDOWN_MIN,
     PROMO_CHANNEL_ALLOWLIST,
-    _PROMO_COOLDOWN_MAX,
-    _PROMO_COOLDOWN_MIN,
     PROMO_DISCORD_INVITE,
     PROMO_IGNORE_COMMANDS,
-    _PROMO_INTERVAL_MIN,
     PROMO_LOOP_INTERVAL_SEC,
     PROMO_MESSAGES,
     PROMO_OVERALL_COOLDOWN_MIN,
@@ -48,7 +47,7 @@ class PromoMixin:
             return False
         return True
 
-    async def _get_promo_invite(self, login: str) -> tuple[Optional[str], bool]:
+    async def _get_promo_invite(self, login: str) -> tuple[str | None, bool]:
         resolver = getattr(self, "_resolve_streamer_invite", None)
         if callable(resolver):
             try:
@@ -60,9 +59,7 @@ class PromoMixin:
                 if invite:
                     return str(invite), bool(is_specific)
             except Exception:
-                log.debug(
-                    "_resolve_streamer_invite failed for %s", login, exc_info=True
-                )
+                log.debug("_resolve_streamer_invite failed for %s", login, exc_info=True)
 
         if PROMO_DISCORD_INVITE:
             return PROMO_DISCORD_INVITE, False
@@ -75,13 +72,13 @@ class PromoMixin:
         raw_map = getattr(self, "_last_raw_chat_message_ts", None)
         if not isinstance(raw_map, dict):
             raw_map = {}
-            setattr(self, "_last_raw_chat_message_ts", raw_map)
+            self._last_raw_chat_message_ts = raw_map
         raw_map[login] = time.monotonic()
 
         raw_count_map = getattr(self, "_raw_msg_count_since_promo", None)
         if not isinstance(raw_count_map, dict):
             raw_count_map = {}
-            setattr(self, "_raw_msg_count_since_promo", raw_count_map)
+            self._raw_msg_count_since_promo = raw_count_map
         raw_count_map[login] = int(raw_count_map.get(login, 0)) + 1
 
     def _raw_msg_count_since_last_promo(self, login: str) -> int:
@@ -105,9 +102,7 @@ class PromoMixin:
 
         return float(last_raw) > float(last_sent)
 
-    def _prune_promo_activity(
-        self, bucket: Deque[Tuple[float, str]], now: float
-    ) -> None:
+    def _prune_promo_activity(self, bucket: deque[tuple[float, str]], now: float) -> None:
         window_sec = PROMO_ACTIVITY_WINDOW_MIN * 60
         while bucket and now - bucket[0][0] > window_sec:
             bucket.popleft()
@@ -124,23 +119,17 @@ class PromoMixin:
             float(PROMO_ACTIVITY_WINDOW_MIN * 60),
             float(PROMO_ACTIVITY_CHATTER_DEDUP_SEC) * 4.0,
         )
-        stale = [
-            chatter
-            for chatter, ts in chatter_last.items()
-            if now - float(ts) > max_age_sec
-        ]
+        stale = [chatter for chatter, ts in chatter_last.items() if now - float(ts) > max_age_sec]
         for chatter in stale:
             chatter_last.pop(chatter, None)
         if not chatter_last:
             dedupe_state.pop(login, None)
 
-    def _record_promo_activity(
-        self, login: str, chatter_login: str, now: float
-    ) -> None:
+    def _record_promo_activity(self, login: str, chatter_login: str, now: float) -> None:
         dedupe_state = getattr(self, "_promo_chatter_dedupe", None)
         if not isinstance(dedupe_state, dict):
             dedupe_state = {}
-            setattr(self, "_promo_chatter_dedupe", dedupe_state)
+            self._promo_chatter_dedupe = dedupe_state
 
         chatter_last = dedupe_state.setdefault(login, {})
         last_seen = chatter_last.get(chatter_login)
@@ -156,9 +145,7 @@ class PromoMixin:
         bucket.append((now, chatter_login))
         self._prune_promo_activity(bucket, now)
 
-    def _get_promo_activity_stats(
-        self, login: str, now: float
-    ) -> Tuple[int, int, float]:
+    def _get_promo_activity_stats(self, login: str, now: float) -> tuple[int, int, float]:
         bucket = self._promo_activity.get(login)
         if not bucket:
             return 0, 0, 0.0
@@ -193,9 +180,7 @@ class PromoMixin:
 
     def _promo_attempt_allowed(self, login: str, now: float) -> bool:
         last_attempt = self._last_promo_attempt.get(login)
-        if last_attempt is not None and now - last_attempt < (
-            PROMO_ATTEMPT_COOLDOWN_MIN * 60
-        ):
+        if last_attempt is not None and now - last_attempt < (PROMO_ATTEMPT_COOLDOWN_MIN * 60):
             return False
         self._last_promo_attempt[login] = now
         return True
@@ -236,7 +221,7 @@ class PromoMixin:
             viewer_spike_map = getattr(self, "_last_promo_viewer_spike", None)
             if not isinstance(viewer_spike_map, dict):
                 viewer_spike_map = {}
-                setattr(self, "_last_promo_viewer_spike", viewer_spike_map)
+                self._last_promo_viewer_spike = viewer_spike_map
             viewer_spike_map[login] = now
 
         if is_specific:
@@ -249,7 +234,7 @@ class PromoMixin:
         msg_count, unique_chatters, _ = self._get_promo_activity_stats(login, now)
         return msg_count > 0 and unique_chatters > 0
 
-    def _latest_chat_activity_age_sec(self, login: str, now: float) -> Optional[float]:
+    def _latest_chat_activity_age_sec(self, login: str, now: float) -> float | None:
         bucket = self._promo_activity.get(login)
         if bucket is None:
             return None
@@ -259,9 +244,7 @@ class PromoMixin:
         last_ts = float(bucket[-1][0])
         return max(0.0, now - last_ts)
 
-    def _get_viewer_spike_context(
-        self, login: str
-    ) -> Optional[Tuple[int, float, str, int, float]]:
+    def _get_viewer_spike_context(self, login: str) -> tuple[int, float, str, int, float] | None:
         row_sessions = None
         row_stats = None
 
@@ -317,12 +300,7 @@ class PromoMixin:
             return None
 
         current_viewers = int(
-            (
-                row_live["last_viewer_count"]
-                if hasattr(row_live, "keys")
-                else row_live[0]
-            )
-            or 0
+            (row_live["last_viewer_count"] if hasattr(row_live, "keys") else row_live[0]) or 0
         )
         if current_viewers <= 0:
             return None
@@ -332,45 +310,24 @@ class PromoMixin:
         source = ""
         if row_sessions is not None:
             sessions_avg = float(
-                (
-                    row_sessions["avg_viewers"]
-                    if hasattr(row_sessions, "keys")
-                    else row_sessions[0]
-                )
+                (row_sessions["avg_viewers"] if hasattr(row_sessions, "keys") else row_sessions[0])
                 or 0.0
             )
             sessions_cnt = int(
-                (
-                    row_sessions["sample_count"]
-                    if hasattr(row_sessions, "keys")
-                    else row_sessions[1]
-                )
+                (row_sessions["sample_count"] if hasattr(row_sessions, "keys") else row_sessions[1])
                 or 0
             )
-            if (
-                sessions_cnt >= int(PROMO_VIEWER_SPIKE_MIN_SESSIONS)
-                and sessions_avg > 0
-            ):
+            if sessions_cnt >= int(PROMO_VIEWER_SPIKE_MIN_SESSIONS) and sessions_avg > 0:
                 baseline = sessions_avg
                 sample_count = sessions_cnt
                 source = "sessions"
 
         if baseline <= 0 and row_stats is not None:
             stats_avg = float(
-                (
-                    row_stats["avg_viewers"]
-                    if hasattr(row_stats, "keys")
-                    else row_stats[0]
-                )
-                or 0.0
+                (row_stats["avg_viewers"] if hasattr(row_stats, "keys") else row_stats[0]) or 0.0
             )
             stats_cnt = int(
-                (
-                    row_stats["sample_count"]
-                    if hasattr(row_stats, "keys")
-                    else row_stats[1]
-                )
-                or 0
+                (row_stats["sample_count"] if hasattr(row_stats, "keys") else row_stats[1]) or 0
             )
             if stats_cnt >= int(PROMO_VIEWER_SPIKE_MIN_STATS_SAMPLES) and stats_avg > 0:
                 baseline = stats_avg
@@ -386,30 +343,20 @@ class PromoMixin:
         )
         return current_viewers, baseline, source, sample_count, threshold
 
-    async def _maybe_send_promo_with_stats(
-        self, login: str, channel_id: str, now: float
-    ) -> bool:
+    async def _maybe_send_promo_with_stats(self, login: str, channel_id: str, now: float) -> bool:
         if not self._promo_channel_allowed(login):
             return False
         if not self._overall_promo_ready(login, now):
             return False
 
         min_raw_msgs = max(0, int(PROMO_ACTIVITY_MIN_RAW_MSGS_SINCE_PROMO))
-        if (
-            min_raw_msgs > 0
-            and self._raw_msg_count_since_last_promo(login) < min_raw_msgs
-        ):
+        if min_raw_msgs > 0 and self._raw_msg_count_since_last_promo(login) < min_raw_msgs:
             return False
 
-        msg_count, unique_chatters, msgs_per_min = self._get_promo_activity_stats(
-            login, now
-        )
+        msg_count, unique_chatters, msgs_per_min = self._get_promo_activity_stats(login, now)
         if PROMO_ACTIVITY_MIN_MSGS > 0 and msg_count < PROMO_ACTIVITY_MIN_MSGS:
             return False
-        if (
-            PROMO_ACTIVITY_MIN_CHATTERS > 0
-            and unique_chatters < PROMO_ACTIVITY_MIN_CHATTERS
-        ):
+        if PROMO_ACTIVITY_MIN_CHATTERS > 0 and unique_chatters < PROMO_ACTIVITY_MIN_CHATTERS:
             return False
 
         last_sent = self._last_promo_sent.get(login)
@@ -420,9 +367,7 @@ class PromoMixin:
         if not self._promo_attempt_allowed(login, now):
             return False
 
-        ok = await self._send_promo_message(
-            login, channel_id, now, reason="chat_activity"
-        )
+        ok = await self._send_promo_message(login, channel_id, now, reason="chat_activity")
         if ok:
             log.info(
                 "Chat-Promo gesendet in %s (reason=chat_activity, activity=%d msgs/%d chatters, cooldown=%.1f min)",
@@ -433,9 +378,7 @@ class PromoMixin:
             )
         return ok
 
-    async def _maybe_send_viewer_spike_promo(
-        self, login: str, channel_id: str, now: float
-    ) -> bool:
+    async def _maybe_send_viewer_spike_promo(self, login: str, channel_id: str, now: float) -> bool:
         if not PROMO_VIEWER_SPIKE_ENABLED:
             return False
         if not self._promo_channel_allowed(login):
@@ -461,7 +404,7 @@ class PromoMixin:
         viewer_spike_map = getattr(self, "_last_promo_viewer_spike", None)
         if not isinstance(viewer_spike_map, dict):
             viewer_spike_map = {}
-            setattr(self, "_last_promo_viewer_spike", viewer_spike_map)
+            self._last_promo_viewer_spike = viewer_spike_map
 
         last_viewer_promo = viewer_spike_map.get(login)
         viewer_cd_sec = float(PROMO_VIEWER_SPIKE_COOLDOWN_MIN) * 60.0
@@ -471,9 +414,7 @@ class PromoMixin:
         if not self._promo_attempt_allowed(login, now):
             return False
 
-        ok = await self._send_promo_message(
-            login, channel_id, now, reason="viewer_spike"
-        )
+        ok = await self._send_promo_message(login, channel_id, now, reason="viewer_spike")
         if ok:
             log.info(
                 "Chat-Promo gesendet in %s (reason=viewer_spike, viewers=%d, baseline=%.1f, threshold=%.1f, source=%s:%d, cooldown=%.1f min)",
@@ -497,9 +438,7 @@ class PromoMixin:
                 message, "broadcaster", None
             )
 
-        channel_name = (
-            getattr(channel, "name", "") or getattr(channel, "login", "") or ""
-        )
+        channel_name = getattr(channel, "name", "") or getattr(channel, "login", "") or ""
         login = channel_name.lstrip("#").lower()
         if not login or not self._promo_channel_allowed(login):
             return
@@ -560,13 +499,9 @@ class PromoMixin:
                     continue
                 sent = False
                 if _PROMO_ACTIVITY_ENABLED:
-                    sent = await self._maybe_send_promo_with_stats(
-                        login, str(broadcaster_id), now
-                    )
+                    sent = await self._maybe_send_promo_with_stats(login, str(broadcaster_id), now)
                 if not sent and PROMO_VIEWER_SPIKE_ENABLED:
-                    await self._maybe_send_viewer_spike_promo(
-                        login, str(broadcaster_id), now
-                    )
+                    await self._maybe_send_viewer_spike_promo(login, str(broadcaster_id), now)
             return
 
         interval_sec = max(_PROMO_INTERVAL_MIN * 60, self._overall_promo_cooldown_sec())
@@ -608,7 +543,7 @@ class PromoMixin:
             else:
                 log.debug("Chat-Promo in %s fehlgeschlagen", login)
 
-    async def _get_live_channels_for_promo(self) -> List[Tuple[str, str]]:
+    async def _get_live_channels_for_promo(self) -> list[tuple[str, str]]:
         """Gibt alle live-Kanäle zurück, in denen der Bot aktiv ist (login, broadcaster_id)."""
         if not self._channel_ids:
             return []
@@ -629,12 +564,10 @@ class PromoMixin:
                     """
                 )
         except Exception:
-            log.debug(
-                "_get_live_channels_for_promo: DB-Query fehlgeschlagen", exc_info=True
-            )
+            log.debug("_get_live_channels_for_promo: DB-Query fehlgeschlagen", exc_info=True)
             return []
 
-        channels: List[Tuple[str, str]] = []
+        channels: list[tuple[str, str]] = []
         for row in rows:
             if not row[0] or not row[1]:
                 continue

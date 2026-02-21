@@ -3,7 +3,6 @@ Zentrale Guild-spezifische Konfiguration.
 Verschiebt hardcoded IDs aus verschiedenen Cogs in eine Config.
 """
 
-from typing import Set
 from dataclasses import dataclass
 
 
@@ -41,7 +40,7 @@ class GuildIDs:
     STEAM_VERIFIED_ANNOUNCE_CHANNEL_ID: int = 1313587932169859083
 
     @property
-    def tempvoice_staging_channels(self) -> Set[int]:
+    def tempvoice_staging_channels(self) -> set[int]:
         """Alle TempVoice Staging Channel IDs."""
         return {
             self.TEMPVOICE_STAGING_CASUAL,
@@ -50,7 +49,7 @@ class GuildIDs:
         }
 
     @property
-    def tempvoice_minrank_categories(self) -> Set[int]:
+    def tempvoice_minrank_categories(self) -> set[int]:
         """Alle TempVoice MinRank Category IDs."""
         return {
             self.TEMPVOICE_CATEGORY_GRIND,
@@ -59,7 +58,7 @@ class GuildIDs:
         }
 
     @property
-    def rank_voice_categories(self) -> Set[int]:
+    def rank_voice_categories(self) -> set[int]:
         """Alle Rank Voice Manager Category IDs."""
         return {
             self.RANK_CATEGORY_CASUAL_1,
@@ -72,7 +71,7 @@ class GuildIDs:
         }
 
     @property
-    def voice_status_categories(self) -> Set[int]:
+    def voice_status_categories(self) -> set[int]:
         """Alle Voice Status Category IDs."""
         return {
             self.VOICE_STATUS_CATEGORY_GRIND,

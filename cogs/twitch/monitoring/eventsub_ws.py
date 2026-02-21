@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import aiohttp
 
-EventCallback = Callable[[str, str, Dict], Awaitable[None]]
+EventCallback = Callable[[str, str, dict], Awaitable[None]]
 
 
 class EventSubReconnect(Exception):
@@ -32,8 +33,8 @@ class EventSubWSListener:
     def __init__(
         self,
         api,
-        logger: Optional[logging.Logger] = None,
-        token_resolver: Optional[Callable[[str], Awaitable[Optional[str]]]] = None,
+        logger: logging.Logger | None = None,
+        token_resolver: Callable[[str], Awaitable[str | None]] | None = None,
     ):
         self.api = api
         self.log = logger or logging.getLogger("TwitchStreams.EventSubWS")
@@ -41,14 +42,14 @@ class EventSubWSListener:
         self._stop = False
         self._failed = False
         self._ws_url = "wss://eventsub.wss.twitch.tv/ws"
-        self._subscriptions: List[
-            Tuple[str, str, Dict]
+        self._subscriptions: list[
+            tuple[str, str, dict]
         ] = []  # (sub_type, broadcaster_id, condition)
-        self._callbacks: Dict[str, EventCallback] = {}  # sub_type -> callback
-        self._session_id: Optional[str] = None  # Stored for dynamic subscriptions
+        self._callbacks: dict[str, EventCallback] = {}  # sub_type -> callback
+        self._session_id: str | None = None  # Stored for dynamic subscriptions
 
     @staticmethod
-    def _condition_key(condition: Optional[Dict]) -> Tuple[Tuple[str, str], ...]:
+    def _condition_key(condition: dict | None) -> tuple[tuple[str, str], ...]:
         """Normalize condition payload for stable duplicate checks."""
         if not condition:
             return tuple()
@@ -73,9 +74,7 @@ class EventSubWSListener:
             or "session has disconnected" in message
         )
 
-    def _has_subscription(
-        self, sub_type: str, broadcaster_id: str, condition: Optional[Dict]
-    ) -> bool:
+    def _has_subscription(self, sub_type: str, broadcaster_id: str, condition: dict | None) -> bool:
         bid = str(broadcaster_id)
         cond_key = self._condition_key(condition)
         for existing_type, existing_bid, existing_cond in self._subscriptions:
@@ -86,7 +85,7 @@ class EventSubWSListener:
         return False
 
     def _track_subscription(
-        self, sub_type: str, broadcaster_id: str, condition: Optional[Dict]
+        self, sub_type: str, broadcaster_id: str, condition: dict | None
     ) -> bool:
         bid = str(broadcaster_id)
         cond = condition or {"broadcaster_user_id": bid}
@@ -112,16 +111,14 @@ class EventSubWSListener:
         """Number of tracked subscriptions assigned to this listener."""
         return len(self._subscriptions)
 
-    def get_tracked_subscriptions(self) -> List[Dict[str, Any]]:
+    def get_tracked_subscriptions(self) -> list[dict[str, Any]]:
         """Return a copy of tracked subscriptions for diagnostics/dashboard views."""
-        rows: List[Dict[str, Any]] = []
+        rows: list[dict[str, Any]] = []
         for sub_type, broadcaster_id, condition in self._subscriptions:
-            safe_condition: Dict[str, str] = {}
+            safe_condition: dict[str, str] = {}
             if isinstance(condition, dict):
                 safe_condition = {
-                    str(key): str(value)
-                    for key, value in condition.items()
-                    if str(key).strip()
+                    str(key): str(value) for key, value in condition.items() if str(key).strip()
                 }
             rows.append(
                 {
@@ -146,9 +143,7 @@ class EventSubWSListener:
         """True once Twitch assigned a session_id for dynamic subscriptions."""
         return bool(self._session_id) and not self._failed
 
-    async def wait_until_ready(
-        self, timeout: float = 8.0, poll_interval: float = 0.1
-    ) -> bool:
+    async def wait_until_ready(self, timeout: float = 8.0, poll_interval: float = 0.1) -> bool:
         """
         Wait until this listener has a valid EventSub session_id.
 
@@ -170,9 +165,7 @@ class EventSubWSListener:
         self._stop = True
         self._session_id = None
 
-    def add_subscription(
-        self, sub_type: str, broadcaster_id: str, condition: Optional[Dict] = None
-    ):
+    def add_subscription(self, sub_type: str, broadcaster_id: str, condition: dict | None = None):
         """Add a subscription to be registered on connect."""
         self._track_subscription(sub_type, str(broadcaster_id), condition)
 
@@ -180,8 +173,8 @@ class EventSubWSListener:
         self,
         sub_type: str,
         broadcaster_id: str,
-        condition: Optional[Dict] = None,
-        oauth_token: Optional[str] = None,
+        condition: dict | None = None,
+        oauth_token: str | None = None,
     ) -> bool:
         """
         Add and register a subscription dynamically while the listener is running.
@@ -190,9 +183,7 @@ class EventSubWSListener:
             True if successful, False otherwise.
         """
         if not self.is_ready:
-            self.log.error(
-                "EventSub WS: Keine Session ID verfügbar für dynamische Subscription"
-            )
+            self.log.error("EventSub WS: Keine Session ID verfügbar für dynamische Subscription")
             return False
         session_id = self._session_id
         if not session_id:
@@ -223,9 +214,7 @@ class EventSubWSListener:
         if not token:
             token = await self._resolve_token()
         if not token:
-            self.log.error(
-                "EventSub WS: Kein Token verfügbar für dynamische Subscription"
-            )
+            self.log.error("EventSub WS: Kein Token verfügbar für dynamische Subscription")
             return False
 
         try:
@@ -278,9 +267,7 @@ class EventSubWSListener:
     async def run(self) -> None:
         """Start the listener and handle reconnects."""
         if not self._subscriptions:
-            self.log.debug(
-                "EventSub WS: Starting listener without initial subscriptions."
-            )
+            self.log.debug("EventSub WS: Starting listener without initial subscriptions.")
 
         is_reconnect = False
         while not self._stop:
@@ -311,9 +298,7 @@ class EventSubWSListener:
                     )
                     await asyncio.sleep(1)
                 else:
-                    self.log.exception(
-                        "EventSub WS listener crashed - Reconnecting in 10s"
-                    )
+                    self.log.exception("EventSub WS listener crashed - Reconnecting in 10s")
                     await asyncio.sleep(10)
                 self._ws_url = "wss://eventsub.wss.twitch.tv/ws"
                 is_reconnect = False
@@ -326,9 +311,7 @@ class EventSubWSListener:
             async with session.ws_connect(ws_url, heartbeat=20) as ws:
                 session_id = await self._wait_for_welcome(ws)
                 if not session_id:
-                    raise ConnectionError(
-                        "EventSub WS: No session_id received, aborting."
-                    )
+                    raise ConnectionError("EventSub WS: No session_id received, aborting.")
 
                 if not is_reconnect:
                     await self._register_all_subscriptions(session_id)
@@ -353,7 +336,7 @@ class EventSubWSListener:
         if not self._stop:
             raise ConnectionResetError("EventSub WS: Connection closed unexpectedly")
 
-    async def _wait_for_welcome(self, ws) -> Optional[str]:
+    async def _wait_for_welcome(self, ws) -> str | None:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + 15
 
@@ -364,7 +347,7 @@ class EventSubWSListener:
                 return None
             try:
                 msg = await ws.receive(timeout=timeout)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self.log.error("EventSub WS: Welcome timeout")
                 return None
 
@@ -385,9 +368,7 @@ class EventSubWSListener:
 
                     return session_id
                 if mtype == "session_reconnect":
-                    target = (
-                        data.get("payload", {}).get("session", {}).get("reconnect_url")
-                    )
+                    target = data.get("payload", {}).get("session", {}).get("reconnect_url")
                     self.log.info("EventSub WS: Reconnect requested to %s", target)
                     raise EventSubReconnect(target)
                 if mtype == "session_keepalive":
@@ -401,7 +382,7 @@ class EventSubWSListener:
             ):
                 return None
 
-    async def _resolve_token(self) -> Optional[str]:
+    async def _resolve_token(self) -> str | None:
         """Resolve the token to be used for all subscriptions on this WS."""
         if not self._token_resolver:
             return None
@@ -423,9 +404,7 @@ class EventSubWSListener:
 
         token = await self._resolve_token()
         if not token:
-            self.log.error(
-                "EventSub WS: No user token available. Subscriptions will fail."
-            )
+            self.log.error("EventSub WS: No user token available. Subscriptions will fail.")
             return
 
         # Twitch limits:
@@ -503,10 +482,7 @@ class EventSubWSListener:
                         self._failed = True
                         break
 
-                    if (
-                        "websocket transport subscriptions total cost exceeded"
-                        in msg.lower()
-                    ):
+                    if "websocket transport subscriptions total cost exceeded" in msg.lower():
                         self.log.error(
                             "EventSub WS: Transport Subscription Cost Limit (%d) erreicht bei %s for %s. "
                             "Dieser Transport ist voll. Erstelle eine neue Session.",
@@ -562,9 +538,7 @@ class EventSubWSListener:
                             retry_err,
                         )
                     continue
-                self.log.error(
-                    "EventSub WS: Subscription failed for %s (%s): %s", bid, sub_type, e
-                )
+                self.log.error("EventSub WS: Subscription failed for %s (%s): %s", bid, sub_type, e)
 
         self.log.info(
             "EventSub WS: Subscription-Registrierung abgeschlossen: %d/%d erfolgreich",
@@ -572,7 +546,7 @@ class EventSubWSListener:
             len(self._subscriptions),
         )
 
-    async def _handle_message(self, data: Dict) -> None:
+    async def _handle_message(self, data: dict) -> None:
         meta = data.get("metadata") or {}
         mtype = meta.get("message_type")
         if mtype == "session_keepalive":
@@ -617,6 +591,4 @@ class EventSubWSListener:
         try:
             await callback(broadcaster_id, broadcaster_login, event)
         except Exception:
-            self.log.exception(
-                "EventSub WS: Callback failed for %s (%s)", broadcaster_id, sub_type
-            )
+            self.log.exception("EventSub WS: Callback failed for %s (%s)", broadcaster_id, sub_type)

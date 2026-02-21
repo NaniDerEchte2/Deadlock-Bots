@@ -2,22 +2,19 @@
 
 from __future__ import annotations
 
-import os
-import sqlite3
 import asyncio
 import json
-from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+import os
+import sqlite3
+from datetime import UTC, datetime, timedelta
 
 import discord
-
 from aiohttp import web
 
 from .. import storage
-from .server_v2 import build_v2_app
-from ..constants import log
-from ..constants import TWITCH_TARGET_GAME_NAME
 from ..analytics.backend_extended import AnalyticsBackendExtended
+from ..constants import TWITCH_TARGET_GAME_NAME, log
+from .server_v2 import build_v2_app
 
 
 def _parse_env_int(var_name: str, default: int = 0) -> int:
@@ -27,9 +24,7 @@ def _parse_env_int(var_name: str, default: int = 0) -> int:
     try:
         return int(raw)
     except ValueError:
-        log.warning(
-            "Invalid integer for %s=%r – falling back to %s", var_name, raw, default
-        )
+        log.warning("Invalid integer for %s=%r – falling back to %s", var_name, raw, default)
         return default
 
 
@@ -59,9 +54,7 @@ class TwitchDashboardMixin:
         for attempt in range(3):
             try:
                 target_game = (
-                    os.getenv("TWITCH_TARGET_GAME_NAME")
-                    or TWITCH_TARGET_GAME_NAME
-                    or ""
+                    os.getenv("TWITCH_TARGET_GAME_NAME") or TWITCH_TARGET_GAME_NAME or ""
                 ).strip()
                 with storage.get_conn() as c:
                     c.execute(
@@ -135,7 +128,7 @@ class TwitchDashboardMixin:
     ) -> dict:
         """Partner- und optionale Non-Partner-Vorschläge für das Analytics-Dashboard."""
         partners = await self._dashboard_list()
-        extras: List[dict] = []
+        extras: list[dict] = []
 
         if include_non_partners:
             partner_logins = {
@@ -161,9 +154,7 @@ class TwitchDashboardMixin:
                         (cutoff, limit * 2),
                     ).fetchall()
                 for row in rows:
-                    login = str(
-                        row["streamer"] if hasattr(row, "keys") else row[0] or ""
-                    ).strip()
+                    login = str(row["streamer"] if hasattr(row, "keys") else row[0] or "").strip()
                     if not login:
                         continue
                     lower = login.lower()
@@ -173,17 +164,11 @@ class TwitchDashboardMixin:
                         {
                             "twitch_login": login,
                             "avg_viewers": float(
-                                row["avg_viewers"]
-                                if hasattr(row, "keys")
-                                else row[3] or 0.0
+                                row["avg_viewers"] if hasattr(row, "keys") else row[3] or 0.0
                             ),
-                            "samples": int(
-                                row["samples"] if hasattr(row, "keys") else row[1] or 0
-                            ),
+                            "samples": int(row["samples"] if hasattr(row, "keys") else row[1] or 0),
                             "last_seen": str(
-                                row["last_seen"]
-                                if hasattr(row, "keys")
-                                else row[2] or ""
+                                row["last_seen"] if hasattr(row, "keys") else row[2] or ""
                             ),
                         }
                     )
@@ -277,8 +262,8 @@ class TwitchDashboardMixin:
         self,
         login: str,
         *,
-        discord_user_id: Optional[str],
-        discord_display_name: Optional[str],
+        discord_user_id: str | None,
+        discord_display_name: str | None,
         mark_member: bool,
     ) -> str:
         normalized = self._normalize_login(login)
@@ -294,7 +279,7 @@ class TwitchDashboardMixin:
             display_name_clean = display_name_clean[:120]
 
         # Versuche twitch_user_id zu ermitteln
-        twitch_user_id: Optional[str] = None
+        twitch_user_id: str | None = None
 
         # 1. Versuche aus raid_auth zu laden
         try:
@@ -386,7 +371,7 @@ class TwitchDashboardMixin:
 
     async def _get_monetization_stats(self) -> dict:
         """Aggregate monetization & hype train data for the last 30 days."""
-        cutoff_30d = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        cutoff_30d = (datetime.now(UTC) - timedelta(days=30)).isoformat()
 
         ads: dict = {
             "total": 0,
@@ -445,9 +430,7 @@ class TwitchDashboardMixin:
 
             timeline_map: dict = {}
             if ad_rows:
-                session_ids = list(
-                    {int(r["session_id"]) for r in ad_rows if r["session_id"]}
-                )
+                session_ids = list({int(r["session_id"]) for r in ad_rows if r["session_id"]})
                 if session_ids:
                     session_ids_json = json.dumps(session_ids)
                     viewer_rows = c.execute(
@@ -470,20 +453,16 @@ class TwitchDashboardMixin:
                             )
                         )
 
-            drop_pcts: List[float] = []
-            worst_ads: List[dict] = []
+            drop_pcts: list[float] = []
+            worst_ads: list[dict] = []
             for ad in ad_rows:
                 session_id = int(ad["session_id"] or 0)
                 ad_started = ad["started_at"]
                 session_start = ad["session_start"]
                 duration_s = float(ad["duration_seconds"] or 30)
                 try:
-                    ad_dt = datetime.fromisoformat(
-                        str(ad_started).replace("Z", "+00:00")
-                    )
-                    sess_dt = datetime.fromisoformat(
-                        str(session_start).replace("Z", "+00:00")
-                    )
+                    ad_dt = datetime.fromisoformat(str(ad_started).replace("Z", "+00:00"))
+                    sess_dt = datetime.fromisoformat(str(session_start).replace("Z", "+00:00"))
                     minutes_into = (ad_dt - sess_dt).total_seconds() / 60.0
                 except Exception:
                     continue
@@ -491,13 +470,9 @@ class TwitchDashboardMixin:
                 if not timeline:
                     continue
                 duration_min = duration_s / 60.0
-                pre_vals = [
-                    v for m, v in timeline if (minutes_into - 5) <= m < minutes_into
-                ]
+                pre_vals = [v for m, v in timeline if (minutes_into - 5) <= m < minutes_into]
                 post_start = minutes_into + duration_min
-                post_vals = [
-                    v for m, v in timeline if post_start <= m < (post_start + 5)
-                ]
+                post_vals = [v for m, v in timeline if post_start <= m < (post_start + 5)]
                 if not pre_vals or not post_vals:
                     continue
                 pre_avg = sum(pre_vals) / len(pre_vals)
@@ -536,13 +511,9 @@ class TwitchDashboardMixin:
                 ).fetchone()
                 if ht_row:
                     hype_train["total"] = int(ht_row["total_trains"] or 0)
-                    hype_train["avg_level"] = round(
-                        float(ht_row["avg_level"] or 0.0), 1
-                    )
+                    hype_train["avg_level"] = round(float(ht_row["avg_level"] or 0.0), 1)
                     hype_train["max_level"] = int(ht_row["max_level"] or 0)
-                    hype_train["avg_duration_s"] = round(
-                        float(ht_row["avg_duration"] or 0.0), 0
-                    )
+                    hype_train["avg_duration_s"] = round(float(ht_row["avg_duration"] or 0.0), 0)
             except Exception:
                 log.debug("Hype Train query fehlgeschlagen", exc_info=True)
 
@@ -586,9 +557,9 @@ class TwitchDashboardMixin:
     async def _dashboard_stats(
         self,
         *,
-        hour_from: Optional[int] = None,
-        hour_to: Optional[int] = None,
-        streamer: Optional[str] = None,
+        hour_from: int | None = None,
+        hour_to: int | None = None,
+        streamer: str | None = None,
     ) -> dict:
         stats = await self._compute_stats(
             hour_from=hour_from,
@@ -598,7 +569,7 @@ class TwitchDashboardMixin:
         tracked_top = stats.get("tracked", {}).get("top", []) or []
         category_top = stats.get("category", {}).get("top", []) or []
 
-        def _agg(items: List[dict]):
+        def _agg(items: list[dict]):
             samples = sum(int(d.get("samples") or 0) for d in items)
             uniq = len(items)
             avg_over_streamers = (
@@ -639,10 +610,10 @@ class TwitchDashboardMixin:
         Comprehensive Analytics Data Aggregation.
         Calculates Channel Health Score and benchmarks against Deadlock category.
         """
-        from datetime import datetime, timedelta
         import math
+        from datetime import datetime, timedelta
 
-        def _pct(val: Optional[float]) -> float:
+        def _pct(val: float | None) -> float:
             if val is None:
                 return 0.0
             # Heuristic: if <= 1.0 assume ratio, else percent
@@ -650,7 +621,7 @@ class TwitchDashboardMixin:
                 return float(val) * 100.0
             return float(val)
 
-        def _percentile_rank(val: float, population: List[float]) -> float:
+        def _percentile_rank(val: float, population: list[float]) -> float:
             if not population:
                 return 50.0
             population.sort()
@@ -670,8 +641,8 @@ class TwitchDashboardMixin:
         cutoff_iso = cutoff.isoformat()
 
         # --- Data Containers ---
-        sessions_data: List[dict] = []
-        drops: List[dict] = []
+        sessions_data: list[dict] = []
+        drops: list[dict] = []
 
         # --- Accumulators ---
         total_sessions = 0
@@ -884,9 +855,7 @@ class TwitchDashboardMixin:
 
         # 1. Reach (25%)
         # Mix of Percentile (vs Peers) and Absolute Log Scale (Progress)
-        s_reach_avg = _percentile_rank(
-            avg_v, cohort_avg if cohort_avg else pop_avg_viewers
-        )
+        s_reach_avg = _percentile_rank(avg_v, cohort_avg if cohort_avg else pop_avg_viewers)
         s_reach_abs = _score_log(avg_v)
         score_reach = (s_reach_avg * 0.5) + (s_reach_abs * 0.5)
 
@@ -902,14 +871,9 @@ class TwitchDashboardMixin:
         s_chat_density = _norm(chat_rate, 25)
         s_returning = _norm(returning_rate, 60)  # 60% returning is very loyal
         s_clicks = _norm(link_clicks / max(total_duration_h, 1), 0.5)
-        s_chat_cohort = _percentile_rank(
-            sum_unique_chatters / max(total_sessions, 1), cohort_chat
-        )
+        s_chat_cohort = _percentile_rank(sum_unique_chatters / max(total_sessions, 1), cohort_chat)
         score_engagement = (
-            (s_chat_density * 0.4)
-            + (s_returning * 0.2)
-            + (s_clicks * 0.2)
-            + (s_chat_cohort * 0.2)
+            (s_chat_density * 0.4) + (s_returning * 0.2) + (s_clicks * 0.2) + (s_chat_cohort * 0.2)
         )
 
         # 4. Growth (15%)
@@ -947,10 +911,9 @@ class TwitchDashboardMixin:
                 return 0
             avg_a = sum(list_a) / len(list_a)
             avg_b = sum(list_b) / len(list_b)
-            num = sum((a - avg_a) * (b - avg_b) for a, b in zip(list_a, list_b))
+            num = sum((a - avg_a) * (b - avg_b) for a, b in zip(list_a, list_b, strict=False))
             den = math.sqrt(
-                sum((a - avg_a) ** 2 for a in list_a)
-                * sum((b - avg_b) ** 2 for b in list_b)
+                sum((a - avg_a) ** 2 for a in list_a) * sum((b - avg_b) ** 2 for b in list_b)
             )
             return num / den if den != 0 else 0
 
@@ -1068,9 +1031,7 @@ class TwitchDashboardMixin:
             )
 
         # --- Benchmark Comparison ---
-        avg_pop_viewers = (
-            sum(pop_avg_viewers) / len(pop_avg_viewers) if pop_avg_viewers else 0
-        )
+        avg_pop_viewers = sum(pop_avg_viewers) / len(pop_avg_viewers) if pop_avg_viewers else 0
         avg_pop_ret = sum(cohort_ret10) / len(cohort_ret10) if cohort_ret10 else 0
 
         benchmarks = {
@@ -1130,9 +1091,7 @@ class TwitchDashboardMixin:
             },
         }
 
-    async def _dashboard_streamer_analytics_data(
-        self, streamer_login: str, days: int = 30
-    ) -> dict:
+    async def _dashboard_streamer_analytics_data(self, streamer_login: str, days: int = 30) -> dict:
         """
         New comprehensive analytics using AnalyticsBackendExtended.
         Returns data structure compatible with the new React dashboard.
@@ -1272,7 +1231,7 @@ class TwitchDashboardMixin:
 
         return data
 
-    async def _ensure_streamer_role(self, row_data: Optional[dict]) -> str:
+    async def _ensure_streamer_role(self, row_data: dict | None) -> str:
         """Assign the streamer role when available; return a short status hint."""
         if STREAMER_ROLE_ID <= 0:
             return ""
@@ -1291,11 +1250,9 @@ class TwitchDashboardMixin:
             user_id = int(str(user_id_raw))
         except (TypeError, ValueError):
             log.warning("Streamer verification: invalid Discord ID %r", user_id_raw)
-            return (
-                "(Streamer-Rolle konnte nicht vergeben werden – ungültige Discord-ID)"
-            )
+            return "(Streamer-Rolle konnte nicht vergeben werden – ungültige Discord-ID)"
 
-        guild_candidates: List[discord.Guild] = []
+        guild_candidates: list[discord.Guild] = []
         seen: set[int] = set()
 
         for guild_id in (STREAMER_GUILD_ID, FALLBACK_MAIN_GUILD_ID):
@@ -1367,9 +1324,7 @@ class TwitchDashboardMixin:
         )
         return "(Streamer-Rolle konnte nicht vergeben werden – Mitglied/Rolle nicht gefunden)"
 
-    async def _notify_verification_success(
-        self, login: str, row_data: Optional[dict]
-    ) -> str:
+    async def _notify_verification_success(self, login: str, row_data: dict | None) -> str:
         if not row_data:
             log.info(
                 "Keine Discord-Daten für %s zum Versenden der Erfolgsnachricht gefunden",
@@ -1406,9 +1361,7 @@ class TwitchDashboardMixin:
                 user = None
 
         if user is None:
-            log.warning(
-                "Discord-User %s (%s) konnte nicht gefunden werden", user_id_int, login
-            )
+            log.warning("Discord-User %s (%s) konnte nicht gefunden werden", user_id_int, login)
             return "(Discord-DM konnte nicht zugestellt werden)"
 
         try:
@@ -1427,9 +1380,7 @@ class TwitchDashboardMixin:
             )
             return "(Discord-DM konnte nicht zugestellt werden)"
 
-        log.info(
-            "Verifizierungs-Erfolgsnachricht an %s (%s) gesendet", user_id_int, login
-        )
+        log.info("Verifizierungs-Erfolgsnachricht an %s (%s) gesendet", user_id_int, login)
         return ""
 
     async def _dashboard_verify(self, login: str, mode: str) -> str:
@@ -1474,7 +1425,7 @@ class TwitchDashboardMixin:
                     base_msg = f"{login} für 30 Tage verifiziert"
                 copied = storage.backfill_tracked_stats_from_category(c, login)
 
-            notes: List[str] = []
+            notes: list[str] = []
             if copied:
                 notes.append(f"({copied} historische Datenpunkte übernommen)")
             if should_notify:
@@ -1610,9 +1561,7 @@ class TwitchDashboardMixin:
 
     async def _start_dashboard(self):
         if not getattr(self, "_dashboard_embedded", True):
-            log.debug(
-                "Twitch dashboard embedded server disabled; skipping _start_dashboard"
-            )
+            log.debug("Twitch dashboard embedded server disabled; skipping _start_dashboard")
             return
 
         # Retry logic for port availability during reloads
@@ -1629,12 +1578,8 @@ class TwitchDashboardMixin:
                     partner_token=self._partner_dashboard_token,
                     oauth_client_id=self.client_id or None,
                     oauth_client_secret=self.client_secret or None,
-                    oauth_redirect_uri=getattr(
-                        self, "_dashboard_auth_redirect_uri", None
-                    ),
-                    session_ttl_seconds=getattr(
-                        self, "_dashboard_session_ttl", 12 * 3600
-                    ),
+                    oauth_redirect_uri=getattr(self, "_dashboard_auth_redirect_uri", None),
+                    session_ttl_seconds=getattr(self, "_dashboard_session_ttl", 12 * 3600),
                     legacy_stats_url=getattr(self, "_legacy_stats_url", None),
                     add_cb=self._dashboard_add,
                     remove_cb=self._dashboard_remove,
@@ -1647,15 +1592,11 @@ class TwitchDashboardMixin:
                     raid_history_cb=getattr(self, "_dashboard_raid_history", None),
                     raid_bot=getattr(self, "_raid_bot", None),
                     reload_cb=self._reload_twitch_cog,
-                    eventsub_webhook_handler=getattr(
-                        self, "_eventsub_webhook_handler", None
-                    ),
+                    eventsub_webhook_handler=getattr(self, "_eventsub_webhook_handler", None),
                 )
                 runner = web.AppRunner(app)
                 await runner.setup()
-                site = web.TCPSite(
-                    runner, host=self._dashboard_host, port=self._dashboard_port
-                )
+                site = web.TCPSite(runner, host=self._dashboard_host, port=self._dashboard_port)
                 await site.start()
                 self._web = runner
                 self._web_app = app
@@ -1685,9 +1626,7 @@ class TwitchDashboardMixin:
                     await asyncio.sleep(retry_delay)
                     retry_delay *= 2
                     continue
-                log.exception(
-                    "Konnte Dashboard nicht starten (Port belegt oder anderer Fehler)"
-                )
+                log.exception("Konnte Dashboard nicht starten (Port belegt oder anderer Fehler)")
                 break
             except Exception:
                 if runner:

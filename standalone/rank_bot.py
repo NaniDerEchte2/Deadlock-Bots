@@ -1,18 +1,19 @@
+import asyncio
+import atexit
+import json
+import logging
+import os
+import sqlite3
+import sys
+import time
+from datetime import datetime, timedelta, tzinfo
+from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo
+
+import aiohttp
 import discord
 from discord.ext import commands, tasks
-import aiohttp
-import json
-import sqlite3
-import asyncio
-from datetime import datetime, timedelta, tzinfo
-import os
-import logging
-import time
-from pathlib import Path
-import sys
-import atexit
-from typing import Optional, Dict, List, Any
-from zoneinfo import ZoneInfo
 
 
 # ---------- Repo-Root robust finden, damit "service" importierbar ist ----------
@@ -107,9 +108,7 @@ ENGLISH_ONLY_ROLE_ID = 1309741866098491479
 NO_DEADLOCK_ROLE_ID = 1397676560231698502
 NO_NOTIFICATION_ROLE_ID = 1397688110959165462
 PHANTOM_NOTIFICATION_CHANNEL_ID = 1374364800817303632
-RANK_SELECTION_CHANNEL_ID = (
-    1398021105339334666  # Channel für automatische View-Wiederherstellung
-)
+RANK_SELECTION_CHANNEL_ID = 1398021105339334666  # Channel für automatische View-Wiederherstellung
 
 # Deadlock MMR Sync
 MMR_API_URL = "https://api.deadlock-api.com/v1/players/mmr"
@@ -123,7 +122,7 @@ MMR_SYNC_NS = "mmr_sync"
 MMR_SYNC_LAST_RUN_KEY = "last_run_date"
 
 # Test-User System - für normalen Betrieb leer lassen
-test_users: List[discord.Member] = []
+test_users: list[discord.Member] = []
 
 # MMR Sync Lock (verhindert parallele Läufe)
 MMR_SYNC_LOCK = asyncio.Lock()
@@ -278,9 +277,7 @@ def save_persistent_view(
 def remove_persistent_view(message_id: str):
     with central_db.get_conn() as conn:
         cursor = conn.cursor()
-        cursor.execute(
-            "DELETE FROM persistent_views WHERE message_id = ?", (message_id,)
-        )
+        cursor.execute("DELETE FROM persistent_views WHERE message_id = ?", (message_id,))
         conn.commit()
 
 
@@ -317,7 +314,7 @@ def cleanup_old_views(guild_id: str, view_type: str):
 # ---------- Standalone Dashboard Integration ----------
 
 
-def fetch_pending_commands(limit: int = COMMAND_POLL_LIMIT) -> List[sqlite3.Row]:
+def fetch_pending_commands(limit: int = COMMAND_POLL_LIMIT) -> list[sqlite3.Row]:
     with central_db.get_conn() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -353,7 +350,7 @@ def mark_command_running(command_id: int) -> bool:
         return cursor.rowcount == 1
 
 
-def _truncate_error(message: Optional[str], limit: int = 1500) -> Optional[str]:
+def _truncate_error(message: str | None, limit: int = 1500) -> str | None:
     if not message:
         return None
     text = str(message)
@@ -366,8 +363,8 @@ def finalize_command(
     command_id: int,
     status: str,
     *,
-    result: Optional[Dict[str, Any]] = None,
-    error: Optional[str] = None,
+    result: dict[str, Any] | None = None,
+    error: str | None = None,
 ) -> None:
     result_json = json.dumps(result, ensure_ascii=False) if result is not None else None
     error_text = _truncate_error(error)
@@ -394,23 +391,19 @@ def _loop_running(loop_obj: Any) -> bool:
         return False
 
 
-def collect_rank_bot_snapshot() -> Dict[str, Any]:
+def collect_rank_bot_snapshot() -> dict[str, Any]:
     now = datetime.utcnow()
     today = now.strftime("%Y-%m-%d")
-    snapshot: Dict[str, Any] = {
+    snapshot: dict[str, Any] = {
         "timestamp": now.isoformat(),
         "guild_count": len(bot.guilds),
         "test_user_count": len(test_users),
         "loops": {
-            "daily_notification": _loop_running(
-                globals().get("daily_notification_check")
-            ),
+            "daily_notification": _loop_running(globals().get("daily_notification_check")),
             "daily_cleanup": _loop_running(globals().get("daily_cleanup_check")),
             "daily_mmr_sync": _loop_running(globals().get("daily_mmr_sync_check")),
             "command_poller": _loop_running(globals().get("standalone_command_poller")),
-            "state_publisher": _loop_running(
-                globals().get("standalone_state_publisher")
-            ),
+            "state_publisher": _loop_running(globals().get("standalone_state_publisher")),
         },
     }
 
@@ -419,9 +412,7 @@ def collect_rank_bot_snapshot() -> Dict[str, Any]:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
-            cursor.execute(
-                "SELECT COUNT(*) FROM notification_queue WHERE processed = 0"
-            )
+            cursor.execute("SELECT COUNT(*) FROM notification_queue WHERE processed = 0")
             queue_pending_total = cursor.fetchone()[0] or 0
 
             cursor.execute("SELECT COUNT(*) FROM notification_queue")
@@ -468,9 +459,7 @@ def collect_rank_bot_snapshot() -> Dict[str, Any]:
             )
             notifications_today = cursor.fetchone()[0] or 0
 
-            cursor.execute(
-                "SELECT COUNT(*) FROM dm_response_tracking WHERE status = 'pending'"
-            )
+            cursor.execute("SELECT COUNT(*) FROM dm_response_tracking WHERE status = 'pending'")
             dm_pending = cursor.fetchone()[0] or 0
 
             cursor.execute(
@@ -478,9 +467,7 @@ def collect_rank_bot_snapshot() -> Dict[str, Any]:
             )
             dm_open_views = cursor.fetchone()[0] or 0
 
-            cursor.execute(
-                "SELECT status, COUNT(*) FROM dm_response_tracking GROUP BY status"
-            )
+            cursor.execute("SELECT status, COUNT(*) FROM dm_response_tracking GROUP BY status")
             dm_status = {row[0] or "unknown": row[1] for row in cursor.fetchall()}
 
             cursor.execute(
@@ -535,7 +522,7 @@ def collect_rank_bot_snapshot() -> Dict[str, Any]:
     return snapshot
 
 
-def update_standalone_state(snapshot: Dict[str, Any]) -> None:
+def update_standalone_state(snapshot: dict[str, Any]) -> None:
     heartbeat = int(time.time())
     payload = json.dumps(snapshot, ensure_ascii=False)
     with central_db.get_conn() as conn:
@@ -554,19 +541,17 @@ def update_standalone_state(snapshot: Dict[str, Any]) -> None:
         conn.commit()
 
 
-def _compute_and_store_state() -> Dict[str, Any]:
+def _compute_and_store_state() -> dict[str, Any]:
     snapshot = collect_rank_bot_snapshot()
     update_standalone_state(snapshot)
     return snapshot
 
 
-async def push_rank_bot_state() -> Dict[str, Any]:
+async def push_rank_bot_state() -> dict[str, Any]:
     return await asyncio.to_thread(_compute_and_store_state)
 
 
-def ensure_notification_tasks_running(
-    mode: str = "normal", interval: int = 30
-) -> Dict[str, Any]:
+def ensure_notification_tasks_running(mode: str = "normal", interval: int = 30) -> dict[str, Any]:
     started_flags = {}
     if not daily_notification_check.is_running():
         daily_notification_check.start()
@@ -603,7 +588,7 @@ def ensure_notification_tasks_running(
     }
 
 
-def stop_notification_tasks() -> Dict[str, Any]:
+def stop_notification_tasks() -> dict[str, Any]:
     stopped_flags = {}
     if daily_notification_check.is_running():
         daily_notification_check.stop()
@@ -634,11 +619,11 @@ def stop_notification_tasks() -> Dict[str, Any]:
 
 
 async def execute_control_command(
-    command: str, payload: Optional[Dict[str, Any]] = None
-) -> Dict[str, Any]:
+    command: str, payload: dict[str, Any] | None = None
+) -> dict[str, Any]:
     payload = payload or {}
     normalized = command.strip().lower().lstrip("!")
-    result: Dict[str, Any] = {"command": normalized}
+    result: dict[str, Any] = {"command": normalized}
 
     if normalized in {"queue.daily", "queue.create", "rqueue"}:
         await create_daily_queue()
@@ -688,9 +673,7 @@ async def remove_all_rank_roles(member: discord.Member, guild: discord.Guild):
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.warning(
-                    "remove_all_rank_roles: konnte Rolle nicht entfernen: %s", e
-                )
+                logger.warning("remove_all_rank_roles: konnte Rolle nicht entfernen: %s", e)
 
 
 # ---------- MMR Sync ----------
@@ -701,9 +684,7 @@ def _get_mmr_tzinfo() -> tzinfo:
     try:
         return ZoneInfo(MMR_SYNC_TZ)
     except Exception:
-        logger.warning(
-            "MMR Sync: Ungueltige Zeitzone '%s' -> fallback lokal.", MMR_SYNC_TZ
-        )
+        logger.warning("MMR Sync: Ungueltige Zeitzone '%s' -> fallback lokal.", MMR_SYNC_TZ)
         return datetime.now().astimezone().tzinfo
 
 
@@ -725,7 +706,7 @@ def _set_mmr_last_run(date_str: str) -> None:
     central_db.set_kv(MMR_SYNC_NS, MMR_SYNC_LAST_RUN_KEY, date_str)
 
 
-def steamid64_to_account_id(steam_id64: str) -> Optional[int]:
+def steamid64_to_account_id(steam_id64: str) -> int | None:
     try:
         sid = int(str(steam_id64).strip())
     except (TypeError, ValueError):
@@ -736,7 +717,7 @@ def steamid64_to_account_id(steam_id64: str) -> Optional[int]:
     return account_id
 
 
-def _fetch_steam_links() -> List[tuple[int, str]]:
+def _fetch_steam_links() -> list[tuple[int, str]]:
     with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -748,7 +729,7 @@ def _fetch_steam_links() -> List[tuple[int, str]]:
             """
         )
         rows = cursor.fetchall()
-    links: List[tuple[int, str]] = []
+    links: list[tuple[int, str]] = []
     for user_id, steam_id in rows:
         try:
             uid = int(user_id)
@@ -761,16 +742,14 @@ def _fetch_steam_links() -> List[tuple[int, str]]:
 
 
 def _build_account_id_map(
-    links: List[tuple[int, str]],
-) -> tuple[Dict[int, List[int]], Dict[int, str]]:
-    account_to_users: Dict[int, List[int]] = {}
-    account_to_steam: Dict[int, str] = {}
+    links: list[tuple[int, str]],
+) -> tuple[dict[int, list[int]], dict[int, str]]:
+    account_to_users: dict[int, list[int]] = {}
+    account_to_steam: dict[int, str] = {}
     for user_id, steam_id in links:
         account_id = steamid64_to_account_id(steam_id)
         if account_id is None:
-            logger.warning(
-                "MMR Sync: Ungueltige SteamID64: %s (user_id=%s)", steam_id, user_id
-            )
+            logger.warning("MMR Sync: Ungueltige SteamID64: %s (user_id=%s)", steam_id, user_id)
             continue
         account_to_users.setdefault(account_id, [])
         if user_id not in account_to_users[account_id]:
@@ -779,12 +758,12 @@ def _build_account_id_map(
     return account_to_users, account_to_steam
 
 
-def _chunked(seq: List[int], size: int) -> List[List[int]]:
+def _chunked(seq: list[int], size: int) -> list[list[int]]:
     size = max(1, size)
     return [seq[i : i + size] for i in range(0, len(seq), size)]
 
 
-def _entry_sort_key(entry: Dict[str, Any]) -> int:
+def _entry_sort_key(entry: dict[str, Any]) -> int:
     for key in ("start_time", "match_id"):
         value = entry.get(key)
         try:
@@ -794,12 +773,12 @@ def _entry_sort_key(entry: Dict[str, Any]) -> int:
     return 0
 
 
-def _normalize_mmr_response(data: Any) -> Dict[int, Dict[str, Any]]:
+def _normalize_mmr_response(data: Any) -> dict[int, dict[str, Any]]:
     if isinstance(data, dict) and "data" in data:
         data = data.get("data")
     if not isinstance(data, list):
         return {}
-    normalized: Dict[int, Dict[str, Any]] = {}
+    normalized: dict[int, dict[str, Any]] = {}
     for entry in data:
         if not isinstance(entry, dict):
             continue
@@ -815,7 +794,7 @@ def _normalize_mmr_response(data: Any) -> Dict[int, Dict[str, Any]]:
 
 
 def _merge_mmr_entries(
-    target: Dict[int, Dict[str, Any]], incoming: Dict[int, Dict[str, Any]]
+    target: dict[int, dict[str, Any]], incoming: dict[int, dict[str, Any]]
 ) -> None:
     for account_id, entry in incoming.items():
         current = target.get(account_id)
@@ -823,7 +802,7 @@ def _merge_mmr_entries(
             target[account_id] = entry
 
 
-def _rank_name_from_mmr(entry: Dict[str, Any]) -> Optional[str]:
+def _rank_name_from_mmr(entry: dict[str, Any]) -> str | None:
     division = entry.get("division")
     if division is None:
         rank_value = entry.get("rank")
@@ -841,8 +820,8 @@ def _rank_name_from_mmr(entry: Dict[str, Any]) -> Optional[str]:
 
 
 async def _fetch_mmr_batch(
-    session: aiohttp.ClientSession, account_ids: List[int]
-) -> List[Dict[str, Any]]:
+    session: aiohttp.ClientSession, account_ids: list[int]
+) -> list[dict[str, Any]]:
     params = {"account_ids": ",".join(str(aid) for aid in account_ids)}
     async with session.get(MMR_API_URL, params=params) as resp:
         if resp.status != 200:
@@ -857,11 +836,11 @@ async def _fetch_mmr_batch(
 
 
 async def _fetch_all_mmr_entries(
-    account_ids: List[int],
-) -> tuple[Dict[int, Dict[str, Any]], bool]:
+    account_ids: list[int],
+) -> tuple[dict[int, dict[str, Any]], bool]:
     if not account_ids:
         return {}, False
-    entries: Dict[int, Dict[str, Any]] = {}
+    entries: dict[int, dict[str, Any]] = {}
     had_errors = False
     connector = build_resilient_connector(limit=50, limit_per_host=10)
     timeout = aiohttp.ClientTimeout(total=MMR_SYNC_TIMEOUT)
@@ -873,16 +852,9 @@ async def _fetch_all_mmr_entries(
             started = time.monotonic()
             try:
                 raw = await _fetch_mmr_batch(session, batch)
-            except (
-                aiohttp.ClientError,
-                asyncio.TimeoutError,
-                OSError,
-                RuntimeError,
-            ) as exc:
+            except (TimeoutError, aiohttp.ClientError, OSError, RuntimeError) as exc:
                 had_errors = True
-                logger.warning(
-                    "MMR Sync: Batch %s/%s fehlgeschlagen: %s", idx, len(batches), exc
-                )
+                logger.warning("MMR Sync: Batch %s/%s fehlgeschlagen: %s", idx, len(batches), exc)
             else:
                 normalized = _normalize_mmr_response(raw)
                 _merge_mmr_entries(entries, normalized)
@@ -909,9 +881,7 @@ async def _apply_rank_to_member(
         try:
             role = await guild.create_role(name=rank_name.capitalize(), reason=reason)
         except (discord.Forbidden, discord.HTTPException) as exc:
-            logger.warning(
-                "MMR Sync: Rolle %s konnte nicht erstellt werden: %s", rank_name, exc
-            )
+            logger.warning("MMR Sync: Rolle %s konnte nicht erstellt werden: %s", rank_name, exc)
             return False
 
     await remove_all_rank_roles(member, guild)
@@ -933,10 +903,10 @@ async def _apply_rank_to_member(
 
 async def sync_mmr_roles(
     *,
-    only_steam_ids: Optional[List[str]] = None,
+    only_steam_ids: list[str] | None = None,
     dry_run: bool = False,
     update_last_run: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     summary = {
         "checked_links": 0,
         "accounts_requested": 0,
@@ -1000,9 +970,7 @@ async def sync_mmr_roles(
                     )
                     continue
 
-                updated = await _apply_rank_to_member(
-                    member, guild, rank_name, reason=reason
-                )
+                updated = await _apply_rank_to_member(member, guild, rank_name, reason=reason)
                 if updated:
                     summary["members_updated"] += 1
                 else:
@@ -1398,9 +1366,7 @@ class ServerRankSelectDropdown(discord.ui.Select):
         await member.add_roles(role)
 
         if selected_rank in ["phantom", "ascendant", "eternus"]:
-            notification_channel = self.guild.get_channel(
-                PHANTOM_NOTIFICATION_CHANNEL_ID
-            )
+            notification_channel = self.guild.get_channel(PHANTOM_NOTIFICATION_CHANNEL_ID)
             if notification_channel:
                 rank_emoji = discord.utils.get(self.guild.emojis, name=selected_rank)
                 emoji_display = str(rank_emoji) if rank_emoji else ""
@@ -1409,9 +1375,7 @@ class ServerRankSelectDropdown(discord.ui.Select):
                     description=f"{emoji_display} **{member.display_name}** hat sich den Rang **{selected_rank.capitalize()}** gegeben!",
                     color=0xFF6B35,
                 )
-                embed.add_field(
-                    name="User", value=f"{member.mention} ({member.id})", inline=True
-                )
+                embed.add_field(name="User", value=f"{member.mention} ({member.id})", inline=True)
                 embed.add_field(
                     name="Rang",
                     value=f"{emoji_display} {selected_rank.capitalize()}",
@@ -1437,9 +1401,7 @@ class ServerRankSelectDropdown(discord.ui.Select):
                     ephemeral=True,
                 )
         except (discord.NotFound, discord.HTTPException) as e:
-            logger.debug(
-                "Interaction response send failed (likely timeout/deletion): %r", e
-            )
+            logger.debug("Interaction response send failed (likely timeout/deletion): %r", e)
 
         track_dm_response(str(interaction.user.id))
 
@@ -1460,17 +1422,13 @@ async def restore_persistent_views():
             if view_type == "server_rank_select":
                 view = ServerRankSelectView(guild)
                 bot.add_view(view, message_id=int(message_id))
-                logger.info(
-                    f"Re-registered ServerRankSelectView for message {message_id}"
-                )
+                logger.info(f"Re-registered ServerRankSelectView for message {message_id}")
 
             elif view_type == "dm_rank_select":
                 # DM View wiederherstellen
                 if user_id:
                     try:
-                        view = RankSelectView(
-                            int(user_id), int(guild_id), persistent=True
-                        )
+                        view = RankSelectView(int(user_id), int(guild_id), persistent=True)
                         bot.add_view(view, message_id=int(message_id))
                         logger.info(
                             f"Re-registered DM RankSelectView for user {user_id} (message {message_id})"
@@ -1478,9 +1436,7 @@ async def restore_persistent_views():
                     except asyncio.CancelledError:
                         raise
                     except Exception as e:
-                        logger.warning(
-                            f"Failed to restore DM view for user {user_id}: {e}"
-                        )
+                        logger.warning(f"Failed to restore DM view for user {user_id}: {e}")
                 else:
                     # Legacy ohne user_id -> Fallback-View (best effort)
                     try:
@@ -1492,9 +1448,7 @@ async def restore_persistent_views():
                     except asyncio.CancelledError:
                         raise
                     except Exception as fallback_e:
-                        logger.error(
-                            f"Fallback restoration failed for {message_id}: {fallback_e}"
-                        )
+                        logger.error(f"Fallback restoration failed for {message_id}: {fallback_e}")
 
         except asyncio.CancelledError:
             raise
@@ -1505,7 +1459,7 @@ async def restore_persistent_views():
 
 
 # ---------- DM Helper ----------
-async def get_existing_dm_view(user_id: str) -> Optional[Dict[str, Any]]:
+async def get_existing_dm_view(user_id: str) -> dict[str, Any] | None:
     with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -1532,12 +1486,8 @@ async def get_existing_dm_view(user_id: str) -> Optional[Dict[str, Any]]:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.warning(
-                    f"Existing DM message {message_id} no longer accessible: {e}"
-                )
-                cursor.execute(
-                    "DELETE FROM persistent_views WHERE message_id = ?", (message_id,)
-                )
+                logger.warning(f"Existing DM message {message_id} no longer accessible: {e}")
+                cursor.execute("DELETE FROM persistent_views WHERE message_id = ?", (message_id,))
                 conn.commit()
         return None
 
@@ -1559,9 +1509,7 @@ async def cleanup_old_dm_views(user_id: str):
                 message = await channel.fetch_message(int(message_id))
                 if message:
                     await message.delete()
-                    logger.info(
-                        f"Deleted old DM view message {message_id} for user {user_id}"
-                    )
+                    logger.info(f"Deleted old DM view message {message_id} for user {user_id}")
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -1604,9 +1552,7 @@ async def cleanup_old_dm_views_auto() -> int:
                 message = await channel.fetch_message(int(message_id))
                 if message:
                     await message.delete()
-                    logger.info(
-                        f"Auto-deleted old DM view {message_id} for user {user_id}"
-                    )
+                    logger.info(f"Auto-deleted old DM view {message_id} for user {user_id}")
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -1635,16 +1581,12 @@ async def cleanup_old_dm_views_auto() -> int:
 
 
 # ---------- Rank-Update Nachricht ----------
-async def ask_rank_update(
-    member: discord.Member, current_rank: str, guild: discord.Guild
-):
+async def ask_rank_update(member: discord.Member, current_rank: str, guild: discord.Guild):
     try:
         existing_dm_info = await get_existing_dm_view(str(member.id))
         user_data = get_user_data(str(member.id))
         custom_interval = user_data.get("custom_interval")
-        interval_days = (
-            custom_interval if custom_interval else RANK_INTERVALS.get(current_rank, 30)
-        )
+        interval_days = custom_interval if custom_interval else RANK_INTERVALS.get(current_rank, 30)
 
         if current_rank == "unranked":
             embed = discord.Embed(
@@ -1661,9 +1603,7 @@ async def ask_rank_update(
                 color=0x7289DA,
             )
 
-        embed.add_field(
-            name="⏰ Aktuelles Intervall", value=f"{interval_days} Tage", inline=True
-        )
+        embed.add_field(name="⏰ Aktuelles Intervall", value=f"{interval_days} Tage", inline=True)
         embed.add_field(
             name="📋 Bitte ehrlich sein",
             value="Gib deinen **tatsächlichen** Rang an! Bei schwankenden Rängen wähle den, in dem du die meiste Zeit verbringst.",
@@ -1705,7 +1645,7 @@ async def ask_rank_update(
 # ---------- Auto-Restore im Rang-Kanal ----------
 async def create_rank_selection_message(
     channel: discord.TextChannel, guild: discord.Guild
-) -> Optional[discord.Message]:
+) -> discord.Message | None:
     try:
         embed = discord.Embed(
             title="🎯 Deadlock Rang-Auswahl",
@@ -1721,9 +1661,7 @@ async def create_rank_selection_message(
 
         view = ServerRankSelectView(guild)
         message = await channel.send(embed=embed, view=view)
-        save_persistent_view(
-            str(message.id), str(channel.id), str(guild.id), "server_rank_select"
-        )
+        save_persistent_view(str(message.id), str(channel.id), str(guild.id), "server_rank_select")
         logger.info(f"[AUTO RESTORE] Created new rank selection message {message.id}")
         return message
     except asyncio.CancelledError:
@@ -1737,27 +1675,21 @@ async def auto_restore_rank_channel_view() -> None:
     try:
         channel = bot.get_channel(RANK_SELECTION_CHANNEL_ID)
         if not channel:
-            logger.error(
-                f"Rank selection channel {RANK_SELECTION_CHANNEL_ID} not found"
-            )
+            logger.error(f"Rank selection channel {RANK_SELECTION_CHANNEL_ID} not found")
             return
 
         guild = channel.guild
         logger.info(f"[AUTO RESTORE] Checking rank channel: #{channel.name}")
 
-        bot_messages: List[discord.Message] = []
+        bot_messages: list[discord.Message] = []
         async for message in channel.history(limit=50):
             if message.author == bot.user:
                 bot_messages.append(message)
 
-        logger.info(
-            f"[AUTO RESTORE] Found {len(bot_messages)} bot messages in rank channel"
-        )
+        logger.info(f"[AUTO RESTORE] Found {len(bot_messages)} bot messages in rank channel")
 
         if not bot_messages:
-            logger.info(
-                "[AUTO RESTORE] No bot messages found - skipping auto-create (disabled)"
-            )
+            logger.info("[AUTO RESTORE] No bot messages found - skipping auto-create (disabled)")
             return
 
         latest_message = bot_messages[0]
@@ -1768,9 +1700,7 @@ async def auto_restore_rank_channel_view() -> None:
             embed_title = str(embed.title or "")
             embed_description = str(embed.description or "")
             if "Rang-Auswahl" in embed_title or "Deadlock-Rang" in embed_description:
-                logger.info(
-                    "[AUTO RESTORE] Found rank selection message - attaching view"
-                )
+                logger.info("[AUTO RESTORE] Found rank selection message - attaching view")
                 view = ServerRankSelectView(guild)
                 try:
                     await latest_message.edit(embed=embed, view=view)
@@ -1981,8 +1911,7 @@ async def create_remaining_queue(ctx: commands.Context):
         return
 
     new_queue_data = [
-        (user_id, guild_id, rank, today, False)
-        for user_id, guild_id, rank in remaining_users
+        (user_id, guild_id, rank, today, False) for user_id, guild_id, rank in remaining_users
     ]
     with central_db.get_conn() as conn:
         cursor = conn.cursor()
@@ -2038,9 +1967,7 @@ async def create_never_contacted_queue(ctx: commands.Context):
                 if role and role in member.roles:
                     user_rank = rank
                     break
-            never_contacted.append(
-                (str(member.id), str(guild.id), user_rank, today, False)
-            )
+            never_contacted.append((str(member.id), str(guild.id), user_rank, today, False))
 
     if not never_contacted:
         await msg.edit(
@@ -2152,9 +2079,7 @@ async def start_notification_system(
         value="Verwende `!rqueue` um Queue manuell zu erstellen",
         inline=True,
     )
-    embed.add_field(
-        name="🕒 Aktive Zeiten", value="8-22 Uhr deutsche Zeit", inline=True
-    )
+    embed.add_field(name="🕒 Aktive Zeiten", value="8-22 Uhr deutsche Zeit", inline=True)
     embed.add_field(
         name="🧹 Auto-Cleanup",
         value="Alte DM Views (7+ Tage) werden täglich entfernt",
@@ -2223,30 +2148,14 @@ async def mmr_sync_command(ctx: commands.Context, mode: str = None):
         description="Daily Sync (manuell gestartet)",
         color=0x00CC66,
     )
-    embed.add_field(
-        name="🔗 Links", value=str(summary.get("checked_links")), inline=True
-    )
-    embed.add_field(
-        name="🧾 Accounts", value=str(summary.get("accounts_requested")), inline=True
-    )
-    embed.add_field(
-        name="📦 Entries", value=str(summary.get("entries_received")), inline=True
-    )
-    embed.add_field(
-        name="✅ Updated", value=str(summary.get("members_updated")), inline=True
-    )
-    embed.add_field(
-        name="⏭️ Skipped", value=str(summary.get("members_skipped")), inline=True
-    )
-    embed.add_field(
-        name="❓ Missing MMR", value=str(summary.get("missing_mmr")), inline=True
-    )
-    embed.add_field(
-        name="❓ Missing Rank", value=str(summary.get("missing_rank")), inline=True
-    )
-    embed.add_field(
-        name="❓ Missing Member", value=str(summary.get("missing_member")), inline=True
-    )
+    embed.add_field(name="🔗 Links", value=str(summary.get("checked_links")), inline=True)
+    embed.add_field(name="🧾 Accounts", value=str(summary.get("accounts_requested")), inline=True)
+    embed.add_field(name="📦 Entries", value=str(summary.get("entries_received")), inline=True)
+    embed.add_field(name="✅ Updated", value=str(summary.get("members_updated")), inline=True)
+    embed.add_field(name="⏭️ Skipped", value=str(summary.get("members_skipped")), inline=True)
+    embed.add_field(name="❓ Missing MMR", value=str(summary.get("missing_mmr")), inline=True)
+    embed.add_field(name="❓ Missing Rank", value=str(summary.get("missing_rank")), inline=True)
+    embed.add_field(name="❓ Missing Member", value=str(summary.get("missing_member")), inline=True)
     embed.add_field(name="🧪 Dry Run", value=str(summary.get("dry_run")), inline=True)
     embed.set_footer(text="🎮 Deadlock Rank Bot")
     await ctx.send(embed=embed)
@@ -2276,30 +2185,14 @@ async def mmr_test_command(ctx: commands.Context, steam_id64: str, mode: str = N
         description=f"SteamID64: `{steam_id64}`",
         color=0x00CC66,
     )
-    embed.add_field(
-        name="🔗 Links", value=str(summary.get("checked_links")), inline=True
-    )
-    embed.add_field(
-        name="🧾 Accounts", value=str(summary.get("accounts_requested")), inline=True
-    )
-    embed.add_field(
-        name="📦 Entries", value=str(summary.get("entries_received")), inline=True
-    )
-    embed.add_field(
-        name="✅ Updated", value=str(summary.get("members_updated")), inline=True
-    )
-    embed.add_field(
-        name="⏭️ Skipped", value=str(summary.get("members_skipped")), inline=True
-    )
-    embed.add_field(
-        name="❓ Missing MMR", value=str(summary.get("missing_mmr")), inline=True
-    )
-    embed.add_field(
-        name="❓ Missing Rank", value=str(summary.get("missing_rank")), inline=True
-    )
-    embed.add_field(
-        name="❓ Missing Member", value=str(summary.get("missing_member")), inline=True
-    )
+    embed.add_field(name="🔗 Links", value=str(summary.get("checked_links")), inline=True)
+    embed.add_field(name="🧾 Accounts", value=str(summary.get("accounts_requested")), inline=True)
+    embed.add_field(name="📦 Entries", value=str(summary.get("entries_received")), inline=True)
+    embed.add_field(name="✅ Updated", value=str(summary.get("members_updated")), inline=True)
+    embed.add_field(name="⏭️ Skipped", value=str(summary.get("members_skipped")), inline=True)
+    embed.add_field(name="❓ Missing MMR", value=str(summary.get("missing_mmr")), inline=True)
+    embed.add_field(name="❓ Missing Rank", value=str(summary.get("missing_rank")), inline=True)
+    embed.add_field(name="❓ Missing Member", value=str(summary.get("missing_member")), inline=True)
     embed.add_field(name="🧪 Dry Run", value=str(summary.get("dry_run")), inline=True)
     embed.set_footer(text="🎮 Deadlock Rank Bot")
     await ctx.send(embed=embed)
@@ -2378,9 +2271,7 @@ async def view_database(ctx: commands.Context, table: str = None):
     if t == "users":
         with central_db.get_conn() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                "SELECT user_id, custom_interval, paused_until FROM user_data LIMIT 10"
-            )
+            cursor.execute("SELECT user_id, custom_interval, paused_until FROM user_data LIMIT 10")
             results = cursor.fetchall()
 
         embed = discord.Embed(title="👥 User-Daten", color=0x0099FF)
@@ -2390,18 +2281,14 @@ async def view_database(ctx: commands.Context, table: str = None):
                 try:
                     user = bot.get_user(int(user_id))
                     name = user.display_name if user else f"User {user_id}"
-                    interval_text = (
-                        f"{custom_interval}d" if custom_interval else "Standard"
-                    )
+                    interval_text = f"{custom_interval}d" if custom_interval else "Standard"
                     pause_text = "Pausiert" if paused_until else "Aktiv"
                     lines.append(f"**{name}**: {interval_text}, {pause_text}")
                 except asyncio.CancelledError:
                     raise
                 except Exception:
                     lines.append(f"**User {user_id}**: Fehler beim Laden")
-            embed.add_field(
-                name="📋 User (Top 10)", value="\n".join(lines), inline=False
-            )
+            embed.add_field(name="📋 User (Top 10)", value="\n".join(lines), inline=False)
         else:
             embed.add_field(name="📋 User", value="Keine Daten vorhanden", inline=False)
         embed.set_footer(text="🎮 Deadlock Rank Bot")
@@ -2423,12 +2310,8 @@ async def view_database(ctx: commands.Context, table: str = None):
                 try:
                     user = bot.get_user(int(user_id))
                     name = user.display_name if user else f"User {user_id}"
-                    time_str = datetime.fromisoformat(notif_time).strftime(
-                        "%d.%m %H:%M"
-                    )
-                    lines.append(
-                        f"**{name}**: {rank.capitalize()} ({time_str}) #{count}"
-                    )
+                    time_str = datetime.fromisoformat(notif_time).strftime("%d.%m %H:%M")
+                    lines.append(f"**{name}**: {rank.capitalize()} ({time_str}) #{count}")
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -2457,9 +2340,7 @@ async def view_database(ctx: commands.Context, table: str = None):
             )
             results = cursor.fetchall()
 
-        embed = discord.Embed(
-            title="📋 Heutige Benachrichtigungs-Queue", color=0x0099FF
-        )
+        embed = discord.Embed(title="📋 Heutige Benachrichtigungs-Queue", color=0x0099FF)
         if results:
             lines = []
             for user_id, rank, queue_date in results:
@@ -2473,18 +2354,14 @@ async def view_database(ctx: commands.Context, table: str = None):
                     lines.append(f"**{user_id}**: {rank}")
             queue_text = "\n".join(lines)
             if len(queue_text) > 1000:
-                queue_text = (
-                    "\n".join(lines[:15]) + f"\n... und {len(lines) - 15} weitere"
-                )
+                queue_text = "\n".join(lines[:15]) + f"\n... und {len(lines) - 15} weitere"
             embed.add_field(
                 name=f"📅 Queue für {datetime.now().strftime('%d.%m.%Y')} ({len(lines)} User)",
                 value=queue_text,
                 inline=False,
             )
         else:
-            embed.add_field(
-                name="📋 Queue", value="Keine Einträge für heute", inline=False
-            )
+            embed.add_field(name="📋 Queue", value="Keine Einträge für heute", inline=False)
         embed.set_footer(text="🎮 Deadlock Rank Bot")
         await ctx.send(embed=embed)
         return
@@ -2513,9 +2390,7 @@ async def view_database(ctx: commands.Context, table: str = None):
                     else:
                         server_count += 1
                         channel = bot.get_channel(int(channel_id))
-                        channel_name = (
-                            channel.name if channel else f"Channel {channel_id}"
-                        )
+                        channel_name = channel.name if channel else f"Channel {channel_id}"
                         views_list.append(f"**{view_type}**: #{channel_name}")
                 except asyncio.CancelledError:
                     raise
@@ -2530,9 +2405,7 @@ async def view_database(ctx: commands.Context, table: str = None):
                 inline=False,
             )
         else:
-            embed.add_field(
-                name="📋 Views", value="Keine persistent Views vorhanden", inline=False
-            )
+            embed.add_field(name="📋 Views", value="Keine persistent Views vorhanden", inline=False)
         embed.set_footer(text="🎮 Deadlock Rank Bot")
         await ctx.send(embed=embed)
         return
@@ -2592,9 +2465,7 @@ def load_queue_data(date: str) -> list:
             (date,),
         )
         results = cursor.fetchall()
-        return [
-            {"user_id": row[0], "guild_id": row[1], "rank": row[2]} for row in results
-        ]
+        return [{"user_id": row[0], "guild_id": row[1], "rank": row[2]} for row in results]
 
 
 def mark_queue_item_processed(user_id: str, guild_id: str, date: str):
@@ -2622,15 +2493,13 @@ async def standalone_command_poller():
             if not mark_command_running(command_id):
                 continue
 
-            payload_data: Dict[str, Any] = {}
+            payload_data: dict[str, Any] = {}
             raw_payload = row["payload"]
             if raw_payload:
                 try:
                     payload_data = json.loads(raw_payload)
                 except Exception as exc:
-                    logger.warning(
-                        "Invalid payload for command %s: %s", command_id, exc
-                    )
+                    logger.warning("Invalid payload for command %s: %s", command_id, exc)
 
             try:
                 result = await execute_control_command(row["command"], payload_data)
@@ -2708,8 +2577,7 @@ async def create_daily_queue():
 
             # Opt-Out-Rollen
             if any(
-                role.id in [NO_NOTIFICATION_ROLE_ID, NO_DEADLOCK_ROLE_ID]
-                for role in member.roles
+                role.id in [NO_NOTIFICATION_ROLE_ID, NO_DEADLOCK_ROLE_ID] for role in member.roles
             ):
                 continue
 
@@ -2728,9 +2596,7 @@ async def create_daily_queue():
 
             custom_interval = user_data.get("custom_interval")
             interval_days = (
-                custom_interval
-                if custom_interval
-                else RANK_INTERVALS.get(current_rank, 30)
+                custom_interval if custom_interval else RANK_INTERVALS.get(current_rank, 30)
             )
 
             with central_db.get_conn() as conn:
@@ -2752,9 +2618,7 @@ async def create_daily_queue():
                         if days_since < interval_days:
                             continue
                     except Exception as e:
-                        logger.debug(
-                            "last_notification parse failed for %s: %r", member.id, e
-                        )
+                        logger.debug("last_notification parse failed for %s: %r", member.id, e)
 
             if test_users and member not in test_users:
                 continue
@@ -2781,34 +2645,24 @@ async def process_notification_queue():
     try:
         guild = bot.get_guild(int(user_to_notify["guild_id"]))
         if not guild:
-            mark_queue_item_processed(
-                user_to_notify["user_id"], user_to_notify["guild_id"], today
-            )
+            mark_queue_item_processed(user_to_notify["user_id"], user_to_notify["guild_id"], today)
             return
 
         member = guild.get_member(int(user_to_notify["user_id"]))
         if not member:
-            mark_queue_item_processed(
-                user_to_notify["user_id"], user_to_notify["guild_id"], today
-            )
+            mark_queue_item_processed(user_to_notify["user_id"], user_to_notify["guild_id"], today)
             return
 
         await ask_rank_update(member, user_to_notify["rank"], guild)
         log_notification(user_to_notify["user_id"], user_to_notify["rank"])
-        mark_queue_item_processed(
-            user_to_notify["user_id"], user_to_notify["guild_id"], today
-        )
-        logger.info(
-            f"Sent notification to {member.display_name} ({user_to_notify['rank']})"
-        )
+        mark_queue_item_processed(user_to_notify["user_id"], user_to_notify["guild_id"], today)
+        logger.info(f"Sent notification to {member.display_name} ({user_to_notify['rank']})")
 
     except asyncio.CancelledError:
         raise
     except Exception as e:
         logger.error(f"Error sending notification: {e}")
-        mark_queue_item_processed(
-            user_to_notify["user_id"], user_to_notify["guild_id"], today
-        )
+        mark_queue_item_processed(user_to_notify["user_id"], user_to_notify["guild_id"], today)
 
 
 # ---------- Events ----------
@@ -2829,9 +2683,7 @@ async def on_ready():
     logger.info("   !rsetup - Rang-Auswahl erstellen")
     logger.info("   !rqueue - Queue manuell erstellen")
     logger.info("   !rqueue_remaining - Queue mit verbleibenden Usern")
-    logger.info(
-        "   !rqueue_never_contacted - Queue mit neuen Usern (30 Tage Wartezeit)"
-    )
+    logger.info("   !rqueue_never_contacted - Queue mit neuen Usern (30 Tage Wartezeit)")
     logger.info("   !rcheck_never_contacted - Analyse der noch nie kontaktierten User")
     logger.info("   !radd @user - User zur Queue hinzufügen")
     logger.info("   !rtest - Test-Nachricht senden")

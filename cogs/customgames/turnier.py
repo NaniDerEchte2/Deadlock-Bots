@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import discord
 from discord import app_commands
@@ -37,7 +37,7 @@ def _has_turnier_role(member: discord.Member) -> bool:
     return any(r.id == TURNIER_ROLE_ID for r in member.roles)
 
 
-async def _get_steam_link(user_id: int) -> Optional[Dict[str, Any]]:
+async def _get_steam_link(user_id: int) -> dict[str, Any] | None:
     """Fetch rank data from steam_links for a verified Discord user."""
     row = await db.query_one_async(
         """
@@ -54,7 +54,7 @@ async def _get_steam_link(user_id: int) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _rank_display(rank_name: Optional[str], subrank: Optional[int]) -> str:
+def _rank_display(rank_name: str | None, subrank: int | None) -> str:
     if not rank_name:
         return "Unbekannt"
     sub = int(subrank or 0)
@@ -63,7 +63,7 @@ def _rank_display(rank_name: Optional[str], subrank: Optional[int]) -> str:
     return str(rank_name)
 
 
-def _rank_score(rank_tier: Optional[int], subrank: Optional[int]) -> int:
+def _rank_score(rank_tier: int | None, subrank: int | None) -> int:
     """Balance-Score: Initiate 1 = 7, Eternus 6 = 72, Obscurus = 3."""
     tier = int(rank_tier or 0)
     sub = max(1, min(6, int(subrank or 3)))
@@ -72,7 +72,7 @@ def _rank_score(rank_tier: Optional[int], subrank: Optional[int]) -> int:
     return tier * 6 + sub
 
 
-def _fmt_dt(dt_str: Optional[str]) -> str:
+def _fmt_dt(dt_str: str | None) -> str:
     if not dt_str:
         return "—"
     try:
@@ -82,7 +82,7 @@ def _fmt_dt(dt_str: Optional[str]) -> str:
         return str(dt_str)
 
 
-def _is_period_open(period: Optional[Dict[str, Any]]) -> bool:
+def _is_period_open(period: dict[str, Any] | None) -> bool:
     if not period or not int(period.get("is_active", 0)):
         return False
     try:
@@ -94,7 +94,7 @@ def _is_period_open(period: Optional[Dict[str, Any]]) -> bool:
         return False
 
 
-def _period_status_str(period: Optional[Dict[str, Any]]) -> str:
+def _period_status_str(period: dict[str, Any] | None) -> str:
     if not period:
         return "Kein Zeitraum"
     if not int(period.get("is_active", 0)):
@@ -113,8 +113,8 @@ def _period_status_str(period: Optional[Dict[str, Any]]) -> str:
 
 
 def _build_panel_embed(
-    period: Optional[Dict[str, Any]],
-    summary: Optional[Dict[str, Any]],
+    period: dict[str, Any] | None,
+    summary: dict[str, Any] | None,
 ) -> discord.Embed:
     embed = discord.Embed(title="🏆 Deadlock Turnier-Anmeldung", color=discord.Color.gold())
     if period and int(period.get("is_active", 0)):
@@ -332,7 +332,7 @@ class TeamPickView(discord.ui.View):
         rank_name: str,
         rank_tier: int,
         rank_sub: int,
-        teams: List[Dict[str, Any]],
+        teams: list[dict[str, Any]],
         team_max_size: int = TEAM_MAX_SIZE,
     ) -> None:
         super().__init__(timeout=120.0)
@@ -344,7 +344,7 @@ class TeamPickView(discord.ui.View):
         self.team_max_size = team_max_size
         self.teams = {int(t["id"]): t for t in teams}
 
-        options: List[discord.SelectOption] = []
+        options: list[discord.SelectOption] = []
         for t in teams[:24]:
             mc = int(t.get("member_count", 0) or 0)
             full_tag = " ✗ voll" if mc >= team_max_size else f" ({mc}/{team_max_size})"
@@ -369,9 +369,7 @@ class TeamPickView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message(
-                "Dieses Menü gehört dir nicht.", ephemeral=True
-            )
+            await interaction.response.send_message("Dieses Menü gehört dir nicht.", ephemeral=True)
             return False
         return True
 
@@ -403,10 +401,14 @@ class TeamPickView(discord.ui.View):
             team_id=team_id,
             assigned_by_admin=False,
         )
-        team_name = str(team_data.get("name", f"Team {team_id}")) if team_data else f"Team {team_id}"
+        team_name = (
+            str(team_data.get("name", f"Team {team_id}")) if team_data else f"Team {team_id}"
+        )
         embed = discord.Embed(title="✅ Team-Anmeldung erfolgreich", color=discord.Color.green())
         embed.add_field(name="Team", value=team_name, inline=True)
-        embed.add_field(name="Rang", value=_rank_display(self.rank_name, self.rank_sub), inline=True)
+        embed.add_field(
+            name="Rang", value=_rank_display(self.rank_name, self.rank_sub), inline=True
+        )
         if str(result.get("status")) == "updated":
             embed.set_footer(text="Deine Anmeldung wurde aktualisiert.")
         await interaction.response.edit_message(embed=embed, view=None)
@@ -434,9 +436,7 @@ class SignupModeView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message(
-                "Dieses Menü gehört dir nicht.", ephemeral=True
-            )
+            await interaction.response.send_message("Dieses Menü gehört dir nicht.", ephemeral=True)
             return False
         return True
 
@@ -456,18 +456,22 @@ class SignupModeView(discord.ui.View):
         embed = discord.Embed(title="✅ Solo-Anmeldung erfolgreich", color=discord.Color.green())
         embed.add_field(name="Status", value=status_txt.capitalize(), inline=True)
         embed.add_field(name="Modus", value="Solo", inline=True)
-        embed.add_field(name="Rang", value=_rank_display(self.rank_name, self.rank_sub), inline=True)
+        embed.add_field(
+            name="Rang", value=_rank_display(self.rank_name, self.rank_sub), inline=True
+        )
         await interaction.response.edit_message(embed=embed, view=None)
 
-    @discord.ui.button(
-        label="Mit Team anmelden", style=discord.ButtonStyle.secondary, emoji="🛡️"
-    )
+    @discord.ui.button(label="Mit Team anmelden", style=discord.ButtonStyle.secondary, emoji="🛡️")
     async def team_btn(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         teams = await tstore.list_teams_async(self.guild_id)
         if not teams:
             await interaction.response.send_modal(
                 TeamSignupCreateModal(
-                    self.guild_id, self.user_id, self.rank_name, self.rank_tier, self.rank_sub,
+                    self.guild_id,
+                    self.user_id,
+                    self.rank_name,
+                    self.rank_tier,
+                    self.rank_sub,
                     self.team_max_size,
                 )
             )
@@ -478,7 +482,12 @@ class SignupModeView(discord.ui.View):
             color=discord.Color.blue(),
         )
         view = TeamPickView(
-            self.user_id, self.guild_id, self.rank_name, self.rank_tier, self.rank_sub, teams,
+            self.user_id,
+            self.guild_id,
+            self.rank_name,
+            self.rank_tier,
+            self.rank_sub,
+            teams,
             self.team_max_size,
         )
         await interaction.response.edit_message(embed=embed, view=view)
@@ -501,10 +510,8 @@ class TurnierPanelView(discord.ui.View):
         emoji="✅",
         custom_id="turnier_panel_anmelden",
     )
-    async def signup_btn(
-        self, interaction: discord.Interaction, _: discord.ui.Button
-    ) -> None:
-        cog: Optional[TurnierCog] = interaction.client.get_cog("TurnierCog")  # type: ignore[assignment]
+    async def signup_btn(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        cog: TurnierCog | None = interaction.client.get_cog("TurnierCog")  # type: ignore[assignment]
         if not cog:
             await interaction.response.send_message(
                 "❌ Turnier-System nicht verfügbar.", ephemeral=True
@@ -518,10 +525,8 @@ class TurnierPanelView(discord.ui.View):
         emoji="🚪",
         custom_id="turnier_panel_abmelden",
     )
-    async def withdraw_btn(
-        self, interaction: discord.Interaction, _: discord.ui.Button
-    ) -> None:
-        cog: Optional[TurnierCog] = interaction.client.get_cog("TurnierCog")  # type: ignore[assignment]
+    async def withdraw_btn(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        cog: TurnierCog | None = interaction.client.get_cog("TurnierCog")  # type: ignore[assignment]
         if not cog:
             await interaction.response.send_message(
                 "❌ Turnier-System nicht verfügbar.", ephemeral=True
@@ -535,10 +540,8 @@ class TurnierPanelView(discord.ui.View):
         emoji="📊",
         custom_id="turnier_panel_status",
     )
-    async def status_btn(
-        self, interaction: discord.Interaction, _: discord.ui.Button
-    ) -> None:
-        cog: Optional[TurnierCog] = interaction.client.get_cog("TurnierCog")  # type: ignore[assignment]
+    async def status_btn(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        cog: TurnierCog | None = interaction.client.get_cog("TurnierCog")  # type: ignore[assignment]
         if not cog:
             await interaction.response.send_message(
                 "❌ Turnier-System nicht verfügbar.", ephemeral=True
@@ -559,8 +562,8 @@ class SignupManageView(discord.ui.View):
         self,
         guild_id: int,
         user_id: int,
-        signups: List[Dict[str, Any]],
-        guild: Optional[discord.Guild],
+        signups: list[dict[str, Any]],
+        guild: discord.Guild | None,
     ) -> None:
         super().__init__(timeout=300.0)
         self.guild_id = guild_id
@@ -578,7 +581,7 @@ class SignupManageView(discord.ui.View):
             return False
         return True
 
-    def _page_signups(self) -> List[Dict[str, Any]]:
+    def _page_signups(self) -> list[dict[str, Any]]:
         start = self.page * self.PAGE_SIZE
         return self.signups[start : start + self.PAGE_SIZE]
 
@@ -589,7 +592,7 @@ class SignupManageView(discord.ui.View):
         page_sups = self._page_signups()
         if not page_sups:
             return
-        options: List[discord.SelectOption] = []
+        options: list[discord.SelectOption] = []
         for sup in page_sups:
             uid = int(sup.get("user_id", 0))
             member = self.guild.get_member(uid) if self.guild else None
@@ -629,9 +632,7 @@ class SignupManageView(discord.ui.View):
                 view=self,
             )
         else:
-            await interaction.response.send_message(
-                "❌ Spieler nicht gefunden.", ephemeral=True
-            )
+            await interaction.response.send_message("❌ Spieler nicht gefunden.", ephemeral=True)
 
     def build_embed(self) -> discord.Embed:
         total = len(self.signups)
@@ -641,7 +642,7 @@ class SignupManageView(discord.ui.View):
             color=discord.Color.teal(),
         )
         page_sups = self._page_signups()
-        lines: List[str] = []
+        lines: list[str] = []
         start_idx = self.page * self.PAGE_SIZE
         for i, sup in enumerate(page_sups, start_idx + 1):
             uid = int(sup.get("user_id", 0))
@@ -684,14 +685,12 @@ class TeamDeleteSelectView(discord.ui.View):
         self,
         guild_id: int,
         user_id: int,
-        options: List[discord.SelectOption],
+        options: list[discord.SelectOption],
     ) -> None:
         super().__init__(timeout=60.0)
         self.guild_id = guild_id
         self.user_id = user_id
-        select = discord.ui.Select(
-            placeholder="Team zum Löschen auswählen…", options=options
-        )
+        select = discord.ui.Select(placeholder="Team zum Löschen auswählen…", options=options)
         select.callback = self._cb
         self.add_item(select)
 
@@ -701,18 +700,12 @@ class TeamDeleteSelectView(discord.ui.View):
     async def _cb(self, interaction: discord.Interaction) -> None:
         team_id = int(interaction.data["values"][0])
         deleted = await tstore.delete_team_async(self.guild_id, team_id)
-        msg = (
-            f"✅ Team ID `{team_id}` wurde gelöscht."
-            if deleted
-            else "❌ Team nicht gefunden."
-        )
+        msg = f"✅ Team ID `{team_id}` wurde gelöscht." if deleted else "❌ Team nicht gefunden."
         await interaction.response.edit_message(content=msg, view=None)
 
 
 class TeamAdminView(discord.ui.View):
-    def __init__(
-        self, guild_id: int, user_id: int, teams: List[Dict[str, Any]]
-    ) -> None:
+    def __init__(self, guild_id: int, user_id: int, teams: list[dict[str, Any]]) -> None:
         super().__init__(timeout=300.0)
         self.guild_id = guild_id
         self.user_id = user_id
@@ -726,24 +719,14 @@ class TeamAdminView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(
-        label="Neues Team erstellen", style=discord.ButtonStyle.primary, emoji="➕"
-    )
-    async def create_btn(
-        self, interaction: discord.Interaction, _: discord.ui.Button
-    ) -> None:
+    @discord.ui.button(label="Neues Team erstellen", style=discord.ButtonStyle.primary, emoji="➕")
+    async def create_btn(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.send_modal(TeamCreateModal())
 
-    @discord.ui.button(
-        label="Team löschen", style=discord.ButtonStyle.danger, emoji="🗑️"
-    )
-    async def delete_btn(
-        self, interaction: discord.Interaction, _: discord.ui.Button
-    ) -> None:
+    @discord.ui.button(label="Team löschen", style=discord.ButtonStyle.danger, emoji="🗑️")
+    async def delete_btn(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         if not self.teams:
-            await interaction.response.send_message(
-                "Keine Teams vorhanden.", ephemeral=True
-            )
+            await interaction.response.send_message("Keine Teams vorhanden.", ephemeral=True)
             return
         options = [
             discord.SelectOption(
@@ -774,18 +757,14 @@ class ConfirmClearView(discord.ui.View):
         return interaction.user.id == self.user_id
 
     @discord.ui.button(label="Ja, alle löschen", style=discord.ButtonStyle.danger)
-    async def confirm_btn(
-        self, interaction: discord.Interaction, _: discord.ui.Button
-    ) -> None:
+    async def confirm_btn(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         count = await tstore.clear_all_signups_async(self.guild_id)
         await interaction.response.edit_message(
             content=f"✅ {count} Anmeldungen gelöscht.", view=None
         )
 
     @discord.ui.button(label="Abbrechen", style=discord.ButtonStyle.secondary)
-    async def cancel_btn(
-        self, interaction: discord.Interaction, _: discord.ui.Button
-    ) -> None:
+    async def cancel_btn(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.edit_message(content="Abgebrochen.", view=None)
 
 
@@ -825,9 +804,7 @@ class AdminDashboardView(discord.ui.View):
     ) -> None:
         period = await tstore.get_active_period_async(self.guild_id)
         if not period:
-            await interaction.response.send_message(
-                "ℹ️ Kein aktiver Zeitraum.", ephemeral=True
-            )
+            await interaction.response.send_message("ℹ️ Kein aktiver Zeitraum.", ephemeral=True)
             return
         await tstore.close_period_async(self.guild_id, int(period["id"]))
         await interaction.response.send_message(
@@ -840,9 +817,7 @@ class AdminDashboardView(discord.ui.View):
         emoji="📋",
         row=0,
     )
-    async def signups_btn(
-        self, interaction: discord.Interaction, _: discord.ui.Button
-    ) -> None:
+    async def signups_btn(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.defer(ephemeral=True)
         signups = await tstore.list_signups_async(self.guild_id)
         if not signups:
@@ -858,21 +833,15 @@ class AdminDashboardView(discord.ui.View):
         emoji="🛡️",
         row=1,
     )
-    async def teams_btn(
-        self, interaction: discord.Interaction, _: discord.ui.Button
-    ) -> None:
+    async def teams_btn(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.defer(ephemeral=True)
         teams = await tstore.list_teams_async(self.guild_id)
-        embed = discord.Embed(
-            title=f"🛡️ Teams ({len(teams)})", color=discord.Color.blue()
-        )
+        embed = discord.Embed(title=f"🛡️ Teams ({len(teams)})", color=discord.Color.blue())
         if teams:
             lines = []
             for t in teams:
                 mc = int(t.get("member_count", 0) or 0)
-                lines.append(
-                    f"• **{t['name']}** — {mc}/{TEAM_MAX_SIZE} Spieler  (ID: `{t['id']}`)"
-                )
+                lines.append(f"• **{t['name']}** — {mc}/{TEAM_MAX_SIZE} Spieler  (ID: `{t['id']}`)")
             embed.description = "\n".join(lines[:20])
             if len(teams) > 20:
                 embed.set_footer(text=f"… und {len(teams) - 20} weitere Teams")
@@ -887,9 +856,7 @@ class AdminDashboardView(discord.ui.View):
         emoji="📢",
         row=1,
     )
-    async def post_panel_btn(
-        self, interaction: discord.Interaction, _: discord.ui.Button
-    ) -> None:
+    async def post_panel_btn(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         period = await tstore.get_active_period_async(self.guild_id)
         summary = await tstore.summary_async(self.guild_id)
         embed = _build_panel_embed(period, summary)
@@ -905,9 +872,7 @@ class AdminDashboardView(discord.ui.View):
         emoji="🗑️",
         row=1,
     )
-    async def clear_all_btn(
-        self, interaction: discord.Interaction, _: discord.ui.Button
-    ) -> None:
+    async def clear_all_btn(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         view = ConfirmClearView(self.guild_id, self.user_id)
         await interaction.response.send_message(
             "⚠️ Wirklich **alle Anmeldungen** löschen? (Teams bleiben erhalten)",
@@ -926,7 +891,7 @@ class TurnierUserView(discord.ui.View):
         self,
         user_id: int,
         guild_id: int,
-        cog: "TurnierCog",
+        cog: TurnierCog,
         is_admin: bool,
         period_open: bool,
         is_signed_up: bool,
@@ -968,9 +933,7 @@ class TurnierUserView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message(
-                "Dieses Menü gehört dir nicht.", ephemeral=True
-            )
+            await interaction.response.send_message("Dieses Menü gehört dir nicht.", ephemeral=True)
             return False
         return True
 
@@ -1018,13 +981,13 @@ class TurnierUserView(discord.ui.View):
 class TurnierCog(commands.Cog, name="TurnierCog"):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self._balance_task: Optional[asyncio.Task] = None
+        self._balance_task: asyncio.Task | None = None
 
     async def cog_load(self) -> None:
         await tstore.ensure_schema_async()
         if not getattr(self.bot, "_turnier_panel_registered", False):
             self.bot.add_view(TurnierPanelView())
-            setattr(self.bot, "_turnier_panel_registered", True)
+            self.bot._turnier_panel_registered = True
         self._balance_task = asyncio.create_task(self._auto_balance_loop())
         log.info("TurnierCog bereit (persistente Panel-Buttons registriert)")
 
@@ -1098,17 +1061,20 @@ class TurnierCog(commands.Cog, name="TurnierCog"):
             if slots_available <= 0:
                 continue
             # Find players in pool not already in this team
-            to_add = [
-                s for s in pool
-                if s.get("team_id") is None or int(s.get("team_id")) != tid
-            ][:slots_available]
+            to_add = [s for s in pool if s.get("team_id") is None or int(s.get("team_id")) != tid][
+                :slots_available
+            ]
             for s in to_add:
                 try:
                     await tstore.assign_signup_team_async(guild_id, int(s["user_id"]), team_id=tid)
                     pool.remove(s)
                     team_member_counts[tid] = team_member_counts.get(tid, 0) + 1
                 except Exception:
-                    log.exception("assign_signup_team_async fehlgeschlagen (user=%s, team=%s)", s.get("user_id"), tid)
+                    log.exception(
+                        "assign_signup_team_async fehlgeschlagen (user=%s, team=%s)",
+                        s.get("user_id"),
+                        tid,
+                    )
 
         # Re-filter pool: only truly unassigned now
         pool = [s for s in pool if s.get("team_id") is None]
@@ -1119,7 +1085,7 @@ class TurnierCog(commands.Cog, name="TurnierCog"):
         # Find next available auto-name ("Team A", "Team B", ...)
         existing_names = {str(t.get("name", "")).casefold() for t in teams}
         num_new_teams = len(pool) // team_size
-        auto_names: List[str] = []
+        auto_names: list[str] = []
         letter_idx = 0
         while len(auto_names) < num_new_teams:
             name = f"Team {chr(65 + letter_idx)}"
@@ -1134,7 +1100,7 @@ class TurnierCog(commands.Cog, name="TurnierCog"):
                     auto_names.append(name)
                 letter_idx += 1
 
-        new_team_ids: List[int] = []
+        new_team_ids: list[int] = []
         for name in auto_names:
             try:
                 team_data = await tstore.get_or_create_team_async(guild_id, name)
@@ -1161,7 +1127,11 @@ class TurnierCog(commands.Cog, name="TurnierCog"):
             try:
                 await tstore.assign_signup_team_async(guild_id, int(player["user_id"]), team_id=tid)
             except Exception:
-                log.exception("Snake-draft assign fehlgeschlagen (user=%s, team=%s)", player.get("user_id"), tid)
+                log.exception(
+                    "Snake-draft assign fehlgeschlagen (user=%s, team=%s)",
+                    player.get("user_id"),
+                    tid,
+                )
 
         log.info(
             "Auto-Balance abgeschlossen (guild=%s): %d neue Teams, %d Spieler zugewiesen",
@@ -1221,7 +1191,14 @@ class TurnierCog(commands.Cog, name="TurnierCog"):
             ),
             color=discord.Color.gold(),
         )
-        view = SignupModeView(interaction.user.id, interaction.guild_id, rank_name, rank_tier, rank_sub, period_team_size)
+        view = SignupModeView(
+            interaction.user.id,
+            interaction.guild_id,
+            rank_name,
+            rank_tier,
+            rank_sub,
+            period_team_size,
+        )
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     async def handle_withdraw(self, interaction: discord.Interaction) -> None:
@@ -1236,9 +1213,7 @@ class TurnierCog(commands.Cog, name="TurnierCog"):
                 "✅ Du wurdest aus dem Turnier abgemeldet.", ephemeral=True
             )
         else:
-            await interaction.response.send_message(
-                "ℹ️ Du warst nicht angemeldet.", ephemeral=True
-            )
+            await interaction.response.send_message("ℹ️ Du warst nicht angemeldet.", ephemeral=True)
 
     async def handle_status(self, interaction: discord.Interaction) -> None:
         if not interaction.guild:
@@ -1294,9 +1269,7 @@ class TurnierCog(commands.Cog, name="TurnierCog"):
 
         # Period info
         if period and int(period.get("is_active", 0)):
-            embed.add_field(
-                name="📅 Zeitraum", value=str(period.get("name", "—")), inline=False
-            )
+            embed.add_field(name="📅 Zeitraum", value=str(period.get("name", "—")), inline=False)
             embed.add_field(name="Status", value=_period_status_str(period), inline=True)
             embed.add_field(
                 name="🕐 Ende",

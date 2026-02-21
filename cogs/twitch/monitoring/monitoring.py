@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import secrets
 import sqlite3
 import time
-from datetime import datetime, timezone, timedelta
-import os
-from typing import Any, Dict, List, Optional
+from datetime import UTC, datetime, timedelta
+from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import aiohttp
@@ -23,10 +23,10 @@ from ..constants import (
     TWITCH_BRAND_COLOR_HEX,
     TWITCH_BUTTON_LABEL,
     TWITCH_DISCORD_REF_CODE,
-    TWITCH_VOD_BUTTON_LABEL,
     TWITCH_TARGET_GAME_NAME,
+    TWITCH_VOD_BUTTON_LABEL,
+    log,
 )
-from ..constants import log
 
 
 class TwitchMonitoringMixin:
@@ -39,9 +39,7 @@ class TwitchMonitoringMixin:
             "Du hast dazu bereits eine Discord-DM mit dem Re-Auth-Link erhalten. Danke dir!"
         )
 
-    async def _resolve_live_stream_id_for_login(
-        self, login_lower: str
-    ) -> Optional[str]:
+    async def _resolve_live_stream_id_for_login(self, login_lower: str) -> str | None:
         if not login_lower or not getattr(self, "api", None):
             return None
         try:
@@ -79,7 +77,7 @@ class TwitchMonitoringMixin:
         stream_guard = getattr(self, "_reauth_reminder_last_stream_id", None)
         if not isinstance(stream_guard, dict):
             stream_guard = {}
-            setattr(self, "_reauth_reminder_last_stream_id", stream_guard)
+            self._reauth_reminder_last_stream_id = stream_guard
         if stream_id:
             if stream_guard.get(broadcaster_key) == stream_id:
                 return False
@@ -91,7 +89,7 @@ class TwitchMonitoringMixin:
             fallback_guard = getattr(self, "_reauth_reminder_last_sent_ts", None)
             if not isinstance(fallback_guard, dict):
                 fallback_guard = {}
-                setattr(self, "_reauth_reminder_last_sent_ts", fallback_guard)
+                self._reauth_reminder_last_sent_ts = fallback_guard
             now_ts = time.time()
             last_ts = float(fallback_guard.get(broadcaster_key) or 0.0)
             if now_ts - last_ts < 300.0:
@@ -135,10 +133,10 @@ class TwitchMonitoringMixin:
             return target
         resolved = (TWITCH_TARGET_GAME_NAME or "").strip().lower()
         # Cache for subsequent lookups to avoid repeated normalization
-        setattr(self, "_target_game_lower", resolved)
+        self._target_game_lower = resolved
         return resolved
 
-    def _stream_is_in_target_category(self, stream: Optional[dict]) -> bool:
+    def _stream_is_in_target_category(self, stream: dict | None) -> bool:
         if not stream:
             return False
         target_game_lower = self._get_target_game_lower()
@@ -150,18 +148,16 @@ class TwitchMonitoringMixin:
     @staticmethod
     def _normalize_stream_meta(
         stream: dict,
-    ) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    ) -> tuple[str | None, str | None, str | None]:
         game_name = (stream.get("game_name") or "").strip() or None
         stream_title = (stream.get("title") or "").strip() or None
 
         tags_raw = stream.get("tags")
-        tags_serialized: Optional[str] = None
+        tags_serialized: str | None = None
         if isinstance(tags_raw, list):
             clean_tags = [str(tag).strip() for tag in tags_raw if str(tag).strip()]
             if clean_tags:
-                tags_serialized = json.dumps(
-                    clean_tags, ensure_ascii=True, separators=(",", ":")
-                )
+                tags_serialized = json.dumps(clean_tags, ensure_ascii=True, separators=(",", ":"))
         elif isinstance(tags_raw, str):
             tag_value = tags_raw.strip()
             if tag_value:
@@ -169,11 +165,11 @@ class TwitchMonitoringMixin:
 
         return game_name, stream_title, tags_serialized
 
-    def _language_filter_values(self) -> List[Optional[str]]:
-        filters: Optional[List[str]] = getattr(self, "_language_filters", None)
+    def _language_filter_values(self) -> list[str | None]:
+        filters: list[str] | None = getattr(self, "_language_filters", None)
         if not filters:
             return [None]
-        seen: List[str] = []
+        seen: list[str] = []
         for entry in filters:
             normalized = (entry or "").strip().lower()
             if not normalized or normalized in seen:
@@ -204,9 +200,7 @@ class TwitchMonitoringMixin:
         return max(7, min(365, value))
 
     @staticmethod
-    def _eventsub_target_user_id(
-        condition: Optional[Dict[str, Any]], *, fallback: str = ""
-    ) -> str:
+    def _eventsub_target_user_id(condition: dict[str, Any] | None, *, fallback: str = "") -> str:
         condition_map = condition if isinstance(condition, dict) else {}
         for key in (
             "broadcaster_user_id",
@@ -219,8 +213,8 @@ class TwitchMonitoringMixin:
                 return value
         return str(fallback or "").strip()
 
-    def _resolve_twitch_logins_by_user_id(self, user_ids: List[str]) -> Dict[str, str]:
-        unique_ids: List[str] = []
+    def _resolve_twitch_logins_by_user_id(self, user_ids: list[str]) -> dict[str, str]:
+        unique_ids: list[str] = []
         seen: set[str] = set()
         for raw in user_ids:
             value = str(raw or "").strip()
@@ -242,36 +236,28 @@ class TwitchMonitoringMixin:
                     WHERE twitch_login IS NOT NULL
                     """
                 ).fetchall()
-            out: Dict[str, str] = {}
+            out: dict[str, str] = {}
             for row in rows:
-                uid = str(
-                    row["twitch_user_id"] if hasattr(row, "keys") else row[0]
-                ).strip()
+                uid = str(row["twitch_user_id"] if hasattr(row, "keys") else row[0]).strip()
                 if uid not in wanted_ids:
                     continue
-                login = (
-                    str(row["twitch_login"] if hasattr(row, "keys") else row[1])
-                    .strip()
-                    .lower()
-                )
+                login = str(row["twitch_login"] if hasattr(row, "keys") else row[1]).strip().lower()
                 if uid and login:
                     out[uid] = login
                     if len(out) >= len(wanted_ids):
                         break
             return out
         except Exception:
-            log.debug(
-                "EventSub: konnte twitch_login Mapping nicht laden", exc_info=True
-            )
+            log.debug("EventSub: konnte twitch_login Mapping nicht laden", exc_info=True)
             return {}
 
-    def _collect_eventsub_capacity_snapshot(self, *, reason: str) -> Dict[str, Any]:
+    def _collect_eventsub_capacity_snapshot(self, *, reason: str) -> dict[str, Any]:
         # Webhook-basiert: Subscription-Liste aus lokalem Tracking
-        tracked_subs: List[Dict[str, Any]] = list(
+        tracked_subs: list[dict[str, Any]] = list(
             getattr(self, "_eventsub_webhook_active_subs", []) or []
         )
-        active_subscriptions: List[Dict[str, Any]] = []
-        sub_type_counts: Dict[str, int] = {}
+        active_subscriptions: list[dict[str, Any]] = []
+        sub_type_counts: dict[str, int] = {}
 
         for sub in tracked_subs:
             sub_type = str(sub.get("sub_type") or "").strip().lower() or "unknown"
@@ -296,7 +282,7 @@ class TwitchMonitoringMixin:
         )
 
         # listener_rows für Kompatibilität mit bestehenden Dashboard-Feldern
-        listener_rows: List[Dict[str, Any]] = [
+        listener_rows: list[dict[str, Any]] = [
             {
                 "idx": 1,
                 "ready": 1,
@@ -318,21 +304,15 @@ class TwitchMonitoringMixin:
             target_user_id = str(row.get("target_user_id") or "").strip()
             target_login = login_map.get(target_user_id)
             if not target_login:
-                condition = (
-                    row.get("condition")
-                    if isinstance(row.get("condition"), dict)
-                    else {}
-                )
+                condition = row.get("condition") if isinstance(row.get("condition"), dict) else {}
                 target_login = (
                     str(condition.get("broadcaster_user_login") or "").strip().lower()
-                    or str(condition.get("to_broadcaster_user_login") or "")
-                    .strip()
-                    .lower()
+                    or str(condition.get("to_broadcaster_user_login") or "").strip().lower()
                     or None
                 )
             row["target_login"] = target_login
 
-        channel_map: Dict[str, Dict[str, Any]] = {}
+        channel_map: dict[str, dict[str, Any]] = {}
         for row in active_subscriptions:
             target_user_id = str(row.get("target_user_id") or "").strip()
             if not target_user_id:
@@ -359,9 +339,7 @@ class TwitchMonitoringMixin:
             [
                 {
                     "twitch_user_id": str(entry.get("twitch_user_id") or ""),
-                    "twitch_login": (
-                        str(entry.get("twitch_login") or "").strip().lower() or None
-                    ),
+                    "twitch_login": (str(entry.get("twitch_login") or "").strip().lower() or None),
                     "subscription_count": int(entry.get("subscription_count") or 0),
                     "sub_types": sorted(
                         str(sub_type) for sub_type in entry.get("sub_types", set())
@@ -385,7 +363,7 @@ class TwitchMonitoringMixin:
         ]
 
         return {
-            "ts_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "ts_utc": datetime.now(UTC).isoformat(timespec="seconds"),
             "reason": (reason or "unknown").strip()[:64],
             "listener_count": listener_count,
             "ready_listeners": ready_count,
@@ -402,14 +380,10 @@ class TwitchMonitoringMixin:
             "subscription_channels": subscription_channels,
         }
 
-    async def _record_eventsub_capacity_snapshot(
-        self, reason: str, *, force: bool = False
-    ) -> None:
+    async def _record_eventsub_capacity_snapshot(self, reason: str, *, force: bool = False) -> None:
         now_monotonic = time.monotonic()
         interval = self._eventsub_capacity_sample_interval_seconds()
-        last_snapshot = float(
-            getattr(self, "_eventsub_capacity_last_snapshot", 0.0) or 0.0
-        )
+        last_snapshot = float(getattr(self, "_eventsub_capacity_last_snapshot", 0.0) or 0.0)
         if not force and last_snapshot and (now_monotonic - last_snapshot) < interval:
             return
 
@@ -444,24 +418,20 @@ class TwitchMonitoringMixin:
                     ),
                 )
 
-                last_cleanup = float(
-                    getattr(self, "_eventsub_capacity_last_cleanup", 0.0) or 0.0
-                )
+                last_cleanup = float(getattr(self, "_eventsub_capacity_last_cleanup", 0.0) or 0.0)
                 if (now_monotonic - last_cleanup) >= 3600:
                     retention_days = self._eventsub_capacity_retention_days()
-                    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+                    cutoff = datetime.now(UTC) - timedelta(days=retention_days)
                     c.execute(
                         "DELETE FROM twitch_eventsub_capacity_snapshot WHERE ts_utc < ?",
                         (cutoff.isoformat(timespec="seconds"),),
                     )
-                    setattr(self, "_eventsub_capacity_last_cleanup", now_monotonic)
+                    self._eventsub_capacity_last_cleanup = now_monotonic
 
-            setattr(self, "_eventsub_capacity_last_snapshot", now_monotonic)
+            self._eventsub_capacity_last_snapshot = now_monotonic
             utilization_pct = float(snapshot.get("utilization_pct") or 0.0)
             if utilization_pct >= 90.0:
-                last_warn = float(
-                    getattr(self, "_eventsub_capacity_last_warn", 0.0) or 0.0
-                )
+                last_warn = float(getattr(self, "_eventsub_capacity_last_warn", 0.0) or 0.0)
                 if (now_monotonic - last_warn) >= 600:
                     log.warning(
                         "EventSub Capacity hoch: %.1f%% (%d/%d Slots, %d Listener, Trigger=%s)",
@@ -471,15 +441,11 @@ class TwitchMonitoringMixin:
                         int(snapshot.get("listener_count") or 0),
                         str(snapshot.get("reason") or "unknown"),
                     )
-                    setattr(self, "_eventsub_capacity_last_warn", now_monotonic)
+                    self._eventsub_capacity_last_warn = now_monotonic
         except Exception:
-            log.debug(
-                "EventSub: konnte Capacity-Snapshot nicht speichern", exc_info=True
-            )
+            log.debug("EventSub: konnte Capacity-Snapshot nicht speichern", exc_info=True)
 
-    async def _get_eventsub_capacity_overview(
-        self, *, hours: int = 24
-    ) -> Dict[str, Any]:
+    async def _get_eventsub_capacity_overview(self, *, hours: int = 24) -> dict[str, Any]:
         hours = max(1, min(168, int(hours or 24)))
         lookback = f"-{hours} hours"
 
@@ -530,11 +496,11 @@ class TwitchMonitoringMixin:
             hourly_rows = []
             reason_rows = []
 
-        utilization_values: List[float] = []
-        used_slot_values: List[float] = []
-        listener_count_values: List[float] = []
-        ready_count_values: List[float] = []
-        failed_count_values: List[float] = []
+        utilization_values: list[float] = []
+        used_slot_values: list[float] = []
+        listener_count_values: list[float] = []
+        ready_count_values: list[float] = []
+        failed_count_values: list[float] = []
         for row in rows:
             if hasattr(row, "keys"):
                 utilization_values.append(float(row["utilization_pct"] or 0.0))
@@ -549,13 +515,13 @@ class TwitchMonitoringMixin:
                 ready_count_values.append(float(row[3] or 0.0))
                 failed_count_values.append(float(row[4] or 0.0))
 
-        def _avg(values: List[float]) -> float:
+        def _avg(values: list[float]) -> float:
             return (sum(values) / len(values)) if values else 0.0
 
-        def _max(values: List[float]) -> float:
+        def _max(values: list[float]) -> float:
             return max(values) if values else 0.0
 
-        def _p95(values: List[float]) -> float:
+        def _p95(values: list[float]) -> float:
             if not values:
                 return 0.0
             ordered = sorted(values)
@@ -565,7 +531,7 @@ class TwitchMonitoringMixin:
 
         current_snapshot = self._collect_eventsub_capacity_snapshot(reason="current")
 
-        hourly: List[Dict[str, Any]] = []
+        hourly: list[dict[str, Any]] = []
         for row in hourly_rows:
             if hasattr(row, "keys"):
                 hourly.append(
@@ -594,16 +560,14 @@ class TwitchMonitoringMixin:
                     }
                 )
 
-        reasons: List[Dict[str, Any]] = []
+        reasons: list[dict[str, Any]] = []
         for row in reason_rows:
             if hasattr(row, "keys"):
                 reasons.append(
                     {
                         "reason": str(row["trigger_reason"] or ""),
                         "samples": int(row["samples"] or 0),
-                        "peak_utilization_pct": float(
-                            row["peak_utilization_pct"] or 0.0
-                        ),
+                        "peak_utilization_pct": float(row["peak_utilization_pct"] or 0.0),
                     }
                 )
             else:
@@ -619,9 +583,7 @@ class TwitchMonitoringMixin:
         if rows:
             last_row = rows[-1]
             last_snapshot_at = (
-                str(last_row["ts_utc"])
-                if hasattr(last_row, "keys")
-                else str(last_row[0])
+                str(last_row["ts_utc"]) if hasattr(last_row, "keys") else str(last_row[0])
             )
 
         return {
@@ -641,9 +603,7 @@ class TwitchMonitoringMixin:
             "reasons": reasons,
             "active_subscriptions": current_snapshot.get("subscriptions", []),
             "active_subscription_types": current_snapshot.get("subscription_types", []),
-            "active_subscription_channels": current_snapshot.get(
-                "subscription_channels", []
-            ),
+            "active_subscription_channels": current_snapshot.get("subscription_channels", []),
             "current": {
                 "ts_utc": current_snapshot.get("ts_utc"),
                 "listener_count": int(current_snapshot.get("listener_count") or 0),
@@ -652,19 +612,13 @@ class TwitchMonitoringMixin:
                 "used_slots": int(current_snapshot.get("used_slots") or 0),
                 "total_slots": int(current_snapshot.get("total_slots") or 0),
                 "headroom_slots": int(current_snapshot.get("headroom_slots") or 0),
-                "listeners_at_limit": int(
-                    current_snapshot.get("listeners_at_limit") or 0
-                ),
-                "utilization_pct": float(
-                    current_snapshot.get("utilization_pct") or 0.0
-                ),
-                "subscription_count": int(
-                    current_snapshot.get("subscription_count") or 0
-                ),
+                "listeners_at_limit": int(current_snapshot.get("listeners_at_limit") or 0),
+                "utilization_pct": float(current_snapshot.get("utilization_pct") or 0.0),
+                "subscription_count": int(current_snapshot.get("subscription_count") or 0),
             },
         }
 
-    def _get_raid_enabled_streamers_for_eventsub(self) -> List[Dict[str, str]]:
+    def _get_raid_enabled_streamers_for_eventsub(self) -> list[dict[str, str]]:
         """Broadcaster-Liste für EventSub stream.offline (nur raid_bot_enabled=1)."""
         try:
             with storage.get_conn() as c:
@@ -680,22 +634,16 @@ class TwitchMonitoringMixin:
                 ).fetchall()
             return [
                 {
-                    "twitch_user_id": str(
-                        r["twitch_user_id"] if hasattr(r, "keys") else r[0]
-                    ),
-                    "twitch_login": str(
-                        r["twitch_login"] if hasattr(r, "keys") else r[1]
-                    ).lower(),
+                    "twitch_user_id": str(r["twitch_user_id"] if hasattr(r, "keys") else r[0]),
+                    "twitch_login": str(r["twitch_login"] if hasattr(r, "keys") else r[1]).lower(),
                 }
                 for r in rows
             ]
         except Exception:
-            log.debug(
-                "EventSub: konnte raid_enabled Streamer nicht laden", exc_info=True
-            )
+            log.debug("EventSub: konnte raid_enabled Streamer nicht laden", exc_info=True)
             return []
 
-    def _get_chat_scope_streamers_for_eventsub(self) -> List[Dict[str, str]]:
+    def _get_chat_scope_streamers_for_eventsub(self) -> list[dict[str, str]]:
         """Broadcaster mit OAuth + Chat-Scopes (aktuell nicht für EventSub genutzt, nur für Info)."""
         try:
             with storage.get_conn() as c:
@@ -709,21 +657,13 @@ class TwitchMonitoringMixin:
                        AND s.twitch_login IS NOT NULL
                     """
                 ).fetchall()
-            out: List[Dict[str, str]] = []
+            out: list[dict[str, str]] = []
             seen: set[str] = set()
             for row in rows:
-                user_id = str(
-                    row["twitch_user_id"] if hasattr(row, "keys") else row[0]
-                ).strip()
-                login = (
-                    str(row["twitch_login"] if hasattr(row, "keys") else row[1])
-                    .strip()
-                    .lower()
-                )
+                user_id = str(row["twitch_user_id"] if hasattr(row, "keys") else row[0]).strip()
+                login = str(row["twitch_login"] if hasattr(row, "keys") else row[1]).strip().lower()
                 scopes_raw = row["scopes"] if hasattr(row, "keys") else row[2]
-                scopes = [
-                    s.strip().lower() for s in (scopes_raw or "").split() if s.strip()
-                ]
+                scopes = [s.strip().lower() for s in (scopes_raw or "").split() if s.strip()]
                 has_chat_scope = any(
                     s in {"user:read:chat", "user:write:chat", "chat:read", "chat:edit"}
                     for s in scopes
@@ -737,46 +677,35 @@ class TwitchMonitoringMixin:
                 out.append({"twitch_user_id": user_id, "twitch_login": login})
             return out
         except Exception:
-            log.debug(
-                "EventSub online: konnte Streamer-Liste nicht laden", exc_info=True
-            )
+            log.debug("EventSub online: konnte Streamer-Liste nicht laden", exc_info=True)
             return []
 
-    def _get_tracked_logins_for_eventsub(self) -> List[str]:
+    def _get_tracked_logins_for_eventsub(self) -> list[str]:
         """Alle bekannten Streamer-Logins (für Online-Status der Partner bei EventSub)."""
         try:
             with storage.get_conn() as c:
                 rows = c.execute(
                     "SELECT twitch_login FROM twitch_streamers WHERE twitch_login IS NOT NULL AND archived_at IS NULL"
                 ).fetchall()
-            return [
-                str(r["twitch_login"] if hasattr(r, "keys") else r[0]).lower()
-                for r in rows
-            ]
+            return [str(r["twitch_login"] if hasattr(r, "keys") else r[0]).lower() for r in rows]
         except Exception:
             log.debug("EventSub: konnte tracked Logins nicht laden", exc_info=True)
             return []
 
-    async def _fetch_streams_by_logins_quick(
-        self, logins: List[str]
-    ) -> Dict[str, dict]:
+    async def _fetch_streams_by_logins_quick(self, logins: list[str]) -> dict[str, dict]:
         """Hol Live-Streams fœr angegebene Logins (reduziert auf einmal pro EventSub-Offline)."""
         if not getattr(self, "api", None):
             return {}
-        streams_by_login: Dict[str, dict] = {}
+        streams_by_login: dict[str, dict] = {}
         logins = [lg for lg in logins if lg]
         if not logins:
             return {}
         for language in self._language_filter_values():
             try:
-                streams = await self.api.get_streams_by_logins(
-                    logins, language=language
-                )
+                streams = await self.api.get_streams_by_logins(logins, language=language)
             except Exception:
                 label = language or "any"
-                log.debug(
-                    "EventSub: Streams fetch failed (language=%s)", label, exc_info=True
-                )
+                log.debug("EventSub: Streams fetch failed (language=%s)", label, exc_info=True)
                 continue
             for stream in streams:
                 login = (stream.get("user_login") or "").lower()
@@ -784,7 +713,7 @@ class TwitchMonitoringMixin:
                     streams_by_login[login] = stream
         return streams_by_login
 
-    def _load_live_state_row(self, login_lower: str) -> Dict:
+    def _load_live_state_row(self, login_lower: str) -> dict:
         """Lädt letzten Live-State aus DB, damit EventSub-Offlines sofort Daten haben."""
         if not login_lower:
             return {}
@@ -809,7 +738,7 @@ class TwitchMonitoringMixin:
             return {}
 
     async def _on_eventsub_stream_offline(
-        self, broadcaster_id: str, broadcaster_login: Optional[str]
+        self, broadcaster_id: str, broadcaster_login: str | None
     ) -> None:
         """Direkter Auto-Raid-Trigger bei stream.offline EventSub."""
         if not broadcaster_id:
@@ -829,7 +758,7 @@ class TwitchMonitoringMixin:
         throttle = getattr(self, "_eventsub_offline_throttle", None)
         if throttle is None:
             throttle = {}
-            setattr(self, "_eventsub_offline_throttle", throttle)
+            self._eventsub_offline_throttle = throttle
         now = time.time()
         last_ts = throttle.get(broadcaster_id)
         if last_ts and now - last_ts < 90:
@@ -855,7 +784,7 @@ class TwitchMonitoringMixin:
                 broadcaster_login or broadcaster_id,
             )
 
-    def _get_eventsub_webhook_url(self) -> Optional[str]:
+    def _get_eventsub_webhook_url(self) -> str | None:
         """Gibt die vollständige Webhook-Callback-URL zurück, falls konfiguriert."""
         base = getattr(self, "_webhook_base_url", None)
         if not base:
@@ -878,16 +807,14 @@ class TwitchMonitoringMixin:
             if deleted:
                 log.info("EventSub Webhook: %d alte Subscriptions gelöscht", deleted)
         except Exception:
-            log.exception(
-                "EventSub Webhook: Cleanup alter Subscriptions fehlgeschlagen"
-            )
+            log.exception("EventSub Webhook: Cleanup alter Subscriptions fehlgeschlagen")
 
     async def _start_eventsub_listener(self):
         """Startet Webhook-basierte EventSub Subscriptions."""
         if getattr(self, "_eventsub_started", False):
             log.debug("EventSub Listener bereits gestartet, überspringe.")
             return
-        setattr(self, "_eventsub_started", True)
+        self._eventsub_started = True
 
         webhook_url = self._get_eventsub_webhook_url()
         webhook_secret = getattr(self, "_webhook_secret", None)
@@ -899,14 +826,12 @@ class TwitchMonitoringMixin:
                 "EventSub Subscriptions werden nicht erstellt. "
                 "Bitte TWITCH_WEBHOOK_SECRET setzen."
             )
-            setattr(self, "_eventsub_started", False)
+            self._eventsub_started = False
             return
 
         if not getattr(self, "api", None):
-            log.warning(
-                "EventSub Webhook: Keine API vorhanden, Listener wird nicht gestartet."
-            )
-            setattr(self, "_eventsub_started", False)
+            log.warning("EventSub Webhook: Keine API vorhanden, Listener wird nicht gestartet.")
+            self._eventsub_started = False
             return
 
         try:
@@ -920,9 +845,7 @@ class TwitchMonitoringMixin:
             try:
                 await self._on_eventsub_stream_offline(bid, login)
             except Exception:
-                log.exception(
-                    "EventSub Webhook: Offline-Callback fehlgeschlagen für %s", login
-                )
+                log.exception("EventSub Webhook: Offline-Callback fehlgeschlagen für %s", login)
 
         async def _raid_cb(to_bid: str, to_login: str, event: dict):
             try:
@@ -933,12 +856,8 @@ class TwitchMonitoringMixin:
                         to_login,
                     )
                     return
-                from_login = (
-                    (event.get("from_broadcaster_user_login") or "").strip().lower()
-                )
-                from_broadcaster_id = str(
-                    event.get("from_broadcaster_user_id") or ""
-                ).strip()
+                from_login = (event.get("from_broadcaster_user_login") or "").strip().lower()
+                from_broadcaster_id = str(event.get("from_broadcaster_user_id") or "").strip()
                 viewer_count = int(event.get("viewers") or 0)
                 if not from_login:
                     log.warning(
@@ -968,9 +887,7 @@ class TwitchMonitoringMixin:
             try:
                 await self._store_bits_event(bid, event)
             except Exception:
-                log.exception(
-                    "EventSub Webhook: Bits-Callback fehlgeschlagen für %s", login
-                )
+                log.exception("EventSub Webhook: Bits-Callback fehlgeschlagen für %s", login)
 
         async def _hype_begin_cb(bid: str, login: str, event: dict):
             try:
@@ -992,9 +909,7 @@ class TwitchMonitoringMixin:
 
         async def _hype_progress_cb(bid: str, login: str, event: dict):
             try:
-                await self._store_hype_train_event(
-                    bid, event, ended=False, progress=True
-                )
+                await self._store_hype_train_event(bid, event, ended=False, progress=True)
             except Exception:
                 log.exception(
                     "EventSub Webhook: Hype-Train-Progress-Callback fehlgeschlagen für %s",
@@ -1110,15 +1025,9 @@ class TwitchMonitoringMixin:
                 )
 
         async def _follow_cb(bid: str, login: str, event: dict):
-            user_login = (
-                (event.get("user_login") or event.get("user_name") or "")
-                .strip()
-                .lower()
-            )
+            user_login = (event.get("user_login") or event.get("user_name") or "").strip().lower()
             user_id = str(event.get("user_id") or "").strip()
-            followed_at = (
-                event.get("followed_at") or datetime.now(timezone.utc).isoformat()
-            )
+            followed_at = event.get("followed_at") or datetime.now(UTC).isoformat()
             log.debug("EventSub: channel.follow – %s followed %s", user_login, login)
             try:
                 with storage.get_conn() as c:
@@ -1131,9 +1040,7 @@ class TwitchMonitoringMixin:
                         (login, bid, user_login, user_id or None, followed_at),
                     )
             except Exception:
-                log.exception(
-                    "EventSub: _follow_cb – DB-Insert fehlgeschlagen für %s", login
-                )
+                log.exception("EventSub: _follow_cb – DB-Insert fehlgeschlagen für %s", login)
 
         async def _points_auto_cb(bid: str, login: str, event: dict):
             try:
@@ -1190,7 +1097,7 @@ class TwitchMonitoringMixin:
             _golive_ts: dict = getattr(self, "_golive_last_handled_ts", None)
             if not isinstance(_golive_ts, dict):
                 _golive_ts = {}
-                setattr(self, "_golive_last_handled_ts", _golive_ts)
+                self._golive_last_handled_ts = _golive_ts
             _now = time.time()
             _bid_key = str(bid).strip()
             if _now - float(_golive_ts.get(_bid_key) or 0.0) < 60.0:
@@ -1282,9 +1189,7 @@ class TwitchMonitoringMixin:
                             )
 
                 # 3. Broadcaster-Token Subscriptions (Bits, Hype, Subs, Ads)
-                broadcaster_token = await self._resolve_eventsub_broadcaster_token(
-                    str(bid)
-                )
+                broadcaster_token = await self._resolve_eventsub_broadcaster_token(str(bid))
                 if broadcaster_token:
                     # Scopes des Tokens aus DB laden – nur Subs subscriben, für die der Scope vorhanden ist
                     try:
@@ -1294,9 +1199,7 @@ class TwitchMonitoringMixin:
                                 (str(bid),),
                             ).fetchone()
                         _token_scopes: set[str] = set(
-                            (
-                                _scope_row[0] if _scope_row and _scope_row[0] else ""
-                            ).split()
+                            (_scope_row[0] if _scope_row and _scope_row[0] else "").split()
                         )
                     except Exception:
                         log.debug(
@@ -1446,28 +1349,22 @@ class TwitchMonitoringMixin:
                             )
 
             except Exception:
-                log.exception(
-                    "Polling: Go-Live Handler fehlgeschlagen für %s", login or bid
-                )
+                log.exception("Polling: Go-Live Handler fehlgeschlagen für %s", login or bid)
 
-        setattr(self, "_handle_stream_went_live", _handle_stream_went_live)
+        self._handle_stream_went_live = _handle_stream_went_live
 
         # 1. Alte Subscriptions bereinigen
         await self._cleanup_old_eventsub_subscriptions(webhook_url)
 
         # Lokale Subscription-Tracking-Liste leeren
-        setattr(self, "_eventsub_webhook_active_subs", [])
+        self._eventsub_webhook_active_subs = []
 
         # 2. Broadcaster sammeln
         raid_enabled_streamers = self._get_raid_enabled_streamers_for_eventsub()
         if not raid_enabled_streamers:
-            log.info(
-                "EventSub Webhook: Keine Streamer für EventSub monitoring gefunden."
-            )
+            log.info("EventSub Webhook: Keine Streamer für EventSub monitoring gefunden.")
             try:
-                await self._record_eventsub_capacity_snapshot(
-                    "startup_no_streamers", force=True
-                )
+                await self._record_eventsub_capacity_snapshot("startup_no_streamers", force=True)
             except Exception:
                 log.debug(
                     "EventSub: Snapshot für startup_no_streamers fehlgeschlagen",
@@ -1477,7 +1374,7 @@ class TwitchMonitoringMixin:
 
         # 3. Live-Status abrufen
         raid_logins = [s["twitch_login"] for s in raid_enabled_streamers]
-        currently_live_streams: Dict[str, dict] = {}
+        currently_live_streams: dict[str, dict] = {}
         try:
             live_streams = await self.api.get_streams_by_logins(raid_logins)
             for stream in live_streams:
@@ -1561,13 +1458,9 @@ class TwitchMonitoringMixin:
                 if result:
                     self._eventsub_track_sub("stream.offline", str(bid))
                     offline_added += 1
-                    log.debug(
-                        "EventSub Webhook: stream.offline subscribed für %s", login
-                    )
+                    log.debug("EventSub Webhook: stream.offline subscribed für %s", login)
             except Exception:
-                log.exception(
-                    "EventSub Webhook: stream.offline fehlgeschlagen für %s", login
-                )
+                log.exception("EventSub Webhook: stream.offline fehlgeschlagen für %s", login)
 
         log.info(
             "EventSub Webhook: stream.online=%d, channel.update=%d, stream.offline=%d subscribiert",
@@ -1576,15 +1469,11 @@ class TwitchMonitoringMixin:
             offline_added,
         )
         try:
-            await self._record_eventsub_capacity_snapshot(
-                "startup_distribution", force=True
-            )
+            await self._record_eventsub_capacity_snapshot("startup_distribution", force=True)
         except Exception:
-            log.debug(
-                "EventSub: Startup-Capacity-Snapshot fehlgeschlagen", exc_info=True
-            )
+            log.debug("EventSub: Startup-Capacity-Snapshot fehlgeschlagen", exc_info=True)
 
-    async def _resolve_eventsub_bot_token(self) -> Optional[str]:
+    async def _resolve_eventsub_bot_token(self) -> str | None:
         """Gibt den aktuellen Bot-Token zurück (ohne 'oauth:' Präfix)."""
         bot_token_mgr = getattr(self, "_bot_token_manager", None)
         if not bot_token_mgr:
@@ -1601,15 +1490,11 @@ class TwitchMonitoringMixin:
             log.debug("EventSub Webhook: konnte Bot-Token nicht laden", exc_info=True)
             return None
 
-    async def _resolve_eventsub_broadcaster_token(
-        self, broadcaster_user_id: str
-    ) -> Optional[str]:
+    async def _resolve_eventsub_broadcaster_token(self, broadcaster_user_id: str) -> str | None:
         """Gibt den Broadcaster-Token für eine bestimmte User-ID zurück (falls vorhanden).
         Klartext-Fallbacks sind deaktiviert (ENC-only Read)."""
         if hasattr(self, "_resolve_broadcaster_token_with_legacy"):
-            return await self._resolve_broadcaster_token_with_legacy(
-                broadcaster_user_id
-            )
+            return await self._resolve_broadcaster_token_with_legacy(broadcaster_user_id)
         # Fallback falls Mixin nicht eingebunden
         try:
             raid_bot = getattr(self, "_raid_bot", None)
@@ -1617,9 +1502,7 @@ class TwitchMonitoringMixin:
             session = getattr(raid_bot, "session", None) if raid_bot else None
             if not auth_manager or not session or getattr(session, "closed", False):
                 return None
-            token = await auth_manager.get_valid_token(
-                str(broadcaster_user_id), session
-            )
+            token = await auth_manager.get_valid_token(str(broadcaster_user_id), session)
             token = str(token or "").strip()
             if not token:
                 return None
@@ -1645,13 +1528,13 @@ class TwitchMonitoringMixin:
         tracked: set = getattr(self, "_eventsub_webhook_tracked", None)
         if tracked is None:
             tracked = set()
-            setattr(self, "_eventsub_webhook_tracked", tracked)
+            self._eventsub_webhook_tracked = tracked
         tracked.add((sub_type, str(broadcaster_user_id)))
         # Kompatibilität: active_subs-Liste für Capacity-Snapshots weiter befüllen
-        active_subs: List[Dict] = getattr(self, "_eventsub_webhook_active_subs", None)
+        active_subs: list[dict] = getattr(self, "_eventsub_webhook_active_subs", None)
         if active_subs is None:
             active_subs = []
-            setattr(self, "_eventsub_webhook_active_subs", active_subs)
+            self._eventsub_webhook_active_subs = active_subs
         if not any(
             s.get("sub_type") == sub_type
             and s.get("broadcaster_user_id") == str(broadcaster_user_id)
@@ -1685,9 +1568,7 @@ class TwitchMonitoringMixin:
             return False
 
         if not getattr(self, "api", None):
-            log.error(
-                "EventSub Webhook: Keine API verfügbar für channel.raid subscription"
-            )
+            log.error("EventSub Webhook: Keine API verfügbar für channel.raid subscription")
             await self._record_eventsub_capacity_snapshot("raid_no_api", force=True)
             return False
 
@@ -1706,26 +1587,20 @@ class TwitchMonitoringMixin:
                     broadcaster_login,
                     broadcaster_id,
                 )
-                await self._record_eventsub_capacity_snapshot(
-                    "raid_subscribed", force=True
-                )
+                await self._record_eventsub_capacity_snapshot("raid_subscribed", force=True)
                 return True
             log.error(
                 "EventSub Webhook: channel.raid Subscription fehlgeschlagen für %s",
                 broadcaster_login,
             )
-            await self._record_eventsub_capacity_snapshot(
-                "raid_subscribe_failed", force=True
-            )
+            await self._record_eventsub_capacity_snapshot("raid_subscribe_failed", force=True)
             return False
         except Exception:
             log.exception(
                 "EventSub Webhook: channel.raid Subscription fehlgeschlagen für %s",
                 broadcaster_login,
             )
-            await self._record_eventsub_capacity_snapshot(
-                "raid_subscribe_error", force=True
-            )
+            await self._record_eventsub_capacity_snapshot("raid_subscribe_error", force=True)
             return False
 
     async def _start_eventsub_offline_listener(self):
@@ -1790,7 +1665,7 @@ class TwitchMonitoringMixin:
                     "       archived_at, is_partner "
                     "FROM twitch_streamers_partner_state"
                 ).fetchall()
-            tracked: List[Dict[str, object]] = []
+            tracked: list[dict[str, object]] = []
             for row in rows:
                 row_dict = dict(row)
                 login = str(row_dict.get("twitch_login") or "").strip()
@@ -1799,7 +1674,7 @@ class TwitchMonitoringMixin:
                 user_id = str(row_dict.get("twitch_user_id") or "").strip()
                 require_link = bool(row_dict.get("require_discord_link"))
                 archived_at_raw = row_dict.get("archived_at")
-                archived_dt: Optional[datetime] = None
+                archived_dt: datetime | None = None
                 if archived_at_raw:
                     try:
                         archived_dt = datetime.fromisoformat(str(archived_at_raw))
@@ -1826,18 +1701,14 @@ class TwitchMonitoringMixin:
             tracked = []
             partner_logins = set()
 
-        logins = [
-            str(entry.get("login") or "") for entry in tracked if entry.get("login")
-        ]
+        logins = [str(entry.get("login") or "") for entry in tracked if entry.get("login")]
         language_filters = self._language_filter_values()
-        streams_by_login: Dict[str, dict] = {}
+        streams_by_login: dict[str, dict] = {}
 
         if logins:
             for language in language_filters:
                 try:
-                    streams = await self.api.get_streams_by_logins(
-                        logins, language=language
-                    )
+                    streams = await self.api.get_streams_by_logins(logins, language=language)
                 except Exception:
                     label = language or "any"
                     log.exception(
@@ -1854,9 +1725,9 @@ class TwitchMonitoringMixin:
             if login in partner_logins:
                 stream["is_partner"] = True
 
-        category_streams: List[dict] = []
+        category_streams: list[dict] = []
         if self._category_id:
-            collected: Dict[str, dict] = {}
+            collected: dict[str, dict] = {}
             for language in language_filters:
                 remaining = self._category_sample_limit - len(collected)
                 if remaining <= 0:
@@ -1869,9 +1740,7 @@ class TwitchMonitoringMixin:
                     )
                 except Exception:
                     label = language or "any"
-                    log.exception(
-                        "Konnte Kategorie-Streams nicht abrufen (language=%s)", label
-                    )
+                    log.exception("Konnte Kategorie-Streams nicht abrufen (language=%s)", label)
                     continue
                 for stream in streams:
                     login = (stream.get("user_login") or "").lower()
@@ -1909,38 +1778,38 @@ class TwitchMonitoringMixin:
 
     async def _process_postings(
         self,
-        tracked: List[Dict[str, object]],
-        streams_by_login: Dict[str, dict],
+        tracked: list[dict[str, object]],
+        streams_by_login: dict[str, dict],
     ):
-        notify_ch: Optional[discord.TextChannel] = None
+        notify_ch: discord.TextChannel | None = None
         if self._notify_channel_id:
             notify_ch = self.bot.get_channel(self._notify_channel_id) or None  # type: ignore[assignment]
 
-        now_utc = datetime.now(tz=timezone.utc)
+        now_utc = datetime.now(tz=UTC)
         now_iso = now_utc.isoformat(timespec="seconds")
-        pending_state_rows: List[
+        pending_state_rows: list[
             tuple[
                 str,
                 str,
                 int,
                 str,
-                Optional[str],
-                Optional[str],
+                str | None,
+                str | None,
                 int,
-                Optional[str],
-                Optional[str],
-                Optional[str],
-                Optional[str],
+                str | None,
+                str | None,
+                str | None,
+                str | None,
                 int,
-                Optional[int],
-                Optional[str],
+                int | None,
+                str | None,
             ]
         ] = []
 
         with storage.get_conn() as c:
             live_state_rows = c.execute("SELECT * FROM twitch_live_state").fetchall()
 
-        live_state: Dict[str, dict] = {}
+        live_state: dict[str, dict] = {}
         for row in live_state_rows:
             row_dict = dict(row)
             key = str(row_dict.get("streamer_login") or "").lower()
@@ -1995,9 +1864,7 @@ class TwitchMonitoringMixin:
                     is_archived = False
                     entry["is_archived"] = False
                 except Exception:
-                    log.debug(
-                        "Auto-Unarchive fehlgeschlagen für %s", login, exc_info=True
-                    )
+                    log.debug("Auto-Unarchive fehlgeschlagen für %s", login, exc_info=True)
             previous_game = (previous_state.get("last_game") or "").strip()
             previous_game_lower = previous_game.lower()
             was_deadlock = previous_game_lower == target_game_lower
@@ -2006,10 +1873,8 @@ class TwitchMonitoringMixin:
             current_stream_id_raw = stream.get("id") if stream else ""
             current_stream_id = str(current_stream_id_raw or "").strip()
             stream_id_value = current_stream_id or previous_stream_id or None
-            had_deadlock_prev = bool(
-                int(previous_state.get("had_deadlock_in_session", 0) or 0)
-            )
-            active_session_id: Optional[int] = None
+            had_deadlock_prev = bool(int(previous_state.get("had_deadlock_in_session", 0) or 0))
+            active_session_id: int | None = None
             previous_last_deadlock_seen = (
                 previous_state.get("last_deadlock_seen_at") or ""
             ).strip() or None
@@ -2026,20 +1891,14 @@ class TwitchMonitoringMixin:
                     log.exception("Konnte Streamsitzung nicht starten: %s", login)
             elif was_live and not is_live:
                 try:
-                    await self._finalize_stream_session(
-                        login=login_lower, reason="offline"
-                    )
+                    await self._finalize_stream_session(login=login_lower, reason="offline")
                 except Exception:
                     log.exception("Konnte Streamsitzung nicht abschliessen: %s", login)
             elif not is_live and previous_state.get("active_session_id"):
                 try:
-                    await self._finalize_stream_session(
-                        login=login_lower, reason="stale"
-                    )
+                    await self._finalize_stream_session(login=login_lower, reason="stale")
                 except Exception:
-                    log.debug(
-                        "Konnte alte Session nicht bereinigen: %s", login, exc_info=True
-                    )
+                    log.debug("Konnte alte Session nicht bereinigen: %s", login, exc_info=True)
 
             if not was_live:
                 had_deadlock_prev = False
@@ -2066,24 +1925,20 @@ class TwitchMonitoringMixin:
             game_name = (stream.get("game_name") or "").strip() if stream else ""
             game_name_lower = game_name.lower()
             is_deadlock = (
-                is_live
-                and bool(target_game_lower)
-                and game_name_lower == target_game_lower
+                is_live and bool(target_game_lower) and game_name_lower == target_game_lower
             )
             had_deadlock_in_session = had_deadlock_prev or is_deadlock
             had_deadlock_to_store = had_deadlock_in_session if is_live else False
             last_title_value = (
                 stream.get("title") if stream else previous_state.get("last_title")
             ) or None
-            last_game_value = (
-                game_name or previous_state.get("last_game") or ""
-            ).strip() or None
+            last_game_value = (game_name or previous_state.get("last_game") or "").strip() or None
             last_viewer_count_value = (
                 int(stream.get("viewer_count") or 0)
                 if stream
                 else int(previous_state.get("last_viewer_count") or 0)
             )
-            last_deadlock_seen_at_value: Optional[str] = None
+            last_deadlock_seen_at_value: str | None = None
             if is_deadlock:
                 last_deadlock_seen_at_value = now_iso
             elif had_deadlock_to_store and previous_last_deadlock_seen:
@@ -2100,7 +1955,7 @@ class TwitchMonitoringMixin:
             if should_post:
                 referral_url = self._build_referral_url(login)
                 display_name = stream.get("user_name") or login
-                message_prefix: List[str] = []
+                message_prefix: list[str] = []
                 if self._alert_mention:
                     message_prefix.append(self._alert_mention)
                 stream_title = (stream.get("title") or "").strip()
@@ -2121,9 +1976,7 @@ class TwitchMonitoringMixin:
                 )
 
                 try:
-                    message = await notify_ch.send(
-                        content=content or None, embed=embed, view=view
-                    )
+                    message = await notify_ch.send(content=content or None, embed=embed, view=view)
                 except Exception:
                     log.exception("Konnte Go-Live-Posting nicht senden: %s", login)
                 else:
@@ -2155,9 +2008,7 @@ class TwitchMonitoringMixin:
                             )
 
             ended_deadlock_posting = (
-                notify_ch is not None
-                and message_id_previous
-                and (not is_live or not is_deadlock)
+                notify_ch is not None and message_id_previous and (not is_live or not is_deadlock)
             )
             should_auto_raid = (
                 notify_ch is not None
@@ -2169,13 +2020,11 @@ class TwitchMonitoringMixin:
 
             # Auto-Raid beim Offline-Gehen (Throttle gemeinsam mit EventSub-Pfad)
             if should_auto_raid:
-                raid_uid = str(
-                    twitch_user_id or previous_state.get("twitch_user_id") or ""
-                )
+                raid_uid = str(twitch_user_id or previous_state.get("twitch_user_id") or "")
                 throttle = getattr(self, "_eventsub_offline_throttle", None)
                 if throttle is None:
                     throttle = {}
-                    setattr(self, "_eventsub_offline_throttle", throttle)
+                    self._eventsub_offline_throttle = throttle
                 last_ts = throttle.get(raid_uid)
                 if not (last_ts and time.time() - last_ts < 90):
                     throttle[raid_uid] = time.time()
@@ -2188,9 +2037,7 @@ class TwitchMonitoringMixin:
 
             if ended_deadlock_posting:
                 display_name = (
-                    stream.get("user_name")
-                    if stream
-                    else previous_state.get("streamer_login")
+                    stream.get("user_name") if stream else previous_state.get("streamer_login")
                 ) or login
                 try:
                     message_id_int = int(message_id_previous)
@@ -2216,19 +2063,14 @@ class TwitchMonitoringMixin:
                         tracking_token_to_store = None
                         self._drop_live_view(tracking_token_previous)
                     except Exception:
-                        log.exception(
-                            "Konnte Deadlock-Ende-Posting nicht laden: %s", login
-                        )
+                        log.exception("Konnte Deadlock-Ende-Posting nicht laden: %s", login)
                     else:
                         preview_image_url = await self._get_latest_vod_preview_url(
                             login=login,
-                            twitch_user_id=twitch_user_id
-                            or previous_state.get("twitch_user_id"),
+                            twitch_user_id=twitch_user_id or previous_state.get("twitch_user_id"),
                         )
 
-                        ended_content = (
-                            f"**{display_name}** ist OFFLINE - VOD per Button."
-                        )
+                        ended_content = f"**{display_name}** ist OFFLINE - VOD per Button."
                         offline_embed = self._build_offline_embed(
                             login=login,
                             display_name=display_name,
@@ -2255,9 +2097,7 @@ class TwitchMonitoringMixin:
                             tracking_token_to_store = None
                             self._drop_live_view(tracking_token_previous)
 
-            db_user_id = (
-                twitch_user_id or previous_state.get("twitch_user_id") or login_lower
-            )
+            db_user_id = twitch_user_id or previous_state.get("twitch_user_id") or login_lower
             db_user_id = str(db_user_id)
             db_message_id = str(message_id_to_store) if message_id_to_store else None
             db_streamer_login = login_lower
@@ -2281,12 +2121,7 @@ class TwitchMonitoringMixin:
                 )
             )
 
-            if (
-                need_link
-                and self._alert_channel_id
-                and (now_utc.minute % 10 == 0)
-                and is_live
-            ):
+            if need_link and self._alert_channel_id and (now_utc.minute % 10 == 0) and is_live:
                 # Platzhalter für deinen Profil-/Panel-Check
                 pass
 
@@ -2295,21 +2130,21 @@ class TwitchMonitoringMixin:
 
     async def _persist_live_state_rows(
         self,
-        rows: List[
+        rows: list[
             tuple[
                 str,
                 str,
                 int,
                 str,
-                Optional[str],
-                Optional[str],
+                str | None,
+                str | None,
                 int,
-                Optional[str],
-                Optional[str],
-                Optional[str],
-                Optional[str],
+                str | None,
+                str | None,
+                str | None,
+                str | None,
                 int,
-                Optional[int],
+                int | None,
             ]
         ],
     ) -> None:
@@ -2347,11 +2182,11 @@ class TwitchMonitoringMixin:
         Archiviert Partner automatisch, wenn sie länger als `days` Tage nicht gestreamt haben.
         Läuft maximal alle 15 Minuten, um DB-Load gering zu halten.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         last_run = getattr(self, "_last_archive_check", 0.0)
         if time.time() - last_run < 900:
             return
-        setattr(self, "_last_archive_check", time.time())
+        self._last_archive_check = time.time()
 
         cutoff = now - timedelta(days=days)
 
@@ -2379,16 +2214,12 @@ class TwitchMonitoringMixin:
                     (target_game,),
                 ).fetchall()
         except Exception:
-            log.debug(
-                "Auto-Archivierung: konnte Streamer-Liste nicht laden", exc_info=True
-            )
+            log.debug("Auto-Archivierung: konnte Streamer-Liste nicht laden", exc_info=True)
             return
 
         for row in rows:
             try:
-                login = (
-                    row["twitch_login"] if hasattr(row, "keys") else row[0] or ""
-                ).strip()
+                login = (row["twitch_login"] if hasattr(row, "keys") else row[0] or "").strip()
             except Exception:
                 continue
             if not login:
@@ -2398,19 +2229,15 @@ class TwitchMonitoringMixin:
             if archived_at:
                 continue
 
-            last_stream_raw = (
-                row["last_deadlock_stream_at"] if hasattr(row, "keys") else row[2]
-            )
+            last_stream_raw = row["last_deadlock_stream_at"] if hasattr(row, "keys") else row[2]
             if not last_stream_raw:
                 # Keine Historie -> keine automatische Archivierung
                 continue
 
             try:
-                last_dt = datetime.fromisoformat(
-                    str(last_stream_raw).replace("Z", "+00:00")
-                )
+                last_dt = datetime.fromisoformat(str(last_stream_raw).replace("Z", "+00:00"))
                 if last_dt.tzinfo is None:
-                    last_dt = last_dt.replace(tzinfo=timezone.utc)
+                    last_dt = last_dt.replace(tzinfo=UTC)
             except Exception:
                 log.debug(
                     "Auto-Archivierung: Datum unlesbar für %s (%r)",
@@ -2431,12 +2258,10 @@ class TwitchMonitoringMixin:
                             cutoff.date().isoformat(),
                         )
                 except Exception:
-                    log.debug(
-                        "Auto-Archivierung fehlgeschlagen für %s", login, exc_info=True
-                    )
+                    log.debug("Auto-Archivierung fehlgeschlagen für %s", login, exc_info=True)
 
     @staticmethod
-    def _parse_dt(value: Optional[str]) -> Optional[datetime]:
+    def _parse_dt(value: str | None) -> datetime | None:
         if not value:
             return None
         try:
@@ -2444,12 +2269,10 @@ class TwitchMonitoringMixin:
         except Exception:
             return None
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
+        return dt.astimezone(UTC)
 
-    def _extract_stream_start(
-        self, stream: Optional[dict], previous_state: dict
-    ) -> Optional[str]:
+    def _extract_stream_start(self, stream: dict | None, previous_state: dict) -> str | None:
         candidate = None
         if stream:
             candidate = stream.get("started_at") or stream.get("start_time")
@@ -2460,11 +2283,11 @@ class TwitchMonitoringMixin:
             return dt.isoformat(timespec="seconds")
         return None
 
-    def _get_active_sessions_cache(self) -> Dict[str, int]:
+    def _get_active_sessions_cache(self) -> dict[str, int]:
         cache = getattr(self, "_active_sessions", None)
         if cache is None:
             cache = {}
-            setattr(self, "_active_sessions", cache)
+            self._active_sessions = cache
         return cache
 
     def _rehydrate_active_sessions(self) -> None:
@@ -2481,15 +2304,13 @@ class TwitchMonitoringMixin:
         for row in rows:
             try:
                 session_id = int(row["id"] if hasattr(row, "keys") else row[0])
-                login = str(
-                    row["streamer_login"] if hasattr(row, "keys") else row[1]
-                ).lower()
+                login = str(row["streamer_login"] if hasattr(row, "keys") else row[1]).lower()
             except Exception:
                 continue
             if login:
                 cache[login] = session_id
 
-    def _lookup_open_session_id(self, login: str) -> Optional[int]:
+    def _lookup_open_session_id(self, login: str) -> int | None:
         try:
             with storage.get_conn() as c:
                 row = c.execute(
@@ -2498,9 +2319,7 @@ class TwitchMonitoringMixin:
                     (login.lower(),),
                 ).fetchone()
         except Exception:
-            log.debug(
-                "Lookup offene Session fehlgeschlagen fuer %s", login, exc_info=True
-            )
+            log.debug("Lookup offene Session fehlgeschlagen fuer %s", login, exc_info=True)
             return None
         if not row:
             return None
@@ -2509,7 +2328,7 @@ class TwitchMonitoringMixin:
         cache[login.lower()] = session_id
         return session_id
 
-    def _get_active_session_id(self, login: str) -> Optional[int]:
+    def _get_active_session_id(self, login: str) -> int | None:
         cache = self._get_active_sessions_cache()
         cached = cache.get(login.lower())
         if cached:
@@ -2522,8 +2341,8 @@ class TwitchMonitoringMixin:
         login: str,
         stream: dict,
         previous_state: dict,
-        twitch_user_id: Optional[str],
-    ) -> Optional[int]:
+        twitch_user_id: str | None,
+    ) -> int | None:
         login_lower = login.lower()
         stream_id = str(stream.get("id") or "").strip() or None
 
@@ -2536,18 +2355,14 @@ class TwitchMonitoringMixin:
                         (session_id,),
                     ).fetchone()
                 current_stream_id = (
-                    str(
-                        row["stream_id"] if hasattr(row, "keys") else row[0] or ""
-                    ).strip()
+                    str(row["stream_id"] if hasattr(row, "keys") else row[0] or "").strip()
                     if row
                     else ""
                 )
             except Exception:
                 current_stream_id = ""
             if current_stream_id and stream_id and current_stream_id != stream_id:
-                await self._finalize_stream_session(
-                    login=login_lower, reason="restarted"
-                )
+                await self._finalize_stream_session(login=login_lower, reason="restarted")
                 session_id = None
 
         if session_id:
@@ -2582,22 +2397,20 @@ class TwitchMonitoringMixin:
         *,
         login: str,
         stream: dict,
-        started_at_iso: Optional[str],
-        twitch_user_id: Optional[str],
-        followers_start: Optional[int],
+        started_at_iso: str | None,
+        twitch_user_id: str | None,
+        followers_start: int | None,
         title: str = "",
         language: str = "",
         is_mature: bool = False,
         tags: str = "",
-    ) -> Optional[int]:
-        start_ts = started_at_iso or datetime.now(timezone.utc).isoformat(
-            timespec="seconds"
-        )
+    ) -> int | None:
+        start_ts = started_at_iso or datetime.now(UTC).isoformat(timespec="seconds")
         viewer_count = int(stream.get("viewer_count") or 0)
         stream_id = str(stream.get("id") or "").strip() or None
         game_name = (stream.get("game_name") or "").strip() or None
         had_deadlock_initial = 1 if self._stream_is_in_target_category(stream) else 0
-        session_id: Optional[int] = None
+        session_id: int | None = None
         try:
             with storage.get_conn() as c:
                 c.execute(
@@ -2632,9 +2445,7 @@ class TwitchMonitoringMixin:
                     (session_id, login),
                 )
         except Exception:
-            log.debug(
-                "Konnte neue Twitch-Session nicht speichern: %s", login, exc_info=True
-            )
+            log.debug("Konnte neue Twitch-Session nicht speichern: %s", login, exc_info=True)
             return None
         if session_id is not None:
             self._get_active_sessions_cache()[login] = session_id
@@ -2644,7 +2455,7 @@ class TwitchMonitoringMixin:
         session_id = self._get_active_session_id(login)
         if session_id is None:
             return
-        now_dt = datetime.now(timezone.utc)
+        now_dt = datetime.now(UTC)
         viewer_count = int(stream.get("viewer_count") or 0)
         try:
             with storage.get_conn() as c:
@@ -2663,9 +2474,7 @@ class TwitchMonitoringMixin:
                     )
                     or now_dt
                 )
-                minutes_from_start = int(
-                    max(0, (now_dt - start_dt).total_seconds() // 60)
-                )
+                minutes_from_start = int(max(0, (now_dt - start_dt).total_seconds() // 60))
                 c.execute(
                     """
                     INSERT OR REPLACE INTO twitch_session_viewers
@@ -2680,9 +2489,7 @@ class TwitchMonitoringMixin:
                     ),
                 )
                 samples = int(
-                    session_row["samples"]
-                    if hasattr(session_row, "keys")
-                    else session_row[1] or 0
+                    session_row["samples"] if hasattr(session_row, "keys") else session_row[1] or 0
                 )
                 avg_prev = float(
                     session_row["avg_viewers"]
@@ -2721,22 +2528,16 @@ class TwitchMonitoringMixin:
                     ),
                 )
         except Exception:
-            log.debug(
-                "Konnte Session-Sample nicht speichern fuer %s", login, exc_info=True
-            )
+            log.debug("Konnte Session-Sample nicht speichern fuer %s", login, exc_info=True)
 
-    async def _finalize_stream_session(
-        self, *, login: str, reason: str = "done"
-    ) -> None:
+    async def _finalize_stream_session(self, *, login: str, reason: str = "done") -> None:
         login_lower = login.lower()
         cache = self._get_active_sessions_cache()
-        session_id = cache.pop(login_lower, None) or self._lookup_open_session_id(
-            login_lower
-        )
+        session_id = cache.pop(login_lower, None) or self._lookup_open_session_id(login_lower)
         if session_id is None:
             return
 
-        now_dt = datetime.now(timezone.utc)
+        now_dt = datetime.now(UTC)
         try:
             with storage.get_conn() as c:
                 session_row = c.execute(
@@ -2744,9 +2545,7 @@ class TwitchMonitoringMixin:
                     (session_id,),
                 ).fetchone()
         except Exception:
-            log.debug(
-                "Konnte Session nicht laden fuer Abschluss: %s", login, exc_info=True
-            )
+            log.debug("Konnte Session nicht laden fuer Abschluss: %s", login, exc_info=True)
             return
         if not session_row:
             return
@@ -2775,7 +2574,7 @@ class TwitchMonitoringMixin:
         except Exception:
             viewer_rows = []
 
-        def _retention_at(minutes: int, start_viewers: int) -> Optional[float]:
+        def _retention_at(minutes: int, start_viewers: int) -> float | None:
             if not viewer_rows:
                 return None
             # Find peak viewer count BEFORE the target minute as baseline
@@ -2788,7 +2587,7 @@ class TwitchMonitoringMixin:
             if peak_before <= 0:
                 return None
             # Find closest viewer count AT or AFTER target minute
-            best: Optional[tuple[int, int]] = None
+            best: tuple[int, int] | None = None
             for row in viewer_rows:
                 mins = int(_row_val(row, "minutes_from_start", 0, 0) or 0)
                 val = int(_row_val(row, "viewer_count", 1, 0) or 0)
@@ -2827,19 +2626,15 @@ class TwitchMonitoringMixin:
                     int(_row_val(vr, "viewer_count", 1, 0) or 0) for vr in viewer_rows
                 ) / max(1, len(viewer_rows))
             except Exception as exc:
-                log.debug(
-                    "Konnte Durchschnitts-Viewerzahl nicht berechnen", exc_info=exc
-                )
+                log.debug("Konnte Durchschnitts-Viewerzahl nicht berechnen", exc_info=exc)
 
         retention_5 = _retention_at(5, start_viewers)
         retention_10 = _retention_at(10, start_viewers)
         retention_20 = _retention_at(20, start_viewers)
 
-        dropoff_pct: Optional[float] = None
+        dropoff_pct: float | None = None
         dropoff_label = ""
-        prev_val = start_viewers or (
-            viewer_rows[0]["viewer_count"] if viewer_rows else 0
-        )
+        prev_val = start_viewers or (viewer_rows[0]["viewer_count"] if viewer_rows else 0)
         for row in viewer_rows:
             current_val = int(_row_val(row, "viewer_count", 1, 0) or 0)
             mins = int(_row_val(row, "minutes_from_start", 0, 0) or 0)
@@ -2864,17 +2659,13 @@ class TwitchMonitoringMixin:
                 ).fetchone()
         except Exception:
             chatter_row = None
-        unique_chatters = (
-            int(_row_val(chatter_row, "uniq", 0, 0) or 0) if chatter_row else 0
-        )
-        first_time_chatters = (
-            int(_row_val(chatter_row, "firsts", 1, 0) or 0) if chatter_row else 0
-        )
+        unique_chatters = int(_row_val(chatter_row, "uniq", 0, 0) or 0) if chatter_row else 0
+        first_time_chatters = int(_row_val(chatter_row, "firsts", 1, 0) or 0) if chatter_row else 0
         returning_chatters = max(0, unique_chatters - first_time_chatters)
 
         followers_start = _row_val(session_row, "followers_start", 19, None)
 
-        twitch_user_id: Optional[str] = None
+        twitch_user_id: str | None = None
         had_deadlock_state = False
         try:
             with storage.get_conn() as c:
@@ -2910,9 +2701,7 @@ class TwitchMonitoringMixin:
                 follower_delta = int(followers_end) - int(followers_start)
 
         target_game_lower = self._get_target_game_lower()
-        last_game_lower = (
-            (last_game_value or "").strip().lower() if last_game_value else ""
-        )
+        last_game_lower = (last_game_value or "").strip().lower() if last_game_value else ""
         had_deadlock_session = had_deadlock_state or (
             bool(target_game_lower) and last_game_lower == target_game_lower
         )
@@ -2982,23 +2771,21 @@ class TwitchMonitoringMixin:
     async def _fetch_followers_total_safe(
         self,
         *,
-        twitch_user_id: Optional[str],
+        twitch_user_id: str | None,
         login: str,
-        stream: Optional[dict],
-    ) -> Optional[int]:
+        stream: dict | None,
+    ) -> int | None:
         if self.api is None:
             return None
         user_id = twitch_user_id
         if not user_id and stream:
             user_id = stream.get("user_id")
 
-        user_token: Optional[str] = None
+        user_token: str | None = None
         try:
             if hasattr(self, "_raid_bot") and self._raid_bot and self.api is not None:
                 session = self.api.get_http_session()
-                result = await self._raid_bot.auth_manager.get_valid_token_for_login(
-                    login, session
-                )
+                result = await self._raid_bot.auth_manager.get_valid_token_for_login(login, session)
                 if result:
                     auth_user_id, token = result
                     user_id = user_id or auth_user_id
@@ -3013,17 +2800,13 @@ class TwitchMonitoringMixin:
         if not user_id:
             return None
         try:
-            return await self.api.get_followers_total(
-                str(user_id), user_token=user_token
-            )
+            return await self.api.get_followers_total(str(user_id), user_token=user_token)
         except Exception:
             log.debug("Follower-Abfrage fehlgeschlagen fuer %s", login, exc_info=True)
             return None
 
-    async def _log_stats(
-        self, streams_by_login: Dict[str, dict], category_streams: List[dict]
-    ):
-        now_utc = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
+    async def _log_stats(self, streams_by_login: dict[str, dict], category_streams: list[dict]):
+        now_utc = datetime.now(tz=UTC).isoformat(timespec="seconds")
 
         try:
             with storage.get_conn() as c:
@@ -3089,15 +2872,13 @@ class TwitchMonitoringMixin:
             log.exception("Konnte category-Stats nicht loggen")
 
     async def _get_latest_vod_preview_url(
-        self, *, login: str, twitch_user_id: Optional[str]
-    ) -> Optional[str]:
+        self, *, login: str, twitch_user_id: str | None
+    ) -> str | None:
         """Hole das juengste VOD-Thumbnail; faellt bei Fehler still auf None."""
         if self.api is None:
             return None
         try:
-            return await self.api.get_latest_vod_thumbnail(
-                user_id=twitch_user_id, login=login
-            )
+            return await self.api.get_latest_vod_thumbnail(user_id=twitch_user_id, login=login)
         except Exception:
             log.exception("Konnte VOD-Thumbnail nicht laden: %s", login)
             return None
@@ -3110,13 +2891,11 @@ class TwitchMonitoringMixin:
         title = stream.get("title") or "Live!"
         viewer_count = int(stream.get("viewer_count") or 0)
 
-        timestamp = datetime.now(tz=timezone.utc)
+        timestamp = datetime.now(tz=UTC)
         started_at_raw = stream.get("started_at")
         if isinstance(started_at_raw, str) and started_at_raw:
             try:
-                timestamp = datetime.fromisoformat(
-                    started_at_raw.replace("Z", "+00:00")
-                )
+                timestamp = datetime.fromisoformat(started_at_raw.replace("Z", "+00:00"))
             except ValueError as exc:
                 log.debug("Ungültiger started_at-Wert '%s': %s", started_at_raw, exc)
 
@@ -3132,10 +2911,8 @@ class TwitchMonitoringMixin:
 
         thumbnail_url = (stream.get("thumbnail_url") or "").strip()
         if thumbnail_url:
-            thumbnail_url = thumbnail_url.replace("{width}", "1280").replace(
-                "{height}", "720"
-            )
-            cache_bust = int(datetime.now(tz=timezone.utc).timestamp())
+            thumbnail_url = thumbnail_url.replace("{width}", "1280").replace("{height}", "720")
+            cache_bust = int(datetime.now(tz=UTC).timestamp())
             embed.set_image(url=f"{thumbnail_url}?rand={cache_bust}")
 
         embed.set_footer(text="Auf Twitch ansehen fuer mehr Deadlock-Action!")
@@ -3148,9 +2925,9 @@ class TwitchMonitoringMixin:
         *,
         login: str,
         display_name: str,
-        last_title: Optional[str],
-        last_game: Optional[str],
-        preview_image_url: Optional[str],
+        last_title: str | None,
+        last_game: str | None,
+        preview_image_url: str | None,
     ) -> discord.Embed:
         """Offline-Overlay: gleicher Stil wie live, aber klar als VOD markiert."""
 
@@ -3161,14 +2938,12 @@ class TwitchMonitoringMixin:
             title=f"{display_name} ist OFFLINE",
             description=description,
             colour=discord.Color(TWITCH_BRAND_COLOR_HEX),
-            timestamp=datetime.now(tz=timezone.utc),
+            timestamp=datetime.now(tz=UTC),
         )
 
         embed.add_field(name="Status", value="OFFLINE", inline=True)
         embed.add_field(name="Kategorie", value=game, inline=True)
-        embed.add_field(
-            name="Hinweis", value="VOD ueber den Button abrufen.", inline=False
-        )
+        embed.add_field(name="Hinweis", value="VOD ueber den Button abrufen.", inline=False)
 
         if preview_image_url:
             embed.set_image(url=preview_image_url)
@@ -3179,7 +2954,7 @@ class TwitchMonitoringMixin:
         return embed
 
     def _build_offline_link_view(
-        self, referral_url: str, *, label: Optional[str] = None
+        self, referral_url: str, *, label: str | None = None
     ) -> discord.ui.View:
         """Offline-Ansicht: einfacher Link-Button ohne Tracking."""
         view = discord.ui.View(timeout=None)
@@ -3196,9 +2971,7 @@ class TwitchMonitoringMixin:
         await super().cog_load()
         spawner = getattr(self, "_spawn_bg_task", None)
         if callable(spawner):
-            spawner(
-                self._register_persistent_live_views(), "twitch.register_live_views"
-            )
+            spawner(self._register_persistent_live_views(), "twitch.register_live_views")
         else:
             asyncio.create_task(
                 self._register_persistent_live_views(),
@@ -3210,7 +2983,7 @@ class TwitchMonitoringMixin:
         streamer_login: str,
         referral_url: str,
         tracking_token: str,
-    ) -> Optional["_TwitchLiveAnnouncementView"]:
+    ) -> _TwitchLiveAnnouncementView | None:
         """Create a persistent view that tracks button clicks before redirecting."""
         if not tracking_token:
             return None
@@ -3277,25 +3050,21 @@ class TwitchMonitoringMixin:
             view = self._build_live_view(login, referral_url, token)
             if view is None:
                 continue
-            view.bind_to_message(
-                channel_id=self._notify_channel_id, message_id=message_id
-            )
-            self._register_live_view(
-                tracking_token=token, view=view, message_id=message_id
-            )
+            view.bind_to_message(channel_id=self._notify_channel_id, message_id=message_id)
+            self._register_live_view(tracking_token=token, view=view, message_id=message_id)
 
-    def _get_live_view_registry(self) -> Dict[str, "_TwitchLiveAnnouncementView"]:
+    def _get_live_view_registry(self) -> dict[str, _TwitchLiveAnnouncementView]:
         registry = getattr(self, "_live_view_registry", None)
         if registry is None:
             registry = {}
-            setattr(self, "_live_view_registry", registry)
+            self._live_view_registry = registry
         return registry
 
     def _register_live_view(
         self,
         *,
         tracking_token: str,
-        view: "_TwitchLiveAnnouncementView",
+        view: _TwitchLiveAnnouncementView,
         message_id: int,
     ) -> None:
         if not tracking_token:
@@ -3305,11 +3074,9 @@ class TwitchMonitoringMixin:
         try:
             self.bot.add_view(view, message_id=message_id)
         except Exception:
-            log.exception(
-                "Konnte View für Twitch-Posting %s nicht registrieren", message_id
-            )
+            log.exception("Konnte View für Twitch-Posting %s nicht registrieren", message_id)
 
-    def _drop_live_view(self, tracking_token: Optional[str]) -> None:
+    def _drop_live_view(self, tracking_token: str | None) -> None:
         if not tracking_token:
             return
         registry = self._get_live_view_registry()
@@ -3326,9 +3093,9 @@ class TwitchMonitoringMixin:
         self,
         *,
         interaction: discord.Interaction,
-        view: "_TwitchLiveAnnouncementView",
+        view: _TwitchLiveAnnouncementView,
     ) -> None:
-        clicked_at = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
+        clicked_at = datetime.now(tz=UTC).isoformat(timespec="seconds")
         user = interaction.user
         user_id = str(getattr(user, "id", "") or "") or None
         username = str(user) if user else None
@@ -3379,7 +3146,7 @@ class TwitchMonitoringMixin:
     async def _handle_tracked_button_click(
         self,
         interaction: discord.Interaction,
-        view: "_TwitchLiveAnnouncementView",
+        view: _TwitchLiveAnnouncementView,
     ) -> None:
         try:
             self._log_link_click(interaction=interaction, view=view)
@@ -3390,13 +3157,9 @@ class TwitchMonitoringMixin:
         response_view = _TwitchReferralLinkView(view.referral_url)
         try:
             if interaction.response.is_done():
-                await interaction.followup.send(
-                    content, view=response_view, ephemeral=True
-                )
+                await interaction.followup.send(content, view=response_view, ephemeral=True)
             else:
-                await interaction.response.send_message(
-                    content, view=response_view, ephemeral=True
-                )
+                await interaction.response.send_message(content, view=response_view, ephemeral=True)
         except Exception:
             log.exception("Antwort mit Referral-Link fehlgeschlagen")
 
@@ -3416,7 +3179,7 @@ class _TwitchReferralLinkView(discord.ui.View):
 
 
 class _TrackedTwitchButton(discord.ui.Button):
-    def __init__(self, parent: "_TwitchLiveAnnouncementView", *, custom_id: str):
+    def __init__(self, parent: _TwitchLiveAnnouncementView, *, custom_id: str):
         super().__init__(
             label=TWITCH_BUTTON_LABEL,
             style=discord.ButtonStyle.primary,
@@ -3444,24 +3207,19 @@ class _TwitchLiveAnnouncementView(discord.ui.View):
         self.streamer_login = streamer_login
         self.referral_url = referral_url
         self.tracking_token = tracking_token
-        self.message_id: Optional[int] = None
-        self.channel_id: Optional[int] = None
+        self.message_id: int | None = None
+        self.channel_id: int | None = None
 
         custom_id = self._build_custom_id(streamer_login, tracking_token)
         self.add_item(_TrackedTwitchButton(self, custom_id=custom_id))
 
     @staticmethod
     def _build_custom_id(streamer_login: str, tracking_token: str) -> str:
-        login_part = (
-            "".join(ch for ch in streamer_login.lower() if ch.isalnum())[:24]
-            or "stream"
-        )
+        login_part = "".join(ch for ch in streamer_login.lower() if ch.isalnum())[:24] or "stream"
         token_part = (tracking_token or "")[:32] or secrets.token_hex(4)
         return f"twitch-live:{login_part}:{token_part}"
 
-    def bind_to_message(
-        self, *, channel_id: Optional[int], message_id: Optional[int]
-    ) -> None:
+    def bind_to_message(self, *, channel_id: int | None, message_id: int | None) -> None:
         self.channel_id = channel_id
         self.message_id = message_id
 

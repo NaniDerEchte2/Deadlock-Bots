@@ -9,7 +9,6 @@ Bietet UI für:
 
 import html
 import logging
-from typing import Optional
 from urllib.parse import urlencode
 
 from aiohttp import web
@@ -19,7 +18,7 @@ from .clip_manager import ClipManager
 log = logging.getLogger("TwitchStreams.SocialMediaDashboard")
 
 
-def _sanitize_log_value(value: Optional[str]) -> str:
+def _sanitize_log_value(value: str | None) -> str:
     """Prevent CRLF log-forging via untrusted values."""
     if value is None:
         return "<none>"
@@ -36,9 +35,7 @@ def _dashboard_url(**params: str) -> str:
 class SocialMediaDashboard:
     """Web Dashboard für Social Media Clip Management."""
 
-    def __init__(
-        self, clip_manager: ClipManager, auth_checker=None, auth_session_getter=None
-    ):
+    def __init__(self, clip_manager: ClipManager, auth_checker=None, auth_session_getter=None):
         """
         Args:
             clip_manager: ClipManager instance
@@ -62,7 +59,7 @@ class SocialMediaDashboard:
                 headers={"Location": "/twitch/auth/login?next=/social-media"},
             )
 
-    def _get_auth_streamer_login(self, request: web.Request) -> Optional[str]:
+    def _get_auth_streamer_login(self, request: web.Request) -> str | None:
         """Return Twitch login from dashboard OAuth session when available."""
         getter = self.auth_session_getter
         if not callable(getter):
@@ -70,9 +67,7 @@ class SocialMediaDashboard:
         try:
             session = getter(request)
         except Exception:
-            log.debug(
-                "Failed to resolve dashboard session for social-media", exc_info=True
-            )
+            log.debug("Failed to resolve dashboard session for social-media", exc_info=True)
             return None
         if not isinstance(session, dict):
             return None
@@ -82,10 +77,10 @@ class SocialMediaDashboard:
     def _resolve_streamer_scope(
         self,
         request: web.Request,
-        requested_streamer: Optional[str] = None,
+        requested_streamer: str | None = None,
         *,
         required: bool = False,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Resolve effective streamer with session-based ownership enforcement."""
         requested = str(requested_streamer or "").strip().lower()
         session_streamer = self._get_auth_streamer_login(request)
@@ -110,7 +105,7 @@ class SocialMediaDashboard:
         return requested or None
 
     @staticmethod
-    def _normalize_clip_id(raw_value) -> Optional[int]:
+    def _normalize_clip_id(raw_value) -> int | None:
         """Convert user-provided clip id into positive integer."""
         try:
             clip_id = int(raw_value)
@@ -133,9 +128,7 @@ class SocialMediaDashboard:
             ).fetchone()
         return bool(row)
 
-    def _streamer_template_owned_by_streamer(
-        self, template_id: int, streamer_login: str
-    ) -> bool:
+    def _streamer_template_owned_by_streamer(self, template_id: int, streamer_login: str) -> bool:
         from ..storage import get_conn
 
         with get_conn() as conn:
@@ -166,18 +159,10 @@ class SocialMediaDashboard:
         app.router.add_get("/social-media/api/analytics", self.analytics)
 
         # Template Management Endpoints
-        app.router.add_get(
-            "/social-media/api/templates/global", self.api_templates_global
-        )
-        app.router.add_get(
-            "/social-media/api/templates/streamer", self.api_templates_streamer
-        )
-        app.router.add_post(
-            "/social-media/api/templates/streamer", self.api_create_template
-        )
-        app.router.add_post(
-            "/social-media/api/templates/apply", self.api_apply_template
-        )
+        app.router.add_get("/social-media/api/templates/global", self.api_templates_global)
+        app.router.add_get("/social-media/api/templates/streamer", self.api_templates_streamer)
+        app.router.add_post("/social-media/api/templates/streamer", self.api_create_template)
+        app.router.add_post("/social-media/api/templates/apply", self.api_apply_template)
 
         # Batch Operations Endpoints
         app.router.add_post("/social-media/api/batch-upload", self.api_batch_upload)
@@ -190,12 +175,8 @@ class SocialMediaDashboard:
         # OAuth & Platform Management Endpoints
         app.router.add_get("/social-media/oauth/start/{platform}", self.oauth_start)
         app.router.add_get("/social-media/oauth/callback", self.oauth_callback)
-        app.router.add_post(
-            "/social-media/oauth/disconnect/{platform}", self.oauth_disconnect
-        )
-        app.router.add_get(
-            "/social-media/api/platforms/status", self.api_platforms_status
-        )
+        app.router.add_post("/social-media/oauth/disconnect/{platform}", self.oauth_disconnect)
+        app.router.add_get("/social-media/api/platforms/status", self.api_platforms_status)
 
         return app
 
@@ -1407,9 +1388,7 @@ anfordern.</p>
 
         data = await request.json()
         clip_id = self._normalize_clip_id(data.get("clip_id"))
-        platforms = data.get(
-            "platforms", []
-        )  # ['tiktok', 'youtube', 'instagram'] or 'all'
+        platforms = data.get("platforms", [])  # ['tiktok', 'youtube', 'instagram'] or 'all'
 
         if not clip_id:
             return web.json_response({"error": "clip_id required"}, status=400)
@@ -1546,9 +1525,7 @@ anfordern.</p>
             )
             if streamer and not self._clip_owned_by_streamer(clip_id, streamer):
                 return web.json_response(
-                    {
-                        "error": "forbidden: clip does not belong to authenticated streamer"
-                    },
+                    {"error": "forbidden: clip does not belong to authenticated streamer"},
                     status=403,
                 )
             if (
@@ -1557,9 +1534,7 @@ anfordern.</p>
                 and not self._streamer_template_owned_by_streamer(template_id, streamer)
             ):
                 return web.json_response(
-                    {
-                        "error": "forbidden: template does not belong to authenticated streamer"
-                    },
+                    {"error": "forbidden: template does not belong to authenticated streamer"},
                     status=403,
                 )
 
@@ -1574,9 +1549,7 @@ anfordern.</p>
                     {"success": True, "message": "Template applied successfully"}
                 )
             else:
-                return web.json_response(
-                    {"error": "Failed to apply template"}, status=500
-                )
+                return web.json_response({"error": "Failed to apply template"}, status=500)
 
         except web.HTTPException:
             raise
@@ -1602,9 +1575,7 @@ anfordern.</p>
             apply_default_template = data.get("apply_default_template", True)
 
             if not platforms:
-                return web.json_response(
-                    {"error": "platforms are required"}, status=400
-                )
+                return web.json_response({"error": "platforms are required"}, status=400)
 
             stats = await self.clip_manager.batch_upload_all_new(
                 streamer_login=streamer,
@@ -1647,9 +1618,7 @@ anfordern.</p>
             )
             if streamer and not self._clip_owned_by_streamer(clip_id, streamer):
                 return web.json_response(
-                    {
-                        "error": "forbidden: clip does not belong to authenticated streamer"
-                    },
+                    {"error": "forbidden: clip does not belong to authenticated streamer"},
                     status=403,
                 )
 
@@ -1660,13 +1629,9 @@ anfordern.</p>
             )
 
             if success:
-                return web.json_response(
-                    {"success": True, "message": "Clip marked as uploaded"}
-                )
+                return web.json_response({"success": True, "message": "Clip marked as uploaded"})
             else:
-                return web.json_response(
-                    {"error": "Failed to mark clip as uploaded"}, status=500
-                )
+                return web.json_response({"error": "Failed to mark clip as uploaded"}, status=500)
 
         except web.HTTPException:
             raise
@@ -1818,9 +1783,7 @@ anfordern.</p>
 
             safe_platform = _sanitize_log_value(platform)
             safe_streamer = _sanitize_log_value(streamer)
-            log.info(
-                "Disconnected platform=%s, streamer=%s", safe_platform, safe_streamer
-            )
+            log.info("Disconnected platform=%s, streamer=%s", safe_platform, safe_streamer)
             return web.json_response({"success": True})
 
         except Exception:

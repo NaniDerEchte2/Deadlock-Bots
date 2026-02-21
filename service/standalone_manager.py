@@ -6,10 +6,11 @@ import os
 import sys
 import time
 from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Deque, Dict, List, Optional
+from typing import Any
 
 __all__ = [
     "StandaloneBotConfig",
@@ -23,19 +24,17 @@ __all__ = [
 log = logging.getLogger(__name__)
 
 
-def _ts_from_monotonic(
-    monotonic_value: Optional[float], fallback: Optional[float]
-) -> Optional[float]:
+def _ts_from_monotonic(monotonic_value: float | None, fallback: float | None) -> float | None:
     if monotonic_value is None:
         return fallback
     offset = time.time() - time.monotonic()
     return monotonic_value + offset
 
 
-def _iso(ts: Optional[float]) -> Optional[str]:
+def _iso(ts: float | None) -> str | None:
     if ts is None:
         return None
-    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    return datetime.fromtimestamp(ts, tz=UTC).isoformat()
 
 
 @dataclass(slots=True)
@@ -49,20 +48,20 @@ class StandaloneBotConfig:
     script: Path
     workdir: Path
     description: str = ""
-    args: List[str] = field(default_factory=list)
-    env: Dict[str, str] = field(default_factory=dict)
-    executable: Optional[str] = None
-    python: Optional[str] = None
+    args: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
+    executable: str | None = None
+    python: str | None = None
     autostart: bool = False
     restart_on_crash: bool = True
-    daily_restart_at: Optional[str] = None  # format: "HH:MM" (local time)
-    max_uptime_seconds: Optional[float] = None
+    daily_restart_at: str | None = None  # format: "HH:MM" (local time)
+    max_uptime_seconds: float | None = None
     max_log_lines: int = 200
-    metrics_provider: Optional[Callable[[], Awaitable[Dict[str, Any]]]] = None
-    tags: List[str] = field(default_factory=list)
-    command_namespace: Optional[str] = None
+    metrics_provider: Callable[[], Awaitable[dict[str, Any]]] | None = None
+    tags: list[str] = field(default_factory=list)
+    command_namespace: str | None = None
 
-    def resolved_command(self) -> List[str]:
+    def resolved_command(self) -> list[str]:
         interpreter = self.executable or self.python or sys.executable
         return [interpreter, str(self.script), *self.args]
 
@@ -70,16 +69,16 @@ class StandaloneBotConfig:
 @dataclass(slots=True)
 class _RuntimeState:
     config: StandaloneBotConfig
-    process: Optional[asyncio.subprocess.Process] = None
-    started_at_monotonic: Optional[float] = None
-    started_wall: Optional[float] = None
-    last_exit_wall: Optional[float] = None
-    returncode: Optional[int] = None
+    process: asyncio.subprocess.Process | None = None
+    started_at_monotonic: float | None = None
+    started_wall: float | None = None
+    last_exit_wall: float | None = None
+    returncode: int | None = None
     restart_attempts: int = 0
     stop_requested: bool = False
-    reader_tasks: List[asyncio.Task] = field(default_factory=list)
-    log_buffer: Deque[Dict[str, Any]] = field(init=False)
-    last_scheduled_restart_day: Optional[date] = None
+    reader_tasks: list[asyncio.Task] = field(default_factory=list)
+    log_buffer: deque[dict[str, Any]] = field(init=False)
+    last_scheduled_restart_day: date | None = None
 
     def __post_init__(self) -> None:
         self.log_buffer = deque(maxlen=self.config.max_log_lines)
@@ -111,8 +110,8 @@ class StandaloneBotManager:
     """
 
     def __init__(self) -> None:
-        self._configs: Dict[str, StandaloneBotConfig] = {}
-        self._states: Dict[str, _RuntimeState] = {}
+        self._configs: dict[str, StandaloneBotConfig] = {}
+        self._states: dict[str, _RuntimeState] = {}
         self._lock = asyncio.Lock()
         self._shutting_down = False
         self._manager_started_at: float = time.time()
@@ -121,9 +120,7 @@ class StandaloneBotManager:
         if config.key in self._configs:
             raise ValueError(f"Standalone bot '{config.key}' already registered")
         if not config.script.exists():
-            raise FileNotFoundError(
-                f"Standalone script does not exist: {config.script}"
-            )
+            raise FileNotFoundError(f"Standalone script does not exist: {config.script}")
         self._configs[config.key] = config
         self._states[config.key] = _RuntimeState(config=config)
         log.debug("Registered standalone bot %s -> %s", config.key, config.script)
@@ -134,10 +131,10 @@ class StandaloneBotManager:
         except KeyError as exc:
             raise StandaloneConfigNotFound(key) from exc
 
-    def all_configs(self) -> List[StandaloneBotConfig]:
+    def all_configs(self) -> list[StandaloneBotConfig]:
         return list(self._configs.values())
 
-    async def start(self, key: str) -> Dict[str, Any]:
+    async def start(self, key: str) -> dict[str, Any]:
         async with self._lock:
             state = self._states.get(key)
             if state is None:
@@ -167,18 +164,14 @@ class StandaloneBotManager:
             state.restart_attempts = 0
             state.log_buffer.clear()
 
-            stdout_task = asyncio.create_task(
-                self._pump_stream(key, process.stdout, "stdout")
-            )
-            stderr_task = asyncio.create_task(
-                self._pump_stream(key, process.stderr, "stderr")
-            )
+            stdout_task = asyncio.create_task(self._pump_stream(key, process.stdout, "stdout"))
+            stderr_task = asyncio.create_task(self._pump_stream(key, process.stderr, "stderr"))
             waiter_task = asyncio.create_task(self._wait_for_exit(key, process))
             state.reader_tasks = [stdout_task, stderr_task, waiter_task]
 
             return self._status_for_state(state)
 
-    async def stop(self, key: str, *, kill_after: float = 10.0) -> Dict[str, Any]:
+    async def stop(self, key: str, *, kill_after: float = 10.0) -> dict[str, Any]:
         async with self._lock:
             state = self._states.get(key)
             if state is None:
@@ -194,7 +187,7 @@ class StandaloneBotManager:
             process.terminate()
         try:
             await asyncio.wait_for(process.wait(), timeout=kill_after)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.warning(
                 "Standalone bot %s did not terminate within %.1fs -> kill()",
                 key,
@@ -212,14 +205,14 @@ class StandaloneBotManager:
 
         return await self.status(key)
 
-    async def restart(self, key: str) -> Dict[str, Any]:
+    async def restart(self, key: str) -> dict[str, Any]:
         try:
             await self.stop(key)
         except StandaloneNotRunning:
             log.debug("Restart requested but %s was not running; continuing", key)
         return await self.start(key)
 
-    async def ensure_running(self, key: str) -> Dict[str, Any]:
+    async def ensure_running(self, key: str) -> dict[str, Any]:
         async with self._lock:
             state = self._states.get(key)
             if state is None:
@@ -239,9 +232,7 @@ class StandaloneBotManager:
             except StandaloneManagerError as exc:
                 log.error("Failed to autostart %s: %s", config.key, exc)
 
-    async def _maybe_restart_on_daily_schedule(
-        self, config: StandaloneBotConfig
-    ) -> None:
+    async def _maybe_restart_on_daily_schedule(self, config: StandaloneBotConfig) -> None:
         schedule = config.daily_restart_at
         if not schedule:
             return
@@ -285,9 +276,7 @@ class StandaloneBotManager:
         if not should_restart:
             return
 
-        log.info(
-            "Scheduled daily restart for %s at %s -> restart now", config.key, schedule
-        )
+        log.info("Scheduled daily restart for %s at %s -> restart now", config.key, schedule)
         try:
             await self.restart(config.key)
         except StandaloneManagerError as exc:
@@ -331,7 +320,7 @@ class StandaloneBotManager:
         except StandaloneManagerError as exc:
             log.warning("Max-uptime restart for %s failed: %s", config.key, exc)
 
-    async def set_autostart(self, key: str, enabled: bool) -> Dict[str, Any]:
+    async def set_autostart(self, key: str, enabled: bool) -> dict[str, Any]:
         async with self._lock:
             state = self._states.get(key)
             if state is None:
@@ -351,13 +340,13 @@ class StandaloneBotManager:
             except StandaloneManagerError as exc:
                 log.error("Failed to stop %s during shutdown: %s", config.key, exc)
 
-    async def status(self, key: str) -> Dict[str, Any]:
+    async def status(self, key: str) -> dict[str, Any]:
         async with self._lock:
             state = self._states.get(key)
             if state is None:
                 raise StandaloneConfigNotFound(key)
             status = self._status_for_state(state)
-        metrics: Optional[Dict[str, Any]] = None
+        metrics: dict[str, Any] | None = None
         provider = state.config.metrics_provider
         if provider:
             try:
@@ -368,8 +357,8 @@ class StandaloneBotManager:
             status["metrics"] = metrics
         return status
 
-    async def snapshot(self) -> List[Dict[str, Any]]:
-        results: List[Dict[str, Any]] = []
+    async def snapshot(self) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
         for config in self.all_configs():
             info = await self.status(config.key)
             info["config"] = {
@@ -382,7 +371,7 @@ class StandaloneBotManager:
             results.append(info)
         return results
 
-    async def logs(self, key: str, limit: int = 100) -> List[Dict[str, Any]]:
+    async def logs(self, key: str, limit: int = 100) -> list[dict[str, Any]]:
         async with self._lock:
             state = self._states.get(key)
             if state is None:
@@ -406,9 +395,7 @@ class StandaloneBotManager:
                 log.debug("Reader task for %s raised during cleanup: %s", key, exc)
         state.reader_tasks.clear()
 
-    async def _pump_stream(
-        self, key: str, stream: Optional[asyncio.StreamReader], label: str
-    ) -> None:
+    async def _pump_stream(self, key: str, stream: asyncio.StreamReader | None, label: str) -> None:
         if stream is None:
             return
         while True:
@@ -419,19 +406,15 @@ class StandaloneBotManager:
             if not line:
                 return
             text = line.decode("utf-8", errors="replace").rstrip()
-            timestamp = datetime.now(timezone.utc).isoformat()
+            timestamp = datetime.now(UTC).isoformat()
             async with self._lock:
                 state = self._states.get(key)
                 if not state:
                     continue
-                state.log_buffer.append(
-                    {"ts": timestamp, "stream": label, "line": text}
-                )
+                state.log_buffer.append({"ts": timestamp, "stream": label, "line": text})
             # log.debug("[%s][%s] %s", key, label, text)  <-- SPAM VERHINDERN
 
-    async def _wait_for_exit(
-        self, key: str, process: asyncio.subprocess.Process
-    ) -> None:
+    async def _wait_for_exit(self, key: str, process: asyncio.subprocess.Process) -> None:
         returncode = await process.wait()
         wall = time.time()
         async with self._lock:
@@ -443,7 +426,7 @@ class StandaloneBotManager:
             state.process = None
             state.reader_tasks = []
             exited_entry = {
-                "ts": datetime.fromtimestamp(wall, tz=timezone.utc).isoformat(),
+                "ts": datetime.fromtimestamp(wall, tz=UTC).isoformat(),
                 "stream": "manager",
                 "line": f"Process exited with code {returncode}",
             }
@@ -481,7 +464,7 @@ class StandaloneBotManager:
         except StandaloneManagerError as exc:
             log.error("Automatic restart for %s failed: %s", key, exc)
 
-    def _status_for_state(self, state: _RuntimeState) -> Dict[str, Any]:
+    def _status_for_state(self, state: _RuntimeState) -> dict[str, Any]:
         started_wall = state.started_wall
         if started_wall is None and state.started_at_monotonic is not None:
             started_wall = _ts_from_monotonic(state.started_at_monotonic, None)

@@ -1,8 +1,9 @@
 # cogs/welcome_dm/base.py
-import discord
 import logging
 from datetime import datetime
-from typing import Optional, Any, Dict
+from typing import Any
+
+import discord
 
 logger = logging.getLogger(__name__)
 
@@ -27,18 +28,14 @@ STATUS_RETURNING = "returning"
 STATUS_NEW_PLAYER = "new_player"
 
 # Beta-Invite Infos
-BETA_INVITE_CHANNEL_URL = (
-    "https://discord.com/channels/1289721245281292288/1428745737323155679"
-)
+BETA_INVITE_CHANNEL_URL = "https://discord.com/channels/1289721245281292288/1428745737323155679"
 BETA_INVITE_SUPPORT_CONTACT = "@earlysalty"
 
 
 def build_step_embed(
-    title: str, desc: str, step: Optional[int], total: int, color: int = 0x5865F2
+    title: str, desc: str, step: int | None, total: int, color: int = 0x5865F2
 ) -> discord.Embed:
-    emb = discord.Embed(
-        title=title, description=desc, color=color, timestamp=datetime.now()
-    )
+    emb = discord.Embed(title=title, description=desc, color=color, timestamp=datetime.now())
     footer = (
         "Einführung • Deutsche Deadlock Community"
         if step is None
@@ -48,11 +45,11 @@ def build_step_embed(
     return emb
 
 
-def _is_dm_channel(ch: Optional[discord.abc.Messageable]) -> bool:
+def _is_dm_channel(ch: discord.abc.Messageable | None) -> bool:
     return isinstance(ch, (discord.DMChannel, discord.GroupChannel))
 
 
-def _is_thread(ch: Optional[discord.abc.Messageable]) -> bool:
+def _is_thread(ch: discord.abc.Messageable | None) -> bool:
     return isinstance(ch, discord.Thread)
 
 
@@ -62,20 +59,20 @@ class StepView(discord.ui.View):
     def __init__(
         self,
         *,
-        allowed_user_id: Optional[int] = None,
-        created_at: Optional[datetime] = None,
+        allowed_user_id: int | None = None,
+        created_at: datetime | None = None,
     ):
         super().__init__(timeout=None)
         self.proceed: bool = False
         self.created_at: datetime = created_at or datetime.now()
-        self.bound_message: Optional[discord.Message] = None
-        self.allowed_user_id: Optional[int] = allowed_user_id
-        self._persistence_info: Optional[Dict[str, Any]] = None
+        self.bound_message: discord.Message | None = None
+        self.allowed_user_id: int | None = allowed_user_id
+        self._persistence_info: dict[str, Any] | None = None
 
     @staticmethod
     def _get_guild_and_member(
         inter: discord.Interaction,
-    ) -> tuple[Optional[discord.Guild], Optional[discord.Member]]:
+    ) -> tuple[discord.Guild | None, discord.Member | None]:
         # Primär über MAIN_GUILD_ID (robust, falls die Interaction z. B. in einem Thread stattfindet)
         guild = inter.client.get_guild(MAIN_GUILD_ID)  # type: ignore
         if guild is None:
@@ -87,15 +84,12 @@ class StepView(discord.ui.View):
         return guild, m
 
     async def _enforce_min_wait(
-        self, interaction: discord.Interaction, *, custom_txt: Optional[str] = None
+        self, interaction: discord.Interaction, *, custom_txt: str | None = None
     ) -> bool:
         elapsed = (datetime.now() - self.created_at).total_seconds()
         remain = int(MIN_NEXT_SECONDS - elapsed)
         if remain > 0:
-            txt = (
-                custom_txt
-                or "⏳ Kurzer Moment… bitte noch kurz lesen. Du schaffst das. 💙"
-            )
+            txt = custom_txt or "⏳ Kurzer Moment… bitte noch kurz lesen. Du schaffst das. 💙"
             try:
                 if not interaction.response.is_done():
                     await interaction.response.send_message(txt, ephemeral=True)
@@ -126,9 +120,7 @@ class StepView(discord.ui.View):
             else:
                 await interaction.message.edit(view=self)
         except Exception:
-            logger.debug(
-                "Konnte View beim Abschluss nicht aktualisieren.", exc_info=True
-            )
+            logger.debug("Konnte View beim Abschluss nicht aktualisieren.", exc_info=True)
 
         # 2) Nur in DMs löschen (in Threads soll die Historie sichtbar bleiben)
         ch = interaction.channel
@@ -141,10 +133,7 @@ class StepView(discord.ui.View):
         self.force_finish()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if (
-            self.allowed_user_id is not None
-            and interaction.user.id != self.allowed_user_id
-        ):
+        if self.allowed_user_id is not None and interaction.user.id != self.allowed_user_id:
             try:
                 if not interaction.response.is_done():
                     await interaction.response.send_message(

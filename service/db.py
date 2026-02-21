@@ -12,26 +12,24 @@
 
 from __future__ import annotations
 
-import os
+import asyncio
 import atexit
+import contextvars
+import logging
+import os
 import sqlite3
 import threading
-import logging
-import asyncio
-import contextvars
-from contextlib import contextmanager, asynccontextmanager
+from collections.abc import AsyncIterator, Iterable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Optional, AsyncIterator
-
+from typing import Any
 
 log = logging.getLogger(__name__)
 
 # ---- Timeouts (per-connection) ---------------------------------------------
 # Default: wait up to 15s on busy locks; override with ENV if needed.
 DB_BUSY_TIMEOUT_MS = int(os.environ.get("DEADLOCK_DB_BUSY_TIMEOUT_MS", "15000"))
-DB_CONNECT_TIMEOUT = float(
-    os.environ.get("DEADLOCK_DB_TIMEOUT", str(DB_BUSY_TIMEOUT_MS / 1000))
-)
+DB_CONNECT_TIMEOUT = float(os.environ.get("DEADLOCK_DB_TIMEOUT", str(DB_BUSY_TIMEOUT_MS / 1000)))
 
 # ---- Env-Keys (nur diese beiden werden unterstützt) ----
 ENV_DB_PATH = "DEADLOCK_DB_PATH"  # kompletter Pfad zur DB-Datei (höchste Prio)
@@ -56,18 +54,16 @@ STEAM_TASKS_KV_NS = "steam_tasks"
 STEAM_TASKS_KV_MAX_ROWS_KEY = "max_rows"
 
 # ---- Modulweiter Zustand ----
-_CONN: Optional[sqlite3.Connection] = None
+_CONN: sqlite3.Connection | None = None
 _LOCK = threading.RLock()
 _ASYNC_LOCK = asyncio.Lock()
-_DB_PATH_CACHED: Optional[str] = None
+_DB_PATH_CACHED: str | None = None
 
 logger = logging.getLogger(__name__)
 Row = sqlite3.Row  # Typalias für Konsumenten
 
 # ContextVar, um festzustellen ob wir uns in einem (verschachtelten) Transaction-Block befinden
-_TX_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar(
-    "deadlock_db_tx_depth", default=0
-)
+_TX_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar("deadlock_db_tx_depth", default=0)
 
 
 class DBCursorProxy:
@@ -75,9 +71,7 @@ class DBCursorProxy:
 
     __slots__ = ("_cursor", "_lock")
 
-    def __init__(
-        self, cursor: sqlite3.Cursor, lock: Optional[threading.RLock] = None
-    ) -> None:
+    def __init__(self, cursor: sqlite3.Cursor, lock: threading.RLock | None = None) -> None:
         self._cursor = cursor
         self._lock = lock
 
@@ -87,13 +81,11 @@ class DBCursorProxy:
         with self._lock:
             return fn(*args)
 
-    def execute(self, sql: str, params: Iterable[Any] = ()) -> "DBCursorProxy":
+    def execute(self, sql: str, params: Iterable[Any] = ()) -> DBCursorProxy:
         self._run(self._cursor.execute, sql, params)
         return self
 
-    def executemany(
-        self, sql: str, seq_of_params: Iterable[Iterable[Any]]
-    ) -> "DBCursorProxy":
+    def executemany(self, sql: str, seq_of_params: Iterable[Iterable[Any]]) -> DBCursorProxy:
         self._run(self._cursor.executemany, sql, seq_of_params)
         return self
 
@@ -103,7 +95,7 @@ class DBCursorProxy:
     def fetchall(self):
         return self._run(self._cursor.fetchall)
 
-    def fetchmany(self, size: Optional[int] = None):
+    def fetchmany(self, size: int | None = None):
         if size is None:
             return self._run(self._cursor.fetchmany)
         return self._run(self._cursor.fetchmany, size)
@@ -138,9 +130,7 @@ class DBConnectionProxy:
 
     __slots__ = ("_conn", "_lock_per_call")
 
-    def __init__(
-        self, conn: sqlite3.Connection, *, lock_per_call: bool = False
-    ) -> None:
+    def __init__(self, conn: sqlite3.Connection, *, lock_per_call: bool = False) -> None:
         self._conn = conn
         self._lock_per_call = lock_per_call
 
@@ -154,9 +144,7 @@ class DBConnectionProxy:
         cur = self._run(self._conn.execute, sql, params)
         return DBCursorProxy(cur, lock=_LOCK if self._lock_per_call else None)
 
-    def executemany(
-        self, sql: str, seq_of_params: Iterable[Iterable[Any]]
-    ) -> DBCursorProxy:
+    def executemany(self, sql: str, seq_of_params: Iterable[Iterable[Any]]) -> DBCursorProxy:
         cur = self._run(self._conn.executemany, sql, seq_of_params)
         return DBCursorProxy(cur, lock=_LOCK if self._lock_per_call else None)
 
@@ -290,10 +278,10 @@ def connect() -> sqlite3.Connection:
             """
         )
         # Performance PRAGMAs (2026-02-20)
-        _CONN.execute("PRAGMA cache_size=-20000")       # 20 MB page cache
-        _CONN.execute("PRAGMA mmap_size=268435456")     # 256 MB memory-mapped I/O
-        _CONN.execute("PRAGMA optimize")                # selektives ANALYZE für Query Planner
-        _CONN.execute("PRAGMA wal_checkpoint(PASSIVE)") # WAL-Größe reduzieren (VS Code Öffnen)
+        _CONN.execute("PRAGMA cache_size=-20000")  # 20 MB page cache
+        _CONN.execute("PRAGMA mmap_size=268435456")  # 256 MB memory-mapped I/O
+        _CONN.execute("PRAGMA optimize")  # selektives ANALYZE für Query Planner
+        _CONN.execute("PRAGMA wal_checkpoint(PASSIVE)")  # WAL-Größe reduzieren (VS Code Öffnen)
 
         init_schema(_CONN)
 
@@ -386,9 +374,7 @@ def _ensure_steam_tasks_cap_trigger(conn: sqlite3.Connection, max_rows: int) -> 
     )
 
 
-def prune_steam_tasks(
-    limit: Optional[int] = None, *, conn: Optional[sqlite3.Connection] = None
-) -> int:
+def prune_steam_tasks(limit: int | None = None, *, conn: sqlite3.Connection | None = None) -> int:
     """
     Trims the steam_tasks table to the newest ``limit`` rows (defaults to STEAM_TASKS_MAX_ROWS).
     Prefers deleting finished tasks; pending/running are kept whenever possible.
@@ -430,7 +416,7 @@ def get_conn() -> Iterator[DBConnectionProxy]:
         yield DBConnectionProxy(conn, lock_per_call=False)
 
 
-def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
+def init_schema(conn: sqlite3.Connection | None = None) -> None:
     """
     Legt das Schema an (idempotent). Enthält u. a.:
       - schema_version, kv_store
@@ -762,9 +748,7 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
         prune_steam_tasks(conn=c, limit=STEAM_TASKS_MAX_ROWS)
         # Nachträglich hinzugefügte Spalten idempotent sicherstellen
         try:
-            c.execute(
-                "ALTER TABLE voice_stats ADD COLUMN total_points INTEGER NOT NULL DEFAULT 0"
-            )
+            c.execute("ALTER TABLE voice_stats ADD COLUMN total_points INTEGER NOT NULL DEFAULT 0")
         except sqlite3.OperationalError as exc:
             if "duplicate column name" not in str(exc).lower():
                 raise
@@ -832,17 +816,11 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_payments_token ON beta_invite_pending_payments(token)"
             )
         except sqlite3.OperationalError:
-            log.debug(
-                "Skipping pending-payments index creation due to SQLite operational error"
-            )
+            log.debug("Skipping pending-payments index creation due to SQLite operational error")
         # Indizes ergänzen (idempotent)
         try:
-            c.execute(
-                "CREATE INDEX IF NOT EXISTS idx_steam_links_user  ON steam_links(user_id)"
-            )
-            c.execute(
-                "CREATE INDEX IF NOT EXISTS idx_steam_links_steam ON steam_links(steam_id)"
-            )
+            c.execute("CREATE INDEX IF NOT EXISTS idx_steam_links_user  ON steam_links(user_id)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_steam_links_steam ON steam_links(steam_id)")
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_quick_invites_status ON steam_quick_invites(status, expires_at)"
             )
@@ -873,9 +851,7 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_voice_log_started ON voice_session_log(started_at)"
             )
-            c.execute(
-                "CREATE INDEX IF NOT EXISTS idx_voice_log_user ON voice_session_log(user_id)"
-            )
+            c.execute("CREATE INDEX IF NOT EXISTS idx_voice_log_user ON voice_session_log(user_id)")
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_voice_log_guild ON voice_session_log(guild_id)"
             )
@@ -956,9 +932,7 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
                 "CREATE INDEX IF NOT EXISTS idx_voice_feedback_req_pending ON voice_feedback_requests(status, sent_at_ts) WHERE status = 'pending'"
             )
         except sqlite3.Error as e:
-            logger.debug(
-                "Optionale Index-Erstellung übersprungen: %s", e, exc_info=True
-            )
+            logger.debug("Optionale Index-Erstellung übersprungen: %s", e, exc_info=True)
         # hero_build_clones index (table created by build_mirror cog, may not exist yet)
         try:
             c.execute(
@@ -1061,7 +1035,7 @@ def set_kv(ns: str, k: str, v: str) -> None:
     )
 
 
-def get_kv(ns: str, k: str) -> Optional[str]:
+def get_kv(ns: str, k: str) -> str | None:
     row = query_one("SELECT v FROM kv_store WHERE ns=? AND k=?", (ns, k))
     return row[0] if row else None
 
@@ -1125,6 +1099,4 @@ def _vacuum_on_shutdown() -> None:
                 _CONN.execute("PRAGMA busy_timeout=1000;")
                 _CONN.execute("VACUUM;")
     except sqlite3.Error as e:
-        logger.debug(
-            "VACUUM beim Shutdown übersprungen/fehlgeschlagen: %s", e, exc_info=True
-        )
+        logger.debug("VACUUM beim Shutdown übersprungen/fehlgeschlagen: %s", e, exc_info=True)

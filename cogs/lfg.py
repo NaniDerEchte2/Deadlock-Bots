@@ -8,8 +8,8 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Iterable
 from datetime import datetime, timedelta
-from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import discord
 from discord.ext import commands
@@ -92,7 +92,7 @@ class SmartLFGAgent(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self.lfg_cooldowns: Dict[int, float] = {}
+        self.lfg_cooldowns: dict[int, float] = {}
         self.cooldown_seconds = 60  # Kurzer Cooldown gegen Spam
 
     async def cog_load(self) -> None:
@@ -105,7 +105,7 @@ class SmartLFGAgent(commands.Cog):
     async def cog_unload(self) -> None:
         log.info("SmartLFGAgent entladen")
 
-    def _get_user_rank(self, member: discord.Member) -> Tuple[str, int]:
+    def _get_user_rank(self, member: discord.Member) -> tuple[str, int]:
         """Ermittelt den höchsten Rang eines Users."""
         highest = ("Unbekannt", 0)
         for role in member.roles:
@@ -129,10 +129,7 @@ class SmartLFGAgent(commands.Cog):
             return True
 
         if ("suche" in text or "suchen" in text or "gesucht" in text) and (
-            "mitspieler" in text
-            or "team" in text
-            or "gruppe" in text
-            or "party" in text
+            "mitspieler" in text or "team" in text or "gruppe" in text or "party" in text
         ):
             return True
 
@@ -194,7 +191,7 @@ class SmartLFGAgent(commands.Cog):
 
         return False
 
-    async def _get_all_steam_links(self) -> Dict[int, List[str]]:
+    async def _get_all_steam_links(self) -> dict[int, list[str]]:
         """
         Holt alle Discord User -> Steam ID Mappings.
         Returns: {discord_user_id: [steam_id1, steam_id2, ...]}
@@ -208,7 +205,7 @@ class SmartLFGAgent(commands.Cog):
         """
         rows = await db.query_all_async(query)
 
-        mapping: Dict[int, List[str]] = {}
+        mapping: dict[int, list[str]] = {}
         for row in rows:
             uid = int(row["user_id"])
             sid = str(row["steam_id"])
@@ -217,8 +214,8 @@ class SmartLFGAgent(commands.Cog):
         return mapping
 
     async def _get_online_steam_users(
-        self, steam_ids: Set[str]
-    ) -> Dict[str, Tuple[str, Optional[int]]]:
+        self, steam_ids: set[str]
+    ) -> dict[str, tuple[str, int | None]]:
         """
         Filtert Steam-IDs nach Online-Status (in Deadlock).
         Returns: {steam_id: (stage, minutes)}
@@ -240,7 +237,7 @@ class SmartLFGAgent(commands.Cog):
             (steam_ids_json,),
         )
 
-        online_map: Dict[str, Tuple[str, Optional[int]]] = {}
+        online_map: dict[str, tuple[str, int | None]] = {}
 
         for row in rows:
             updated_at = row["deadlock_updated_at"] or row["last_seen_ts"]
@@ -260,8 +257,8 @@ class SmartLFGAgent(commands.Cog):
 
         return online_map
 
-    def _chunked(self, items: Iterable[int], size: int = 400) -> Iterable[List[int]]:
-        chunk: List[int] = []
+    def _chunked(self, items: Iterable[int], size: int = 400) -> Iterable[list[int]]:
+        chunk: list[int] = []
         for item in items:
             chunk.append(int(item))
             if len(chunk) >= size:
@@ -270,15 +267,13 @@ class SmartLFGAgent(commands.Cog):
         if chunk:
             yield chunk
 
-    def _parse_json_list(self, raw: Optional[str]) -> List[int]:
+    def _parse_json_list(self, raw: str | None) -> list[int]:
         if not raw:
             return []
         try:
             parsed = json.loads(raw)
             if isinstance(parsed, list):
-                return [
-                    int(x) for x in parsed if str(x).isdigit() or isinstance(x, int)
-                ]
+                return [int(x) for x in parsed if str(x).isdigit() or isinstance(x, int)]
         except Exception:
             return []
         return []
@@ -293,7 +288,7 @@ class SmartLFGAgent(commands.Cog):
         return 0.0
 
     def _time_match_score(
-        self, typical_hours: List[int], typical_days: List[int], now: datetime
+        self, typical_hours: list[int], typical_days: list[int], now: datetime
     ) -> float:
         if not typical_hours and not typical_days:
             return 0.0
@@ -317,10 +312,10 @@ class SmartLFGAgent(commands.Cog):
 
     def _get_target_lane_channel_ids(
         self,
-        guild: Optional[discord.Guild],
+        guild: discord.Guild | None,
         content_lower: str,
         author_rank_value: int,
-    ) -> List[int]:
+    ) -> list[int]:
         if not guild:
             return []
 
@@ -344,12 +339,12 @@ class SmartLFGAgent(commands.Cog):
 
     async def _fetch_activity_patterns(
         self,
-        user_ids: List[int],
-    ) -> Dict[int, Tuple[List[int], List[int], int]]:
+        user_ids: list[int],
+    ) -> dict[int, tuple[list[int], list[int], int]]:
         if not user_ids:
             return {}
 
-        patterns: Dict[int, Tuple[List[int], List[int], int]] = {}
+        patterns: dict[int, tuple[list[int], list[int], int]] = {}
         for chunk in self._chunked(user_ids):
             chunk_json = json.dumps([int(uid) for uid in chunk])
             rows = await db.query_all_async(
@@ -368,7 +363,7 @@ class SmartLFGAgent(commands.Cog):
                 patterns[uid] = (hours, days, score)
         return patterns
 
-    async def _fetch_co_player_stats(self, user_id: int) -> Dict[int, Tuple[int, int]]:
+    async def _fetch_co_player_stats(self, user_id: int) -> dict[int, tuple[int, int]]:
         rows = await db.query_all_async(
             """
             SELECT co_player_id, sessions_together, total_minutes_together
@@ -377,21 +372,21 @@ class SmartLFGAgent(commands.Cog):
             """,
             (user_id,),
         )
-        stats: Dict[int, Tuple[int, int]] = {}
+        stats: dict[int, tuple[int, int]] = {}
         for row in rows:
             stats[int(row[0])] = (int(row[1] or 0), int(row[2] or 0))
         return stats
 
     async def _fetch_lane_activity_users(
         self,
-        user_ids: List[int],
-        channel_ids: List[int],
+        user_ids: list[int],
+        channel_ids: list[int],
         cutoff_str: str,
-    ) -> Set[int]:
+    ) -> set[int]:
         if not user_ids or not channel_ids:
             return set()
 
-        result: Set[int] = set()
+        result: set[int] = set()
         channel_ids_json = json.dumps([int(cid) for cid in channel_ids])
         for chunk in self._chunked(user_ids):
             chunk_json = json.dumps([int(uid) for uid in chunk])
@@ -411,12 +406,12 @@ class SmartLFGAgent(commands.Cog):
 
     def _infer_target_rank_from_coplayers(
         self,
-        guild: Optional[discord.Guild],
-        co_player_ids: List[int],
-    ) -> Optional[int]:
+        guild: discord.Guild | None,
+        co_player_ids: list[int],
+    ) -> int | None:
         if not guild or not co_player_ids:
             return None
-        ranks: List[int] = []
+        ranks: list[int] = []
         for co_id in co_player_ids:
             member = guild.get_member(co_id)
             if not member:
@@ -434,7 +429,7 @@ class SmartLFGAgent(commands.Cog):
         author: discord.Member,
         message_content: str,
         author_rank_value: int,
-    ) -> List[Dict[str, object]]:
+    ) -> list[dict[str, object]]:
         guild = author.guild
         if not guild:
             return []
@@ -448,9 +443,7 @@ class SmartLFGAgent(commands.Cog):
         target_rank = author_rank_value
         rank_strict = True
         if target_rank == 0:
-            inferred = self._infer_target_rank_from_coplayers(
-                guild, list(co_player_stats.keys())
-            )
+            inferred = self._infer_target_rank_from_coplayers(guild, list(co_player_stats.keys()))
             if inferred:
                 target_rank = inferred
             else:
@@ -463,9 +456,9 @@ class SmartLFGAgent(commands.Cog):
         lane_channel_ids = self._get_target_lane_channel_ids(
             guild, content_lower, author_rank_value
         )
-        cutoff_str = (
-            datetime.utcnow() - timedelta(days=ACTIVITY_LOOKBACK_DAYS)
-        ).strftime("%Y-%m-%d %H:%M:%S")
+        cutoff_str = (datetime.utcnow() - timedelta(days=ACTIVITY_LOOKBACK_DAYS)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
         lane_active_users = await self._fetch_lane_activity_users(
             candidate_ids, lane_channel_ids, cutoff_str
         )
@@ -473,7 +466,7 @@ class SmartLFGAgent(commands.Cog):
         all_steam_ids = {sid for sids in steam_links.values() for sid in sids}
         online_users = await self._get_online_steam_users(all_steam_ids)
 
-        user_presence: Dict[int, Tuple[str, Optional[int]]] = {}
+        user_presence: dict[int, tuple[str, int | None]] = {}
         for discord_id, steam_ids in steam_links.items():
             for sid in steam_ids:
                 if sid in online_users:
@@ -481,7 +474,7 @@ class SmartLFGAgent(commands.Cog):
                     break
 
         now = datetime.utcnow()
-        candidates: List[Dict[str, object]] = []
+        candidates: list[dict[str, object]] = []
 
         for discord_id in candidate_ids:
             if discord_id == author.id:
@@ -512,9 +505,7 @@ class SmartLFGAgent(commands.Cog):
             activity_sessions = pattern[2] if pattern else 0
 
             time_score = self._time_match_score(typical_hours, typical_days, now)
-            activity_score = (
-                min(1.0, activity_sessions / 10.0) if activity_sessions > 0 else 0.0
-            )
+            activity_score = min(1.0, activity_sessions / 10.0) if activity_sessions > 0 else 0.0
 
             lane_score = 1.0 if discord_id in lane_active_users else 0.0
 
@@ -577,11 +568,11 @@ class SmartLFGAgent(commands.Cog):
     def _build_player_lines(
         self,
         guild: discord.Guild,
-        candidates: List[Dict[str, object]],
-    ) -> Tuple[List[str], int, int]:
-        in_lobby: List[str] = []
-        in_match: List[str] = []
-        in_active: List[str] = []
+        candidates: list[dict[str, object]],
+    ) -> tuple[list[str], int, int]:
+        in_lobby: list[str] = []
+        in_match: list[str] = []
+        in_active: list[str] = []
 
         for cand in candidates:
             discord_id = int(cand.get("user_id", 0) or 0)
@@ -605,7 +596,7 @@ class SmartLFGAgent(commands.Cog):
         lobby_count = len(in_lobby)
         match_count = len(in_match)
 
-        lines: List[str] = []
+        lines: list[str] = []
         remaining = MAX_MENTION_PINGS
 
         if in_lobby:
@@ -712,9 +703,7 @@ class SmartLFGAgent(commands.Cog):
         Verarbeitet die Anfrage via OpenAI (ChatGPT).
         """
         output_channel = message.guild.get_channel(OUTPUT_CHANNEL_ID)
-        if not output_channel or not isinstance(
-            output_channel, discord.abc.Messageable
-        ):
+        if not output_channel or not isinstance(output_channel, discord.abc.Messageable):
             log.warning(
                 "Output-Channel %s nicht gefunden oder nicht messageable. Fallback auf LFG-Channel.",
                 OUTPUT_CHANNEL_ID,
@@ -728,7 +717,7 @@ class SmartLFGAgent(commands.Cog):
         rank_name, rank_val = self._get_user_rank(message.author)
         is_new_player = rank_val <= 5  # Unbekannt (0) bis Ritualist (5)
 
-        player_lines: List[str] = []
+        player_lines: list[str] = []
         try:
             matching_players = await self._find_matching_players(
                 message.author,
@@ -806,22 +795,18 @@ class SmartLFGAgent(commands.Cog):
                 temperature=0.7,
             )
 
-        clean_text: Optional[str] = None
+        clean_text: str | None = None
         if response_text:
             # Clean up potential markdown code blocks provided by AI
-            cleaned = (
-                response_text.replace("```markdown", "").replace("```", "").strip()
-            )
+            cleaned = response_text.replace("```markdown", "").replace("```", "").strip()
             if cleaned.upper() != NO_LFG_TOKEN:
                 clean_text = cleaned
 
-        response_parts: List[str] = []
+        response_parts: list[str] = []
 
         if player_lines:
             header = (
-                "sucht Mitspieler!"
-                if prefix
-                else f"{message.author.mention} sucht Mitspieler!"
+                "sucht Mitspieler!" if prefix else f"{message.author.mention} sucht Mitspieler!"
             )
             response_parts.append(header + "\n" + "\n".join(player_lines))
 

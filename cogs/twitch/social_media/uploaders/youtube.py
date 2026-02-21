@@ -6,7 +6,6 @@ Docs: https://developers.google.com/youtube/v3/docs/videos/insert
 
 import asyncio
 from pathlib import Path
-from typing import Dict, List, Optional
 
 try:
     from google.oauth2.credentials import Credentials
@@ -39,10 +38,10 @@ class YouTubeUploader(PlatformUploader):
 
         self.client_id = client_id
         self.client_secret = client_secret
-        self.credentials: Optional[Credentials] = None
+        self.credentials: Credentials | None = None
         self.youtube = None
 
-    async def authenticate(self, credentials: Dict) -> bool:
+    async def authenticate(self, credentials: dict) -> bool:
         """
         OAuth 2.0 authentication.
 
@@ -76,7 +75,7 @@ class YouTubeUploader(PlatformUploader):
         video_path: str,
         title: str,
         description: str,
-        hashtags: List[str],
+        hashtags: list[str],
         **kwargs,
     ) -> str:
         """
@@ -106,9 +105,7 @@ class YouTubeUploader(PlatformUploader):
             # - 9:16 aspect ratio
             # - #Shorts in title or description
 
-            full_description = (
-                f"{description}\n\n{self.format_hashtags(hashtags)}\n\n#Shorts"
-            )
+            full_description = f"{description}\n\n{self.format_hashtags(hashtags)}\n\n#Shorts"
             full_description = full_description[:5000]  # Max 5000 chars
 
             body = {
@@ -136,7 +133,7 @@ class YouTubeUploader(PlatformUploader):
             self.log.exception("YouTube upload failed")
             raise
 
-    def _upload_sync(self, video_path: str, body: Dict) -> str:
+    def _upload_sync(self, video_path: str, body: dict) -> str:
         """Synchronous upload (runs in executor)."""
         media = MediaFileUpload(
             video_path,
@@ -155,14 +152,12 @@ class YouTubeUploader(PlatformUploader):
         while response is None:
             status, response = request.next_chunk()
             if status:
-                self.log.info(
-                    "YouTube upload progress: %d%%", int(status.progress() * 100)
-                )
+                self.log.info("YouTube upload progress: %d%%", int(status.progress() * 100))
 
         video_id = response["id"]
         return video_id
 
-    async def get_video_status(self, video_id: str) -> Dict:
+    async def get_video_status(self, video_id: str) -> dict:
         """
         Check video processing status.
 
@@ -186,7 +181,7 @@ class YouTubeUploader(PlatformUploader):
             self.log.exception("Failed to get video status")
             return {}
 
-    def _get_status_sync(self, video_id: str) -> Dict:
+    def _get_status_sync(self, video_id: str) -> dict:
         """Synchronous status fetch (runs in executor)."""
         request = self.youtube.videos().list(
             part="status,processingDetails",
@@ -198,9 +193,7 @@ class YouTubeUploader(PlatformUploader):
             item = response["items"][0]
             return {
                 "status": item["status"]["uploadStatus"],
-                "processing_status": item.get("processingDetails", {}).get(
-                    "processingStatus"
-                ),
+                "processing_status": item.get("processingDetails", {}).get("processingStatus"),
             }
         return {}
 
@@ -228,7 +221,5 @@ class YouTubeUploader(PlatformUploader):
             raise ValueError(f"Video file not found: {video_path}")
 
         file_size_mb = path.stat().st_size / (1024 * 1024)
-        self.log.info(
-            "YouTube video validation passed: %s (%.1f MB)", video_path, file_size_mb
-        )
+        self.log.info("YouTube video validation passed: %s (%.1f MB)", video_path, file_size_mb)
         return True
