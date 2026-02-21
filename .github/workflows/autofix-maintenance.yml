@@ -40,7 +40,7 @@ jobs:
           set -euo pipefail
 
           echo "Installing tools..."
-          python -m pip install -r .github/workflows/requirements-tools.txt
+          python -m pip install --require-hashes -r .github/requirements-tools-locked.txt
 
           echo "Running ruff --fix..."
           ruff check . --fix || true

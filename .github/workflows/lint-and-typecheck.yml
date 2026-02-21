@@ -22,7 +22,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install Ruff
-        run: python -m pip install -r .github/workflows/requirements-tools.txt
+        run: python -m pip install --require-hashes -r .github/requirements-tools-locked.txt
 
       - name: Run Ruff Check
         run: ruff check . --output-format=github --target-version=py311 --exit-zero
@@ -43,11 +43,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r .github/workflows/requirements-tools.txt
-          # Install minimal deps for better analysis if needed
-          python -m pip install -r requirements.txt || true
+        run: python -m pip install --require-hashes -r .github/requirements-tools-locked.txt
 
       - name: Run Mypy
         run: |
