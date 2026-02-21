@@ -1,13 +1,9 @@
 import sys
-import os
 from pathlib import Path
 
 # Add root to sys.path
 root = Path(__file__).parent.parent
 sys.path.insert(0, str(root))
-
-# Mock some environment variables
-os.environ["MASTER_DASHBOARD_PUBLIC_URL"] = "https://admin.earlysalty.de"
 
 from service.dashboard import DashboardServer
 
