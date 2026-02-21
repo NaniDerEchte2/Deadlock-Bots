@@ -1592,8 +1592,9 @@ class TempVoiceCore(commands.Cog):
                 asyncio.create_task(self._apply_owner_settings_background(lane, member.id))
 
                 # Manueller Trigger für Rang-Permissions & Name im Manager
-                # NUR für Ranked/Grind Lanes – Chill/Casual Lanes bekommen KEINE Rank-Restrictions
-                if mgr and lane.category_id in MINRANK_CATEGORY_IDS:
+                # NUR für Lanes die vom RolePermissionVoiceManager überwacht werden (Ranked/Grind).
+                # is_monitored_channel prüft monitored_categories – das schließt Chill/Normal Lanes aus.
+                if mgr and mgr.is_monitored_channel(lane):
                     async def _delayed_rank_setup(ch, m, mgr_ref):
                         try:
                             # 1s warten damit Discord den Member im Channel sieht
