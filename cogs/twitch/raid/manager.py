@@ -201,9 +201,8 @@ class RaidAuthManager:
         expires_at_iso: str,
     ) -> None:
         """
-        Schreibt refreshte Tokens dual: Klartext + verschlüsselt.
-
-        Wenn enc fehlschlägt, wird trotzdem Klartext gespeichert (mit WARNING).
+        Schreibt refreshte Tokens verschlüsselt in die DB.
+        Klartext-Spalten werden zur Sicherheit nur noch mit 'ENC' überschrieben.
         """
         access_enc = self._try_encrypt(
             access_token,
@@ -215,23 +214,24 @@ class RaidAuthManager:
             f"twitch_raid_auth|refresh_token|{user_id}|1",
             f"refresh_token|user={_mask_log_identifier(user_id)}",
         )
-        if access_enc is None:
-            log.warning(
-                "Refresh for user_id=%s: encrypted write failed; fallback value saved.",
+
+        if access_enc is None or refresh_enc is None:
+            log.error(
+                "Refresh for user_id=%s: encrypted write failed; tokens NOT updated to avoid lockout.",
                 _mask_log_identifier(user_id),
             )
+            return
+
         conn.execute(
             """
             UPDATE twitch_raid_auth
-               SET access_token = ?, refresh_token = ?,
+               SET access_token = 'ENC', refresh_token = 'ENC',
                    access_token_enc = ?, refresh_token_enc = ?,
                    enc_version = 1, enc_kid = 'v1',
                    token_expires_at = ?, last_refreshed_at = CURRENT_TIMESTAMP
              WHERE twitch_user_id = ?
             """,
             (
-                access_token,
-                refresh_token,
                 access_enc,
                 refresh_enc,
                 expires_at_iso,
@@ -572,21 +572,23 @@ class RaidAuthManager:
         return refreshed_count
 
     async def snapshot_and_flag_reauth(self) -> int:
-        """Snapshot aktuelle Tokens → legacy_*, setzt needs_reauth=1 für alle.
+        """Setzt needs_reauth=1 für alle und löscht Klartext-Tokens.
         Gibt Anzahl betroffener Zeilen zurück."""
         with get_conn() as conn:
             conn.execute("""
                 UPDATE twitch_raid_auth SET
-                    legacy_access_token  = access_token,
-                    legacy_refresh_token = refresh_token,
+                    legacy_access_token  = NULL,
+                    legacy_refresh_token = NULL,
                     legacy_scopes        = scopes,
                     legacy_saved_at      = CURRENT_TIMESTAMP,
-                    needs_reauth         = 1
-                WHERE access_token IS NOT NULL
+                    needs_reauth         = 1,
+                    access_token         = 'ENC',
+                    refresh_token        = 'ENC'
+                WHERE access_token <> 'ENC'
             """)
             count = conn.execute("SELECT changes()").fetchone()[0]
         log.info(
-            "snapshot_and_flag_reauth: %d Tokens gesichert, needs_reauth=1 gesetzt",
+            "snapshot_and_flag_reauth: %d Tokens auf needs_reauth=1 gesetzt und Klartext gelöscht",
             count,
         )
         return count
@@ -630,7 +632,7 @@ class RaidAuthManager:
         expires_in: int,
         scopes: List[str],
     ) -> None:
-        """Speichert OAuth-Tokens in der Datenbank."""
+        """Speichert OAuth-Tokens verschlüsselt in der Datenbank."""
         now = datetime.now(timezone.utc)
         expires_at = now.timestamp() + expires_in
         expires_at_iso = datetime.fromtimestamp(expires_at, timezone.utc).isoformat()
@@ -646,11 +648,13 @@ class RaidAuthManager:
             f"twitch_raid_auth|refresh_token|{twitch_user_id}|1",
             f"refresh_token|user={_mask_log_identifier(twitch_user_id)}",
         )
-        if access_enc is None:
-            log.warning(
-                "save_auth für user_id=%s: enc-Verschlüsselung fehlgeschlagen – nur Klartext gespeichert.",
+
+        if access_enc is None or refresh_enc is None:
+            log.error(
+                "save_auth für user_id=%s: enc-Verschlüsselung fehlgeschlagen – Speicherung abgebrochen (Sicherheits-Policy).",
                 _mask_log_identifier(twitch_user_id),
             )
+            return
 
         with get_conn() as conn:
             conn.execute(
@@ -659,13 +663,11 @@ class RaidAuthManager:
                 (twitch_user_id, twitch_login, access_token, refresh_token,
                  access_token_enc, refresh_token_enc, enc_version, enc_kid,
                  token_expires_at, scopes, authorized_at, raid_enabled)
-                VALUES (?, ?, ?, ?, ?, ?, 1, 'v1', ?, ?, ?, 1)
+                VALUES (?, ?, 'ENC', 'ENC', ?, ?, 1, 'v1', ?, ?, ?, 1)
                 """,
                 (
                     twitch_user_id,
                     twitch_login,
-                    access_token,
-                    refresh_token,
                     access_enc,
                     refresh_enc,
                     expires_at_iso,

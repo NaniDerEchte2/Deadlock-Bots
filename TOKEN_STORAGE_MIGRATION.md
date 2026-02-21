@@ -216,10 +216,10 @@ conn.execute(
 | 0. Encryption Foundation | ✅ DONE | 2026-02-18 | Master Key + field_crypto.py |
 | 1. Schema Extend | ✅ DONE | 2026-02-18 | _enc Spalten hinzugefuegt |
 | 2. Backfill Twitch | ✅ DONE | 2026-02-18 | 17 Tokens migriert |
-| 3. Dual-Write | 🚧 IN PROGRESS | jetzt | Neue Tokens in beide Spalten |
-| 4. Prefer Encrypted | ⏳ TODO | nach Test | Lesen aus _enc, Fallback zu plaintext |
-| 5. Require Encrypted | ⏳ TODO | in 1-2 Wochen | Nur noch _enc, kein Fallback |
-| 6. Cleanup (optional) | ⏳ TODO | in 1 Monat | DROP COLUMN access_token |
+| 3. Dual-Write | ✅ DONE | 2026-02-21 | Beendet, umgestellt auf Enc-only |
+| 4. Prefer Encrypted | ✅ DONE | 2026-02-21 | Lesen nur noch aus _enc |
+| 5. Require Encrypted | ✅ DONE | 2026-02-21 | Kein Fallback mehr zu Plaintext |
+| 6. Cleanup | ✅ DONE | 2026-02-21 | Klartext-Spalten auf 'ENC' gesetzt |
 
 ---
 
@@ -325,18 +325,18 @@ Migration complete!
 
 ---
 
-## Next Steps
+## Next Steps (COMPLETED)
 
 1. ✅ **Test Bot Restart** - Pruefen ob Encrypted Tokens korrekt geladen werden
-2. ✅ **Test Token Refresh** - Neuer Token sollte in beide Spalten geschrieben werden
-3. ⏳ **Update Raid Manager** - Token-Refresh auf Dual-Write umstellen
-4. ⏳ **Test Social Media OAuth** - TikTok/YouTube/Instagram Verbindung testen
-5. ⏳ **Monitor Auto-Refresh** - Token-Refresh-Worker testen
-6. ⏳ **Phase 4 Rollout** - Prefer Encrypted Read aktivieren
-7. ⏳ **Phase 5 Rollout** - Require Encrypted aktivieren
+2. ✅ **Test Token Refresh** - Neuer Token wird nur noch verschluesselt gespeichert
+3. ✅ **Update Raid Manager** - Token-Refresh auf Encrypted-only umgestellt
+4. ✅ **Test Social Media OAuth** - TikTok/YouTube/Instagram Verbindung (Enc-only)
+5. ✅ **Monitor Auto-Refresh** - Token-Refresh-Worker aktiv
+6. ✅ **Phase 5 Rollout** - Require Encrypted ist aktiv (Klartext gelöscht)
+7. ✅ **Cleanup** - Alle Plaintext-Tokens in DB wurden mit 'ENC' überschrieben
 
 ---
 
-**Stand:** 2026-02-18, 15:30 Uhr
-**Version:** 1.0
-**Letzte Aenderung:** Initial documentation after encryption implementation
+**Stand:** 2026-02-21, 14:00 Uhr
+**Version:** 1.1 (Full Encryption Complete)
+**Letzte Aenderung:** Full migration to encrypted storage; removed dual-write and cleared plaintext tokens.

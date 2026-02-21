@@ -399,8 +399,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS twitch_raid_auth (
             twitch_user_id       TEXT PRIMARY KEY,
             twitch_login         TEXT NOT NULL,
-            access_token         TEXT NOT NULL,
-            refresh_token        TEXT NOT NULL,
+            access_token         TEXT DEFAULT 'ENC',
+            refresh_token        TEXT DEFAULT 'ENC',
             token_expires_at     TEXT NOT NULL,
             scopes               TEXT NOT NULL,
             authorized_at        TEXT DEFAULT CURRENT_TIMESTAMP,
