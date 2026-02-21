@@ -87,10 +87,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: 'Set up uv'
-        if: hashFiles('**/requirements*.txt') != ''
-        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
-
       - name: 'Python Dependency Scan (Recursive)'
         if: hashFiles('**/requirements*.txt') != ''
         run: |
@@ -98,17 +94,19 @@ jobs:
           found=0
           audit_fail=0
 
+          python -m pip install pip-audit==2.8.2 safety==3.7.0
+
           while IFS= read -r req_file; do
             found=1
             rel_path="${req_file#./}"
             safe_name="$(echo "$rel_path" | sed 's#[^A-Za-z0-9._-]#_#g')"
             echo "Auditing Python dependencies in: $req_file"
 
-            if ! uvx --with pip-audit==2.10.0 pip-audit -r "$req_file" --format json --output "dependency-reports/python/${safe_name}.pip-audit.json"; then
+            if ! pip-audit -r "$req_file" --format json --output "dependency-reports/python/${safe_name}.pip-audit.json"; then
               audit_fail=1
             fi
 
-            if ! uvx --with safety==3.7.0 safety check -r "$req_file" --json > "dependency-reports/python/${safe_name}.safety.json"; then
+            if ! safety check -r "$req_file" --json > "dependency-reports/python/${safe_name}.safety.json"; then
               audit_fail=1
             fi
           done < <(find . -type f -name "requirements*.txt" \

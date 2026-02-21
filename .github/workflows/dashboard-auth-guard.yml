@@ -24,9 +24,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Set up uv
-        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
-
       - name: Start Dashboard Guard Test Server
         env:
           DEADLOCK_DB_PATH: ${{ github.workspace }}/.auth-guard/deadlock.sqlite3
@@ -45,20 +42,21 @@ jobs:
           web.run_app(app, host="127.0.0.1", port=8788, access_log=None)
           PY
 
-          uv run \
-            --with aiohttp==3.12.15 \
-            --with aiohttp-jinja2==1.6 \
-            --with aiohttp-session==2.12.1 \
-            --with aiohttp-basicauth==1.1.0 \
-            --with "discord.py==2.6.3" \
-            --with jinja2==3.1.6 \
-            --with pydantic==2.11.9 \
-            --with pydantic-settings==2.10.1 \
-            --with beautifulsoup4==4.13.5 \
-            --with cryptography==42.0.8 \
-            --with requests==2.32.3 \
-            --with aiosqlite==0.21.0 \
-            -- python .github/tmp/run_dashboard_auth_guard.py > dashboard-auth-guard.log 2>&1 &
+          python -m pip install \
+            aiohttp==3.13.3 \
+            aiohttp-jinja2==1.6 \
+            aiohttp-session==2.12.1 \
+            aiohttp-basicauth==1.1.0 \
+            "discord.py==2.6.4" \
+            jinja2==3.1.6 \
+            pydantic==2.12.5 \
+            pydantic-settings==2.13.1 \
+            beautifulsoup4==4.14.3 \
+            cryptography==46.0.5 \
+            requests==2.32.5 \
+            aiosqlite==0.22.1
+          
+          python .github/tmp/run_dashboard_auth_guard.py > dashboard-auth-guard.log 2>&1 &
           echo $! > dashboard-auth-guard.pid
 
       - name: Wait for Dashboard Readiness
