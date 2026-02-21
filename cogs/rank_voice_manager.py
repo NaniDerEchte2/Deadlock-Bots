@@ -17,6 +17,13 @@ except Exception:  # Fallback, falls TempVoice nicht geladen ist
 
 DB_PATH = Path(db_path())  # alias, damit alter Code weiterläuft
 
+# Sub-Rang Score-System: score = tier * 6 + subrank (1-6)
+# Initiate 1 = 7, Eternus 6 = 72
+RANKED_SUBRANK_TOLERANCE = 9   # ±9 Sub-Rang-Punkte = ±1.5 Hauptränge
+GRIND_SUBRANK_TOLERANCE = 12   # ±12 Sub-Rang-Punkte = ±2 Hauptränge
+SCORE_MIN_ABSOLUTE = 7         # Initiate 1
+SCORE_MAX_ABSOLUTE = 72        # Eternus 6
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -75,7 +82,7 @@ class RolePermissionVoiceManager(commands.Cog):
             "Eternus": 11,
         }
 
-        # Balancing-Regeln (Rang -> (minus, plus)); Standard: +/-1 (Ranked)
+        # Balancing-Regeln (Rang -> (minus, plus)); Standard: ±1 (Ranked)
         self.balancing_rules = {rank_name: (-1, 1) for rank_name in self.deadlock_ranks.keys()}
 
         # Cache
@@ -83,8 +90,8 @@ class RolePermissionVoiceManager(commands.Cog):
         self.guild_roles_cache: dict[int, dict[int, discord.Role]] = {}
 
         # Laufzeit-State (wird beim Start aus DB geladen)
-        # {channel_id: (user_id, rank_name, rank_value, allowed_min, allowed_max)}
-        self.channel_anchors: dict[int, tuple[int, str, int, int, int]] = {}
+        # {channel_id: (user_id, rank_name, rank_value, allowed_min, allowed_max, anchor_subrank, score_min, score_max)}
+        self.channel_anchors: dict[int, tuple[int, str, int, int, int, int, int, int]] = {}
         # {channel_id: {"enabled": bool}}
         self.channel_settings: dict[int, dict[str, bool]] = {}
         # Nach Initial-Setup dürfen Permissions manuell angepasst werden
@@ -134,11 +141,24 @@ class RolePermissionVoiceManager(commands.Cog):
                 rank_value   INTEGER NOT NULL,
                 allowed_min  INTEGER NOT NULL,
                 allowed_max  INTEGER NOT NULL,
+                anchor_subrank INTEGER DEFAULT 3,
+                score_min    INTEGER,
+                score_max    INTEGER,
                 created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at   TEXT DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
+        # Migration: Neue Spalten für ältere Datenbanken hinzufügen
+        for _migration_sql in [
+            "ALTER TABLE voice_channel_anchors ADD COLUMN anchor_subrank INTEGER DEFAULT 3",
+            "ALTER TABLE voice_channel_anchors ADD COLUMN score_min INTEGER",
+            "ALTER TABLE voice_channel_anchors ADD COLUMN score_max INTEGER",
+        ]:
+            try:
+                await db.execute_async(_migration_sql)
+            except Exception:
+                pass  # Spalte existiert bereits
 
     async def _db_load_state_for_guild(self, guild: discord.Guild):
         """Lädt Settings & Anker der Gilde in die In-Memory-Maps."""
@@ -155,18 +175,34 @@ class RolePermissionVoiceManager(commands.Cog):
         # Anchors
         rows = await db.query_all_async(
             """
-            SELECT channel_id, user_id, rank_name, rank_value, allowed_min, allowed_max
+            SELECT channel_id, user_id, rank_name, rank_value, allowed_min, allowed_max,
+                   anchor_subrank, score_min, score_max
             FROM voice_channel_anchors WHERE guild_id=?
             """,
             (guild.id,),
         )
         for r in rows:
+            rank_value = int(r["rank_value"])
+            anchor_subrank = int(r["anchor_subrank"] or 3)
+            score_min_raw = r["score_min"]
+            score_max_raw = r["score_max"]
+            if score_min_raw is None:
+                # Altdaten: Score aus Rang berechnen (Ranked-Toleranz als Standard)
+                anchor_score = rank_value * 6 + anchor_subrank
+                score_min = max(SCORE_MIN_ABSOLUTE, anchor_score - RANKED_SUBRANK_TOLERANCE)
+                score_max = min(SCORE_MAX_ABSOLUTE, anchor_score + RANKED_SUBRANK_TOLERANCE)
+            else:
+                score_min = int(score_min_raw)
+                score_max = int(score_max_raw)
             self.channel_anchors[int(r["channel_id"])] = (
                 int(r["user_id"]),
                 str(r["rank_name"]),
-                int(r["rank_value"]),
+                rank_value,
                 int(r["allowed_min"]),
                 int(r["allowed_max"]),
+                anchor_subrank,
+                score_min,
+                score_max,
             )
 
     async def _db_upsert_setting(self, channel: discord.VoiceChannel, enabled: bool):
@@ -189,17 +225,23 @@ class RolePermissionVoiceManager(commands.Cog):
         rank_value: int,
         allowed_min: int,
         allowed_max: int,
+        anchor_subrank: int,
+        score_min: int,
+        score_max: int,
     ):
         await db.execute_async(
             """
-            INSERT INTO voice_channel_anchors(channel_id, guild_id, user_id, rank_name, rank_value, allowed_min, allowed_max)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO voice_channel_anchors(channel_id, guild_id, user_id, rank_name, rank_value, allowed_min, allowed_max, anchor_subrank, score_min, score_max)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(channel_id) DO UPDATE SET
                 user_id=excluded.user_id,
                 rank_name=excluded.rank_name,
                 rank_value=excluded.rank_value,
                 allowed_min=excluded.allowed_min,
                 allowed_max=excluded.allowed_max,
+                anchor_subrank=excluded.anchor_subrank,
+                score_min=excluded.score_min,
+                score_max=excluded.score_max,
                 updated_at=CURRENT_TIMESTAMP
             """,
             (
@@ -210,6 +252,9 @@ class RolePermissionVoiceManager(commands.Cog):
                 rank_value,
                 allowed_min,
                 allowed_max,
+                anchor_subrank,
+                score_min,
+                score_max,
             ),
         )
 
@@ -217,6 +262,40 @@ class RolePermissionVoiceManager(commands.Cog):
         await db.execute_async(
             "DELETE FROM voice_channel_anchors WHERE channel_id=?", (channel.id,)
         )
+
+    # -------------------- Sub-Rang DB-Abfragen --------------------
+
+    async def get_user_subrank_from_db(self, member: discord.Member) -> int:
+        """Liest Sub-Rang des primären Steam-Accounts aus DB. Gibt 3 zurück wenn kein Link."""
+        try:
+            row = await db.query_one_async(
+                "SELECT deadlock_subrank FROM steam_links "
+                "WHERE user_id=? AND deadlock_rank IS NOT NULL AND deadlock_rank > 0 "
+                "ORDER BY primary_account DESC, updated_at DESC LIMIT 1",
+                (member.id,),
+            )
+            if row and row["deadlock_subrank"] is not None:
+                return max(1, min(6, int(row["deadlock_subrank"])))
+        except Exception as e:
+            logger.warning("get_user_subrank_from_db Fehler für %s: %s", member.id, e)
+        return 3  # Mitte als Fallback
+
+    async def get_user_score_from_db(self, member: discord.Member) -> int | None:
+        """Liest Gesamt-Score des primären Steam-Accounts. Gibt None zurück wenn kein Link."""
+        try:
+            row = await db.query_one_async(
+                "SELECT deadlock_rank, deadlock_subrank FROM steam_links "
+                "WHERE user_id=? AND deadlock_rank IS NOT NULL AND deadlock_rank > 0 "
+                "ORDER BY primary_account DESC, updated_at DESC LIMIT 1",
+                (member.id,),
+            )
+            if row and row["deadlock_rank"] is not None:
+                tier = int(row["deadlock_rank"])
+                subrank = max(1, min(6, int(row["deadlock_subrank"] or 3)))
+                return tier * 6 + subrank
+        except Exception as e:
+            logger.warning("get_user_score_from_db Fehler für %s: %s", member.id, e)
+        return None
 
     # -------------------- Lifecycle --------------------
 
@@ -296,7 +375,7 @@ class RolePermissionVoiceManager(commands.Cog):
         anchor = self.get_channel_anchor(channel)
         if anchor is None:
             return 0, 11
-        _user_id, _rank_name, _rank_value, allowed_min, allowed_max = anchor
+        _user_id, _rank_name, _rank_value, allowed_min, allowed_max, *_ = anchor
         return allowed_min, allowed_max
 
     def get_allowed_role_ids(self, allowed_min: int, allowed_max: int) -> set[int]:
@@ -492,13 +571,11 @@ class RolePermissionVoiceManager(commands.Cog):
                         anchor_rank_value,
                         allowed_min,
                         allowed_max,
+                        anchor_subrank,
+                        score_min,
+                        score_max,
                     ) = anchor
-                    range_minus = max(0, anchor_rank_value - allowed_min)
-                    range_plus = max(0, allowed_max - anchor_rank_value)
-                    radius = max(range_minus, range_plus)
-                    new_name = (
-                        f"{anchor_rank_name} +/-{radius}" if radius > 0 else f"{anchor_rank_name}"
-                    )
+                    new_name = f"{anchor_rank_name} {anchor_subrank}"
                 else:
                     # Fallback: erster User
                     first_member = next(iter(members_ranks.keys()))
@@ -627,23 +704,24 @@ class RolePermissionVoiceManager(commands.Cog):
         user: discord.Member,
         rank_name: str,
         rank_value: int,
+        anchor_subrank: int = 3,
     ):
         mode = self.get_channel_mode(channel)
-        initiate_value = self.deadlock_ranks["Initiate"]
-        eternus_value = self.deadlock_ranks["Eternus"]
 
         if mode == "grind":
-            minus, plus = -2, 2
+            tolerance = GRIND_SUBRANK_TOLERANCE
         elif mode == "ranked":
-            minus, plus = -1, 1
+            tolerance = RANKED_SUBRANK_TOLERANCE
         else:
-            minus, plus = self.balancing_rules.get(rank_name, (-1, 1))
+            tolerance = RANKED_SUBRANK_TOLERANCE
 
-        allowed_min = max(initiate_value, rank_value + minus)
-        allowed_max = min(eternus_value, rank_value + plus)
+        anchor_score = rank_value * 6 + anchor_subrank
+        score_min = max(SCORE_MIN_ABSOLUTE, anchor_score - tolerance)
+        score_max = min(SCORE_MAX_ABSOLUTE, anchor_score + tolerance)
 
-        if allowed_min > allowed_max:
-            allowed_min, allowed_max = allowed_max, allowed_min
+        # Grobe Discord-Rollen-Berechtigungen: welche Haupt-Rang-Tiers überlappen mit Score-Bereich
+        allowed_min = max(1, (score_min - 1) // 6)
+        allowed_max = min(11, (score_max - 1) // 6)
 
         self.channel_permissions_initialized.discard(channel.id)
         self.channel_anchors[channel.id] = (
@@ -652,12 +730,17 @@ class RolePermissionVoiceManager(commands.Cog):
             rank_value,
             allowed_min,
             allowed_max,
+            anchor_subrank,
+            score_min,
+            score_max,
         )
         await self._db_upsert_anchor(
-            channel, user.id, rank_name, rank_value, allowed_min, allowed_max
+            channel, user.id, rank_name, rank_value, allowed_min, allowed_max,
+            anchor_subrank, score_min, score_max,
         )
         logger.info(
-            f"🔗 Anker gesetzt für {channel.name}: {user.display_name} ({rank_name}) → {allowed_min}-{allowed_max}"
+            f"🔗 Anker gesetzt für {channel.name}: {user.display_name} ({rank_name} {anchor_subrank}) "
+            f"→ Score {score_min}-{score_max} (Tiers {allowed_min}-{allowed_max})"
         )
 
     def get_channel_anchor(
@@ -690,13 +773,14 @@ class RolePermissionVoiceManager(commands.Cog):
 
         first_member = next(iter(members_ranks.keys()))
         rank_name, rank_value = members_ranks[first_member]
-        await self.set_channel_anchor(channel, first_member, rank_name, rank_value)
+        anchor_subrank = await self.get_user_subrank_from_db(first_member)
+        await self.set_channel_anchor(channel, first_member, rank_name, rank_value, anchor_subrank)
         return True
 
     async def remove_channel_anchor(self, channel: discord.VoiceChannel):
         if channel.id in self.channel_anchors:
             old = self.channel_anchors.pop(channel.id)
-            logger.info(f"🔗 Anker entfernt für {channel.name}: {old[1]} ({old[2]})")
+            logger.info(f"🔗 Anker entfernt für {channel.name}: {old[1]} {old[5]} ({old[2]})")
             await self._db_delete_anchor(channel)
 
     def is_channel_system_enabled(self, channel: discord.VoiceChannel) -> bool:
@@ -793,12 +877,19 @@ class RolePermissionVoiceManager(commands.Cog):
             anchor = self.get_channel_anchor(channel)
 
             if anchor:
+                _uid, _arname, _arval, allowed_min, allowed_max, _asubrank, score_min, score_max = anchor
                 # Nur logs – niemals kicken
-                _uid, _arname, _arval, allowed_min, allowed_max = anchor
                 if not (allowed_min <= rank_value <= allowed_max):
                     logger.info(
-                        f"ℹ️ {member.display_name} ({rank_name}) passt nicht in {allowed_min}-{allowed_max}, bleibt aber."
+                        f"ℹ️ {member.display_name} ({rank_name}) Haupt-Rang außerhalb {allowed_min}-{allowed_max}, bleibt aber."
                     )
+                elif member.id != _uid:
+                    user_score = await self.get_user_score_from_db(member)
+                    if user_score is not None and not (score_min <= user_score <= score_max):
+                        logger.info(
+                            f"ℹ️ {member.display_name} (Score {user_score}) außerhalb Sub-Rang-Bereich "
+                            f"{score_min}-{score_max} in {channel.name}, bleibt aber."
+                        )
 
             await self.update_channel_permissions_via_roles(channel, force=anchor_changed)
             await self.update_channel_name(channel, force=anchor_changed)
@@ -910,6 +1001,9 @@ class RolePermissionVoiceManager(commands.Cog):
             rank_value,
             amin,
             amax,
+            anchor_subrank,
+            score_min,
+            score_max,
         ) in self.channel_anchors.items():
             ch = ctx.guild.get_channel(ch_id)
             user = ctx.guild.get_member(user_id)
@@ -921,8 +1015,8 @@ class RolePermissionVoiceManager(commands.Cog):
             cur_members = len([m for m in ch.members if not m.bot])
             lines.append(
                 f"**{ch.name}**\n"
-                f"🔗 Anker: {user.display_name} ({rank_name})\n"
-                f"📊 Bereich: {min_rank}-{max_rank} ({amin}-{amax})\n"
+                f"🔗 Anker: {user.display_name} ({rank_name} {anchor_subrank})\n"
+                f"📊 Tiers: {min_rank}–{max_rank} | Score: {score_min}–{score_max}\n"
                 f"👥 Aktuelle User: {cur_members}\n"
             )
         embed.description = "\n".join(lines[:10])
@@ -997,13 +1091,17 @@ class RolePermissionVoiceManager(commands.Cog):
             )
             anchor = self.get_channel_anchor(channel)
             if anchor and sys_en:
-                uid, rn, _rv, amin, amax = anchor
+                uid, rn, _rv, amin, amax, asubrank, smin, smax = anchor
                 user = ctx.guild.get_member(uid)
                 min_rank = self.get_rank_name_from_value(amin)
                 max_rank = self.get_rank_name_from_value(amax)
                 embed.add_field(
                     name="🔗 Anker",
-                    value=f"{user.display_name if user else uid} ({rn})\nBereich: {min_rank}-{max_rank}",
+                    value=(
+                        f"{user.display_name if user else uid} ({rn} {asubrank})\n"
+                        f"Tiers: {min_rank}–{max_rank}\n"
+                        f"Score: {smin}–{smax}"
+                    ),
                     inline=False,
                 )
             else:
@@ -1099,7 +1197,8 @@ class RolePermissionVoiceManager(commands.Cog):
                 await self.remove_channel_anchor(channel)
                 first_member = next(iter(members_ranks.keys()))
                 rn, rv = members_ranks[first_member]
-                await self.set_channel_anchor(channel, first_member, rn, rv)
+                anchor_subrank = await self.get_user_subrank_from_db(first_member)
+                await self.set_channel_anchor(channel, first_member, rn, rv, anchor_subrank)
 
             await self.update_channel_permissions_via_roles(channel, force=True)
             await self.update_channel_name(channel, force=True)

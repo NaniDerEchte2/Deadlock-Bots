@@ -196,6 +196,18 @@ class SteamVerifiedRole(commands.Cog):
             except discord.HTTPException as e:
                 log.warning("Konnte Log nicht senden: %s", e)
 
+    async def _trigger_rank_check(self, user_id: int) -> None:
+        """Löst einen Rang-Check für den User aus, nachdem er verifiziert wurde."""
+        try:
+            rank_cog = self.bot.get_cog("DeadlockFriendRank")
+            if rank_cog is None:
+                log.debug("DeadlockFriendRank nicht geladen, überspringe Rang-Check für %s", user_id)
+                return
+            await rank_cog.check_rank_for_discord_user(user_id)
+            log.info("Rang-Check nach Verifizierung für User %s abgeschlossen.", user_id)
+        except Exception as exc:
+            log.warning("Rang-Check nach Verifizierung fehlgeschlagen für %s: %s", user_id, exc)
+
     async def assign_verified_role(self, user_id: int) -> bool:
         """Versucht, einem Nutzer sofort die Verified-Rolle zuzuweisen."""
         guild, role = await self._resolve_guild_and_role()
@@ -231,6 +243,7 @@ class SteamVerifiedRole(commands.Cog):
         try:
             await member.add_roles(role, reason="Manuelle Verifizierung / Sofort-Zuweisung")
             self._clear_member_retry_state(user_id)
+            asyncio.create_task(self._trigger_rank_check(user_id))
             await self._announce_assignments(
                 guild,
                 [
@@ -352,6 +365,7 @@ class SteamVerifiedRole(commands.Cog):
             try:
                 await member.add_roles(role, reason="Steam verified = 1 (automatisch)")
                 self._clear_member_retry_state(uid)
+                asyncio.create_task(self._trigger_rank_check(uid))
                 changes += 1
                 lines.append(
                     f"✅ <@{uid}> ({member.display_name}) ist jetzt **Verified** - Rolle zugewiesen."

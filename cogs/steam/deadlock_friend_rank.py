@@ -774,6 +774,57 @@ class DeadlockFriendRank(commands.Cog):
             self._last_stats = stats
             return stats
 
+    async def check_rank_for_discord_user(self, discord_user_id: int) -> bool:
+        """Fetcht den Rang eines einzelnen Discord-Users und weist die Rang-Rolle zu.
+
+        Wird nach der Steam-Verifizierung aufgerufen. Läuft unabhängig vom regulären Sync-Lock.
+        """
+        try:
+            rows = await db.query_all_async(
+                "SELECT steam_id FROM steam_links WHERE user_id=? AND steam_id IS NOT NULL "
+                "ORDER BY primary_account DESC, updated_at DESC",
+                (discord_user_id,),
+            )
+            if not rows:
+                log.info("check_rank_for_discord_user: Kein Steam-Link für User %s", discord_user_id)
+                return False
+
+            steam_ids = {str(r["steam_id"]).strip() for r in rows if r["steam_id"]}
+            if not steam_ids:
+                return False
+
+            stats = SyncStats()
+            snapshots = await self._fetch_rank_snapshots(steam_ids, stats)
+            if not snapshots:
+                log.info("check_rank_for_discord_user: Keine Rank-Daten für User %s", discord_user_id)
+                return False
+
+            await self._persist_rank_snapshots(snapshots)
+
+            target_guilds = self._target_guilds_for_rank_roles()
+            user_snapshots = list(snapshots.values())
+            for guild in target_guilds:
+                subrank_role_map = await self._load_subrank_role_map_for_guild(guild.id)
+                member = await self._resolve_member(guild, discord_user_id)
+                if member is None:
+                    continue
+                await self._apply_rank_role_for_member(
+                    guild, member, user_snapshots, subrank_role_map, stats
+                )
+
+            log.info(
+                "check_rank_for_discord_user: User %s – Rollen hinzugefügt: %s, entfernt: %s",
+                discord_user_id,
+                stats.roles_added,
+                stats.roles_removed,
+            )
+            return True
+        except Exception as exc:
+            log.exception(
+                "check_rank_for_discord_user fehlgeschlagen für User %s: %s", discord_user_id, exc
+            )
+            return False
+
     @staticmethod
     async def _defer_if_interaction(ctx: commands.Context, *, ephemeral: bool = False) -> None:
         interaction = getattr(ctx, "interaction", None)

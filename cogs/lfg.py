@@ -38,7 +38,7 @@ USE_AI_LFG_DETECTION = True
 PRESENCE_STALE_SECONDS = 120  # 2 Minuten (reduziert für genauere Erkennung)
 
 # Rank-Matching: wie viele Ränge Unterschied sind erlaubt?
-RANK_TOLERANCE = 2  # +/- 2 Ränge
+RANK_TOLERANCE = 2  # ±2 Ränge
 MAX_MENTION_PINGS = 10
 ACTIVITY_LOOKBACK_DAYS = 14
 MIN_ACTIVITY_SCORE_SESSIONS = 3
@@ -756,7 +756,7 @@ class SmartLFGAgent(commands.Cog):
             "**CHANNEL AUSWAHL:**\n"
             "1. Street Brawl erwähnt? -> Street Brawl Lane\n"
             "2. User ist Rank 0-5 UND will nicht Ranked? -> New Player Lane (erwähne dass es für Einsteiger ist)\n"
-            "3. User will Ranked/Grind? -> Ranked Category Channel (ähnlicher Rank +/- 2)\n"
+            "3. User will Ranked/Grind? -> Ranked Category Channel (ähnlicher Rank ±2)\n"
             "4. Sonst -> Casual Lanes (erwähne ungefähren Rank wenn relevant)\n\n"
             "**WICHTIG:**\n"
             "- Schreib die Discord URL direkt hin, KEIN Markdown [Text](URL)\n"
