@@ -70,6 +70,7 @@ class Settings(BaseSettings):
     verified_role_id: int = Field(1419608095533043774, alias="VERIFIED_ROLE_ID")
     verified_log_channel_id: int = Field(1374364800817303632, alias="VERIFIED_LOG_CHANNEL_ID")
     streamer_role_id: int = Field(1313624729466441769, alias="STREAMER_ROLE_ID")
+    content_creator_role_id: int = Field(1466630749255106590, alias="CONTENT_CREATOR_ROLE_ID")
     streamer_notify_channel_id: int = Field(1374364800817303632, alias="STREAMER_NOTIFY_CHANNEL_ID")
 
     # --- Steam Link UI & OAuth ---

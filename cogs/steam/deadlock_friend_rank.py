@@ -66,16 +66,34 @@ SUBRANK_MIN = 1
 SUBRANK_MAX = 6
 SUBRANK_ROLE_MAP_TABLE = "deadlock_subrank_roles"
 RANK_NAME_TO_VALUE = {str(name).casefold(): int(value) for value, name in RANK_TIERS.items()}
-_SUBRANK_RANK_NAMES = tuple(
+
+# Common short names for ranks to support roles like "Asc 3"
+RANK_SHORT_NAMES: dict[str, str] = {
+    "Initiate": "Ini",
+    "Seeker": "See",
+    "Alchemist": "Alc",
+    "Arcanist": "Arc",
+    "Ritualist": "Rit",
+    "Emissary": "Emi",
+    "Archon": "Arch",
+    "Oracle": "Ora",
+    "Phantom": "Pha",
+    "Ascendant": "Asc",
+    "Eternus": "Ete",
+}
+# Inverse mapping for lookup
+SHORT_NAME_TO_RANK = {v.casefold(): k for k, v in RANK_SHORT_NAMES.items()}
+
+_SUBRANK_RANK_NAMES = [
     str(RANK_TIERS[value]) for value in sorted(RANK_ROLE_IDS.keys()) if value in RANK_TIERS
+]
+# Add short names to the regex pattern
+_SUBRANK_RANK_PATTERN = "|".join(
+    re.escape(name) for name in (_SUBRANK_RANK_NAMES + list(RANK_SHORT_NAMES.values()))
 )
+
 SUBRANK_ROLE_NAME_RE = re.compile(
-    r"^(%s)\s+([%d-%d])$"
-    % (
-        "|".join(re.escape(name) for name in _SUBRANK_RANK_NAMES),
-        SUBRANK_MIN,
-        SUBRANK_MAX,
-    ),
+    rf"^({_SUBRANK_RANK_PATTERN})\s+([{SUBRANK_MIN}-{SUBRANK_MAX}])$",
     re.IGNORECASE,
 )
 
@@ -250,27 +268,43 @@ class DeadlockFriendRank(commands.Cog):
         return rank_num, subrank, badge, rank_name
 
     @staticmethod
-    def _expected_subrank_role_name(
+    def _expected_subrank_role_names(
         rank_value: int | None,
         subrank_value: int | None,
-    ) -> str | None:
+    ) -> list[str]:
         rank_num = DeadlockFriendRank._safe_int(rank_value)
         subrank_num = DeadlockFriendRank._safe_int(subrank_value)
         if rank_num is None or rank_num not in RANK_ROLE_IDS:
-            return None
+            return []
         if subrank_num is None or subrank_num < SUBRANK_MIN or subrank_num > SUBRANK_MAX:
-            return None
+            return []
         rank_name = RANK_TIERS.get(rank_num)
         if not rank_name:
-            return None
-        return f"{rank_name} {subrank_num}"
+            return []
+
+        # Return both full name and short name variants
+        names = [f"{rank_name} {subrank_num}"]
+        short = RANK_SHORT_NAMES.get(rank_name)
+        if short:
+            names.append(f"{short} {subrank_num}")
+        return names
 
     @staticmethod
     def _parse_subrank_role_name(role_name: str) -> tuple[int, int] | None:
         match = SUBRANK_ROLE_NAME_RE.fullmatch(str(role_name or "").strip())
         if not match:
             return None
-        rank_value = RANK_NAME_TO_VALUE.get(match.group(1).casefold())
+        name_part = match.group(1).casefold()
+
+        # Check full name first
+        rank_value = RANK_NAME_TO_VALUE.get(name_part)
+
+        # Then check short name mapping
+        if rank_value is None:
+            full_name = SHORT_NAME_TO_RANK.get(name_part)
+            if full_name:
+                rank_value = RANK_NAME_TO_VALUE.get(full_name.casefold())
+
         if rank_value is None:
             return None
         try:
@@ -623,10 +657,27 @@ class DeadlockFriendRank(commands.Cog):
         if not me.guild_permissions.manage_roles:
             return
 
+        # Find the best snapshot (highest rank score) across all linked accounts
+        # This prevents duplicate roles from multiple accounts.
+        best_snapshot = None
+        best_score = -1
+        for snapshot in target_snapshots:
+            rv = snapshot.rank_value if snapshot.rank_value is not None else 0
+            sr = snapshot.subrank if snapshot.subrank is not None else 0
+            # Higher Tier takes precedence, then higher subrank
+            # Using same factor 6 as in rank_voice_manager for consistency
+            score = rv * 6 + sr
+            if score > best_score:
+                best_score = score
+                best_snapshot = snapshot
+
+        # Use only the best snapshot
+        actual_snapshots = [best_snapshot] if best_snapshot else []
+
         target_rank_roles_by_id: dict[int, discord.Role] = {}
         target_subrank_roles_by_id: dict[int, discord.Role] = {}
 
-        for snapshot in target_snapshots:
+        for snapshot in actual_snapshots:
             target_rank_num = self._safe_int(snapshot.rank_value)
             if target_rank_num is not None:
                 target_role_id = RANK_ROLE_IDS.get(target_rank_num)
@@ -647,14 +698,15 @@ class DeadlockFriendRank(commands.Cog):
                     target_subrank_role = role
 
             if target_subrank_role is None:
-                target_subrank_role_name = self._expected_subrank_role_name(
+                target_subrank_role_names = self._expected_subrank_role_names(
                     target_rank_num,
                     target_subrank_num,
                 )
-                if target_subrank_role_name:
-                    role = self._find_role_by_name_casefold(guild, target_subrank_role_name)
+                for candidate in target_subrank_role_names:
+                    role = self._find_role_by_name_casefold(guild, candidate)
                     if role and role.position < me.top_role.position:
                         target_subrank_role = role
+                        break
 
             if target_subrank_role is not None:
                 target_subrank_roles_by_id[target_subrank_role.id] = target_subrank_role

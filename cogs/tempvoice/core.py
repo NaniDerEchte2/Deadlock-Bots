@@ -44,6 +44,9 @@ STAGING_RULES: dict[int, dict[str, Any]] = {
     CASUAL_STAGING_ID: {  # Chill Lanes: Prefix primär aus Owner-Rang
         "prefix_from_rank": True,
     },
+    1412804671432818890: {  # Spezial Staging
+        "prefix_from_rank": True,
+    },
 }
 CASUAL_RANK_FALLBACK = "Chill"
 # Legacy-Alias für ältere Imports, zeigt weiterhin auf die ursprüngliche Grind-ID
@@ -1416,12 +1419,25 @@ class TempVoiceCore(commands.Cog):
 
                 rules = self._rules_for_staging(staging)
                 cat = staging.category
-                prefix = str(rules.get("prefix") or "Lane")
-                if rules.get("prefix_from_rank"):
-                    prefix = RANK_ORDER[max(1, _member_rank_index(member))].capitalize()
-                    base = prefix
+                
+                # Bestimme initialen Namen: Wenn Ranked-Kategorie, Grind oder prefix_from_rank
+                use_rank_name = rules.get("prefix_from_rank") or (cat and cat.id in MINRANK_CATEGORY_IDS)
+                
+                mgr = self.bot.get_cog("RolePermissionVoiceManager")
+                if use_rank_name:
+                    # Versuche den Rang-Manager zu nutzen
+                    if mgr:
+                        rn, rv, rs = mgr.get_user_rank_from_roles(member)
+                        if rs is None:
+                            rs = await mgr.get_user_subrank_from_db(member)
+                        base = f"{rn} {rs}"
+                    else:
+                        prefix = RANK_ORDER[max(1, _member_rank_index(member))].capitalize()
+                        base = prefix
                 else:
+                    prefix = str(rules.get("prefix") or "Lane")
                     base = await self._next_name(cat, prefix)
+
                 bitrate = getattr(guild, "bitrate_limit", None) or 256000
                 try:
                     cap = int(rules.get("user_limit", _default_cap(staging)))
@@ -1545,6 +1561,24 @@ class TempVoiceCore(commands.Cog):
                     return
 
                 asyncio.create_task(self._apply_owner_settings_background(lane, member.id))
+
+                # Manueller Trigger für Rang-Permissions & Name im Manager
+                if mgr:
+                    async def _delayed_rank_setup(ch, m, mgr_ref):
+                        try:
+                            # 1s warten damit Discord den Member im Channel sieht
+                            await asyncio.sleep(1.0)
+                            # Anchor manuell setzen
+                            rn, rv, rs = mgr_ref.get_user_rank_from_roles(m)
+                            if rs is None:
+                                rs = await mgr_ref.get_user_subrank_from_db(m)
+                            await mgr_ref.set_channel_anchor(ch, m, rn, rv, rs)
+                            # Permissions forcieren (jetzt robuster gegen leere Member-Liste)
+                            await mgr_ref.update_channel_permissions_via_roles(ch, force=True)
+                        except Exception as exc:
+                            log.debug("Delayed rank setup failed for lane %s: %r", ch.id, exc)
+                    
+                    asyncio.create_task(_delayed_rank_setup(lane, member, mgr))
 
                 # NUR hier initial den Namen setzen (innerhalb des Create-Fensters)
                 await self._refresh_name(lane)

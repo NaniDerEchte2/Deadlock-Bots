@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import time
 from pathlib import Path
 
@@ -23,6 +24,40 @@ RANKED_SUBRANK_TOLERANCE = 9   # ±9 Sub-Rang-Punkte = ±1.5 Hauptränge
 GRIND_SUBRANK_TOLERANCE = 12   # ±12 Sub-Rang-Punkte = ±2 Hauptränge
 SCORE_MIN_ABSOLUTE = 7         # Initiate 1
 SCORE_MAX_ABSOLUTE = 72        # Eternus 6
+
+# Sub-Rang Rollen-Erkennung (unterstützt "Ascendant 3" und "Asc 3")
+RANK_SHORT_NAMES = {
+    "Initiate": "Ini",
+    "Seeker": "See",
+    "Alchemist": "Alc",
+    "Arcanist": "Arc",
+    "Ritualist": "Rit",
+    "Emissary": "Emi",
+    "Archon": "Arch",
+    "Oracle": "Ora",
+    "Phantom": "Pha",
+    "Ascendant": "Asc",
+    "Eternus": "Ete",
+}
+SHORT_NAME_TO_RANK = {v.casefold(): k for k, v in RANK_SHORT_NAMES.items()}
+RANK_NAME_TO_VALUE = {
+    "obscurus": 0,
+    "initiate": 1,
+    "seeker": 2,
+    "alchemist": 3,
+    "arcanist": 4,
+    "ritualist": 5,
+    "emissary": 6,
+    "archon": 7,
+    "oracle": 8,
+    "phantom": 9,
+    "ascendant": 10,
+    "eternus": 11,
+}
+
+_RANK_NAMES_FOR_REGEX = list(RANK_NAME_TO_VALUE.keys()) + list(RANK_SHORT_NAMES.values())
+_SUBRANK_PATTERN = "|".join(re.escape(n) for n in _RANK_NAMES_FOR_REGEX)
+SUBRANK_ROLE_RE = re.compile(rf"^({_SUBRANK_PATTERN})\s+([1-6])$", re.IGNORECASE)
 
 
 logging.basicConfig(level=logging.INFO)
@@ -83,10 +118,10 @@ class RolePermissionVoiceManager(commands.Cog):
         }
 
         # Balancing-Regeln (Rang -> (minus, plus)); Standard: ±1 (Ranked)
-        self.balancing_rules = {rank_name: (-1, 1) for rank_name in self.deadlock_ranks.keys()}
+        self.balancing_rules = dict.fromkeys(self.deadlock_ranks.keys(), (-1, 1))
 
-        # Cache
-        self.user_rank_cache: dict[str, tuple[str, int]] = {}
+        # Cache: {user_id:guild_id: (rank_name, rank_value, subrank)}
+        self.user_rank_cache: dict[str, tuple[str, int, int]] = {}
         self.guild_roles_cache: dict[int, dict[int, discord.Role]] = {}
 
         # Laufzeit-State (wird beim Start aus DB geladen)
@@ -114,7 +149,12 @@ class RolePermissionVoiceManager(commands.Cog):
             name = channel.name.lower()
         except Exception:
             return False
-        return channel.category_id in MINRANK_CATEGORY_IDS and name.startswith("lane ")
+        # Erkennt "lane 1" ODER "ascendant 3" etc.
+        is_basic_lane = name.startswith("lane ")
+        is_rank_lane = any(name.startswith(f"{rn.lower()} ") for rn in RANK_NAME_TO_VALUE.keys())
+        is_short_rank_lane = any(name.startswith(f"{sn.lower()} ") for sn in RANK_SHORT_NAMES.values())
+        
+        return channel.category_id in MINRANK_CATEGORY_IDS and (is_basic_lane or is_rank_lane or is_short_rank_lane)
 
     # -------------------- DB Layer --------------------
 
@@ -270,6 +310,34 @@ class RolePermissionVoiceManager(commands.Cog):
             "DELETE FROM voice_channel_anchors WHERE channel_id=?", (channel.id,)
         )
 
+    # -------------------- Role Parsing --------------------
+
+    def _parse_subrank_role_name(self, role_name: str) -> tuple[int, int] | None:
+        """Extrahiert Rang-Wert und Sub-Rang aus einem Rollennamen."""
+        match = SUBRANK_ROLE_RE.fullmatch(str(role_name or "").strip())
+        if not match:
+            return None
+        name_part = match.group(1).casefold()
+
+        # Check full name first
+        rank_value = RANK_NAME_TO_VALUE.get(name_part)
+
+        # Then check short name mapping
+        if rank_value is None:
+            full_name = SHORT_NAME_TO_RANK.get(name_part)
+            if full_name:
+                rank_value = RANK_NAME_TO_VALUE.get(full_name.casefold())
+
+        if rank_value is None:
+            return None
+        try:
+            subrank = int(match.group(2))
+        except (TypeError, ValueError):
+            return None
+        if subrank < 1 or subrank > 6:
+            return None
+        return rank_value, subrank
+
     # -------------------- Sub-Rang DB-Abfragen --------------------
 
     async def get_user_subrank_from_db(self, member: discord.Member) -> int:
@@ -351,32 +419,70 @@ class RolePermissionVoiceManager(commands.Cog):
             self.guild_roles_cache[guild.id] = {role.id: role for role in guild.roles}
         return self.guild_roles_cache[guild.id]
 
-    def get_user_rank_from_roles(self, member: discord.Member) -> tuple[str, int]:
+    def get_user_rank_from_roles(self, member: discord.Member) -> tuple[str, int, int | None]:
         cache_key = f"{member.id}:{member.guild.id}"
         if cache_key in self.user_rank_cache:
             return self.user_rank_cache[cache_key]
 
-        highest_rank = ("Obscurus", 0)
+        highest_rank_name = "Obscurus"
         highest_rank_value = 0
+        found_subrank = None
+        highest_score = -1
 
         for role in member.roles:
+            # 1. Check for subrank roles (e.g. "Asc 3" or "Ascendant 3")
+            match = SUBRANK_ROLE_RE.fullmatch(role.name.strip())
+            if match:
+                name_part = match.group(1).casefold()
+                sub = int(match.group(2))
+
+                # Resolve base rank
+                base_name = None
+                rank_val = RANK_NAME_TO_VALUE.get(name_part)
+                if rank_val is not None:
+                    base_name = name_part.capitalize()
+                else:
+                    full_name = SHORT_NAME_TO_RANK.get(name_part)
+                    if full_name:
+                        rank_val = RANK_NAME_TO_VALUE.get(full_name.casefold())
+                        base_name = full_name.capitalize()
+
+                if rank_val is not None:
+                    # Score calculation: tier * 6 + subrank (1-6)
+                    score = rank_val * 6 + sub
+                    if score > highest_score:
+                        highest_score = score
+                        highest_rank_name = base_name
+                        highest_rank_value = rank_val
+                        found_subrank = sub
+                    continue
+
+            # 2. Check for traditional major tier roles
             if role.id in self.discord_rank_roles:
                 rank_name, rank_value = self.discord_rank_roles[role.id]
-                if rank_value > highest_rank_value:
-                    highest_rank = (rank_name, rank_value)
+                # Major tier roles get a score based on tier only
+                score = rank_value * 6
+                if score > highest_score:
+                    highest_score = score
+                    highest_rank_name = rank_name
                     highest_rank_value = rank_value
+                    # We don't set found_subrank here, will be fetched from DB later if needed
 
-        self.user_rank_cache[cache_key] = highest_rank
-        return highest_rank
+        result = (highest_rank_name, highest_rank_value, found_subrank)
+        self.user_rank_cache[cache_key] = result
+        return result
 
     async def get_channel_members_ranks(
         self, channel: discord.VoiceChannel
-    ) -> dict[discord.Member, tuple[str, int]]:
-        members_ranks: dict[discord.Member, tuple[str, int]] = {}
+    ) -> dict[discord.Member, tuple[str, int, int]]:
+        members_ranks: dict[discord.Member, tuple[str, int, int]] = {}
         for member in channel.members:
             if member.bot:
                 continue
-            members_ranks[member] = self.get_user_rank_from_roles(member)
+            rn, rv, rs = self.get_user_rank_from_roles(member)
+            if rs is None:
+                rs = await self.get_user_subrank_from_db(member)
+            members_ranks[member] = (rn, rv, rs)
         return members_ranks
 
     def calculate_balancing_range_from_anchor(
@@ -468,7 +574,8 @@ class RolePermissionVoiceManager(commands.Cog):
                 return
 
             members_ranks = await self.get_channel_members_ranks(channel)
-            if not members_ranks:
+            # Falls force=True (z.B. bei Channel-Erstellung), machen wir weiter auch wenn Cache noch leer ist
+            if not members_ranks and not force:
                 # leer -> Anker entfernen + Rollen-Overwrites entfernen
                 await self.remove_channel_anchor(channel)
                 await self.reset_everyone_connect(channel)
@@ -479,49 +586,86 @@ class RolePermissionVoiceManager(commands.Cog):
             if not force and channel.id in self.channel_permissions_initialized:
                 return
 
-            ok = await self.set_everyone_deny_connect(channel)
-            if not ok:
+            anchor = self.get_channel_anchor(channel)
+            if not anchor:
+                logger.debug(f"Kein Anker für {channel.name} ({channel.id}) gefunden.")
                 return
 
-            allowed_min, allowed_max = self.calculate_balancing_range_from_anchor(channel)
-            allowed_role_ids = self.get_allowed_role_ids(allowed_min, allowed_max)
+            # Score-Bereich abrufen (±9 Punkte = ±1.5 Tiers)
+            _uid, _rn, _rv, _amin, _amax, _asub, score_min, score_max = anchor
+            logger.info(f"Update Permissions (Batch) für {channel.name}: Score {score_min}-{score_max}")
 
-            guild_roles = self.get_guild_roles(channel.guild)
+            # 1. Aktuelle Overwrites kopieren
+            new_overwrites = dict(channel.overwrites)
+            
+            # 2. @everyone Deny setzen
+            everyone_role = channel.guild.default_role
+            everyone_ow = new_overwrites.get(everyone_role, discord.PermissionOverwrite())
+            everyone_ow.connect = False
+            everyone_ow.view_channel = True
+            new_overwrites[everyone_role] = everyone_ow
 
-            # allow für erlaubte Rollen (mit besserer Rate-Limit-Vermeidung)
-            for role_id in allowed_role_ids:
-                role = guild_roles.get(role_id)
-                if not role:
-                    continue
-                ow = channel.overwrites_for(role)
-                # Nur updaten wenn wirklich nötig
-                if ow.connect is not True or ow.speak is not True or ow.view_channel is not True:
-                    try:
-                        await channel.set_permissions(
-                            role,
-                            overwrite=discord.PermissionOverwrite(
-                                connect=True, speak=True, view_channel=True
-                            ),
+            # 3. Alle Rollen der Gilde prüfen, welche in den Score-Bereich fallen
+            allowed_role_ids = set()
+            major_role_ids = set(self.discord_rank_roles.keys())
+            
+            # Wir iterieren über alle Rollen der Gilde, um Sub-Ränge zu finden
+            for role in channel.guild.roles:
+                parsed = self._parse_subrank_role_name(role.name)
+                if parsed:
+                    rv, rs = parsed
+                    score = rv * 6 + rs
+                    if score_min <= score <= score_max:
+                        allowed_role_ids.add(role.id)
+                        # Zu Overwrites hinzufügen
+                        new_overwrites[role] = discord.PermissionOverwrite(
+                            connect=True, speak=True, view_channel=True
                         )
-                        self._mark_permission_write(channel.id)
-                        await asyncio.sleep(
-                            0.5
-                        )  # Erhöht von 0.4s auf 0.5s für bessere Rate-Limit-Vermeidung
-                    except discord.NotFound:
-                        # Channel wurde gelöscht während der Operation
-                        logger.debug(f"Channel {channel.id} not found during permission update")
-                        return
-                    except discord.HTTPException as e:
-                        # Rate limit oder andere HTTP Fehler
-                        logger.warning(f"HTTP error updating permissions for {channel.id}: {e}")
-                        await asyncio.sleep(1.0)  # Extra delay bei Fehlern
 
-            # remove von nicht erlaubten Rollen
-            await self.remove_disallowed_role_permissions(channel, allowed_role_ids)
+            # 4. Alte/Nicht erlaubte Rollen aus dem Batch entfernen
+            # Wir prüfen die existierenden Overwrites und werfen raus was nicht mehr erlaubt ist
+            for target in list(new_overwrites.keys()):
+                if isinstance(target, discord.Role) and target.id != everyone_role.id:
+                    is_major = target.id in major_role_ids
+                    is_subrank = self._parse_subrank_role_name(target.name) is not None
+                    
+                    if (is_major or is_subrank) and target.id not in allowed_role_ids:
+                        # Aus den Overwrites entfernen
+                        new_overwrites.pop(target)
+
+            # 5. Alles in EINEM Call an Discord senden
+            try:
+                await channel.edit(overwrites=new_overwrites, reason="Rank System: Batch Permission Update")
+                self._mark_permission_write(channel.id)
+            except discord.HTTPException as e:
+                logger.error(f"Batch Permission Update fehlgeschlagen für {channel.name}: {e}")
+                # Fallback: Falls Batch fehlschlägt (selten), versuchen wir es einzeln
+                await self._fallback_individual_permissions(channel, allowed_role_ids, major_role_ids)
+
             self.channel_permissions_initialized.add(channel.id)
 
         except Exception as e:
             logger.error(f"update_channel_permissions_via_roles Fehler: {e}")
+
+    async def _fallback_individual_permissions(self, channel, allowed_role_ids, major_role_ids):
+        """Fallback-Methode falls der Batch-Edit fehlschlägt."""
+        logger.info(f"Starte Fallback-Einzel-Update für {channel.name}")
+        # everyone deny
+        await self.set_everyone_deny_connect(channel)
+        
+        # Erlaubte einzeln setzen
+        for rid in allowed_role_ids:
+            role = channel.guild.get_role(rid)
+            if role:
+                await channel.set_permissions(role, connect=True, speak=True, view_channel=True)
+                await asyncio.sleep(0.2)
+                
+        # Nicht erlaubte einzeln entfernen
+        for target, ow in list(channel.overwrites.items()):
+            if isinstance(target, discord.Role) and target.id != channel.guild.default_role.id:
+                if (target.id in major_role_ids or self._parse_subrank_role_name(target.name)) and target.id not in allowed_role_ids:
+                    await channel.set_permissions(target, overwrite=None)
+                    await asyncio.sleep(0.2)
 
     async def remove_disallowed_role_permissions(
         self, channel: discord.VoiceChannel, allowed_role_ids: set[int]
@@ -542,15 +686,19 @@ class RolePermissionVoiceManager(commands.Cog):
 
     async def clear_role_permissions(self, channel: discord.VoiceChannel):
         try:
+            major_role_ids = set(self.discord_rank_roles.keys())
             for target, _ow in list(channel.overwrites.items()):
                 if (
                     isinstance(target, discord.Role)
                     and target.id != channel.guild.default_role.id
-                    and target.id in self.discord_rank_roles
                 ):
-                    await channel.set_permissions(target, overwrite=None)
-                    self._mark_permission_write(channel.id)
-                    await asyncio.sleep(0.3)
+                    is_major = target.id in major_role_ids
+                    is_subrank = self._parse_subrank_role_name(target.name) is not None
+                    
+                    if is_major or is_subrank:
+                        await channel.set_permissions(target, overwrite=None)
+                        self._mark_permission_write(channel.id)
+                        await asyncio.sleep(0.3)
         except Exception as e:
             logger.error(f"clear_role_permissions Fehler: {e}")
 
@@ -589,8 +737,8 @@ class RolePermissionVoiceManager(commands.Cog):
                 else:
                     # Fallback: erster User
                     first_member = next(iter(members_ranks.keys()))
-                    rank_name, _rv2 = members_ranks[first_member]
-                    new_name = f"{rank_name} Lobby"
+                    rank_name, _rv2, subrank = members_ranks[first_member]
+                    new_name = f"{rank_name} {subrank}"
 
             # Prüfe zuerst ob Name schon passt - vermeidet redundante API-Calls
             if channel.name == new_name:
@@ -761,7 +909,7 @@ class RolePermissionVoiceManager(commands.Cog):
     async def _ensure_valid_anchor(
         self,
         channel: discord.VoiceChannel,
-        members_ranks: dict[discord.Member, tuple[str, int]],
+        members_ranks: dict[discord.Member, tuple[str, int, int]],
     ) -> bool:
         """Stellt sicher, dass der Anker zu einem aktuell anwesenden Member gehört."""
         anchor = self.get_channel_anchor(channel)
@@ -782,9 +930,8 @@ class RolePermissionVoiceManager(commands.Cog):
             )
 
         first_member = next(iter(members_ranks.keys()))
-        rank_name, rank_value = members_ranks[first_member]
-        anchor_subrank = await self.get_user_subrank_from_db(first_member)
-        await self.set_channel_anchor(channel, first_member, rank_name, rank_value, anchor_subrank)
+        rank_name, rank_value, subrank = members_ranks[first_member]
+        await self.set_channel_anchor(channel, first_member, rank_name, rank_value, subrank)
         return True
 
     async def remove_channel_anchor(self, channel: discord.VoiceChannel):
@@ -885,7 +1032,14 @@ class RolePermissionVoiceManager(commands.Cog):
             if not members_ranks:
                 return
             anchor_changed = await self._ensure_valid_anchor(channel, members_ranks)
-            rank_name, rank_value = members_ranks.get(member, self.get_user_rank_from_roles(member))
+            
+            # Rank-Info für den beitretenden Member (3er-Tupel)
+            member_info = members_ranks.get(member)
+            if not member_info:
+                rn, rv, rs = self.get_user_rank_from_roles(member)
+                member_info = (rn, rv, rs or 3)
+            
+            rank_name, rank_value, _subrank = member_info
             anchor = self.get_channel_anchor(channel)
 
             if anchor:
@@ -986,8 +1140,9 @@ class RolePermissionVoiceManager(commands.Cog):
         )
 
         try:
-            rn, rv = self.get_user_rank_from_roles(ctx.author)
-            embed.add_field(name="🎯 Dein Rang", value=f"{rn} ({rv})", inline=True)
+            rn, rv, rs = self.get_user_rank_from_roles(ctx.author)
+            sub_txt = f" {rs}" if rs else ""
+            embed.add_field(name="🎯 Dein Rang", value=f"{rn}{sub_txt} ({rv})", inline=True)
         except Exception as e:
             embed.add_field(name="🎯 Dein Rang", value=f"Fehler: {e}", inline=True)
 
@@ -1010,7 +1165,7 @@ class RolePermissionVoiceManager(commands.Cog):
         for ch_id, (
             user_id,
             rank_name,
-            rank_value,
+            _rank_value,
             amin,
             amax,
             anchor_subrank,
@@ -1136,7 +1291,8 @@ class RolePermissionVoiceManager(commands.Cog):
                 if role.id in self.discord_rank_roles:
                     rn, rv = self.discord_rank_roles[role.id]
                     found.append(f"**{role.name}** (ID {role.id}) -> {rn} ({rv})")
-            rn, rv = self.get_user_rank_from_roles(member)
+            rn, rv, rs = self.get_user_rank_from_roles(member)
+            sub_txt = f" {rs}" if rs else ""
 
             embed = discord.Embed(
                 title=f"🔍 Debug: {member.display_name}", color=discord.Color.orange()
@@ -1146,7 +1302,7 @@ class RolePermissionVoiceManager(commands.Cog):
                 value=f"ID: {member.id}\nRollen: {len(member.roles)}",
                 inline=True,
             )
-            embed.add_field(name="🎯 Erkannter Rang", value=f"**{rn}** ({rv})", inline=True)
+            embed.add_field(name="🎯 Erkannter Rang", value=f"**{rn}{sub_txt}** ({rv})", inline=True)
             embed.add_field(
                 name="🎭 Gefundene Rang-Rollen",
                 value="\n".join(found) if found else "❌ Keine",
@@ -1167,12 +1323,13 @@ class RolePermissionVoiceManager(commands.Cog):
     async def rank_info(self, ctx, member: discord.Member = None):
         member = member or ctx.author
         try:
-            rn, rv = self.get_user_rank_from_roles(member)
+            rn, rv, rs = self.get_user_rank_from_roles(member)
+            sub_txt = f" {rs}" if rs else ""
             embed = discord.Embed(
                 title=f"🎭 Rang-Information: {member.display_name}",
                 color=discord.Color.blue(),
             )
-            embed.add_field(name="Höchster Rang", value=rn, inline=True)
+            embed.add_field(name="Höchster Rang", value=f"{rn}{sub_txt}", inline=True)
             embed.add_field(name="Rang-Wert", value=rv, inline=True)
             if rn in self.balancing_rules:
                 minus, plus = self.balancing_rules[rn]
@@ -1208,9 +1365,8 @@ class RolePermissionVoiceManager(commands.Cog):
                 # alten Anker verwerfen & ersten User setzen (persistiert)
                 await self.remove_channel_anchor(channel)
                 first_member = next(iter(members_ranks.keys()))
-                rn, rv = members_ranks[first_member]
-                anchor_subrank = await self.get_user_subrank_from_db(first_member)
-                await self.set_channel_anchor(channel, first_member, rn, rv, anchor_subrank)
+                rn, rv, rs = members_ranks[first_member]
+                await self.set_channel_anchor(channel, first_member, rn, rv, rs)
 
             await self.update_channel_permissions_via_roles(channel, force=True)
             await self.update_channel_name(channel, force=True)
