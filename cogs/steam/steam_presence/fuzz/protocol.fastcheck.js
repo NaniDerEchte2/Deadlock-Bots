@@ -22,7 +22,11 @@ function parsePayload(value) {
 }
 
 function safeNumber(value) {
-  return Number(value);
+  try {
+    return Number(value);
+  } catch (err) {
+    return NaN;
+  }
 }
 
 function convertKeysToCamelCase(obj) {

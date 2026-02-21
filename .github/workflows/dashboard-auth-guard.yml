@@ -104,7 +104,8 @@ jobs:
             http://127.0.0.1:8788/twitch/admin
 
           # External host-style request must be blocked.
-          probe_expect "external-host-admin-blocked" 403 \
+          # Note: New security logic redirects to login (302) instead of raw 403.
+          probe_expect "external-host-admin-blocked" 302 \
             -H "Host: twitch.earlysalty.com" \
             http://127.0.0.1:8788/twitch/admin
 
