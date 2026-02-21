@@ -153,10 +153,13 @@ class SteamFriendsSync(commands.Cog):
     async def cog_load(self) -> None:
         self.periodic_sync.start()
         if settings.guild_id:
+            guild_obj = discord.Object(id=settings.guild_id)
+            # Global-Tree → Guild-Tree verschieben, damit der Command sofort sichtbar ist
+            self.bot.tree.remove_command("sync_steam_friends")
+            self.bot.tree.add_command(self.slash_sync_friends, guild=guild_obj)
             try:
-                guild_obj = discord.Object(id=settings.guild_id)
                 synced = await self.bot.tree.sync(guild=guild_obj)
-                log.info("SteamFriendsSync: Guild-Commands synchronisiert (%d)", len(synced))
+                log.info("SteamFriendsSync: Guild-Command sync abgeschlossen (%d commands)", len(synced))
             except Exception as exc:
                 log.warning("SteamFriendsSync: Guild-Command-Sync fehlgeschlagen: %s", exc)
 
