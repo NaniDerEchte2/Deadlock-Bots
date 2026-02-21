@@ -567,8 +567,8 @@ class ServicePitchWarningMixin:
         mention = f"@{chatter_login} " if chatter_login else ""
         if strong:
             return (
-                f"[Hinweis] {mention}bitte keine Selbstpromo, Portfolio-/Commission-Angebote "
-                "oder DM/Link-Pitches im Chat."
+                f"🛡️ {mention}wurde als potenzieller Service-Pitcher erkannt (verkauft oft Designs/Viewer/Scam). "
+                "Empfehlung an Streamer/Mods: Ignorieren & Bannen."
             )
         return (
             f"[Hinweis] {mention}bitte keine Service-/Promo-Angebote im Chat "
@@ -700,8 +700,8 @@ class ServicePitchWarningMixin:
                                 )
 
                             escalation_text = (
-                                f"@{chatter_login} Timeout (10m): Bitte unterlasse die Service-Pitches/Spam. "
-                                "Dies ist die letzte Warnung."
+                                f"🛡️ @{chatter_login} Timeout (10m) wegen wiederholter Service-Pitches/Spam. "
+                                "Empfehlung: User bannen, falls das Verhalten anhält."
                             )
                             await self._send_chat_message(
                                 channel, escalation_text, source="service_warning"
