@@ -55,7 +55,7 @@ class SteamVerifiedRole(commands.Cog):
         try:
             with central_db.get_conn() as con:
                 cur = con.execute(
-                    """SELECT user_id FROM steam_links WHERE verified=1 GROUP BY user_id"""
+                    """SELECT user_id FROM steam_links WHERE verified=1 AND is_steam_friend=1 GROUP BY user_id"""
                 )
                 rows = cur.fetchall()
         except Exception as e:
@@ -392,9 +392,40 @@ class SteamVerifiedRole(commands.Cog):
 
         if lines and not self._http_session_closed():
             await self._announce_assignments(guild, lines)
+
+        # Rolle entfernen wenn Freundschaft beendet (is_steam_friend=0)
+        # Safety: nur wenn verified_ids nicht leer ist – schützt vor Cold-Start (alle is_steam_friend=0 nach Migration)
+        removed_count = 0
+        if verified_ids and not self.bot.is_closed() and not self._http_session_closed():
+            removal_lines = []
+            for member in list(role.members):
+                if member.bot:
+                    continue
+                if member.id in verified_ids:
+                    continue
+                if self.dry_run:
+                    log.info("[DRY] Würde Rolle entfernen bei %s (%s)", member.id, member.display_name)
+                    removed_count += 1
+                    continue
+                try:
+                    await member.remove_roles(role, reason="Steam-Freundschaft beendet (is_steam_friend=0)")
+                    removed_count += 1
+                    removal_lines.append(
+                        f"❌ <@{member.id}> ({member.display_name}) – Verified-Rolle entfernt (Steam-Freundschaft beendet)."
+                    )
+                    log.info("Verified-Rolle entfernt: %s (%s)", member.id, member.display_name)
+                    await asyncio.sleep(0.25)
+                except discord.Forbidden:
+                    log.error("Forbidden: Konnte Rolle nicht entfernen bei %s (%s)", member.id, member.display_name)
+                except discord.HTTPException as exc:
+                    log.warning("HTTP-Fehler beim Entfernen der Rolle bei %s: %s", member.id, exc)
+            if removal_lines and not self._http_session_closed():
+                await self._announce_assignments(guild, removal_lines)
+
         log.info(
-            "Verified-Check: %s Rollen vergeben, %s IDs nicht auf Server, %s IDs per Retry-Cache übersprungen.",
+            "Verified-Check: %s Rollen vergeben, %s entfernt, %s IDs nicht auf Server, %s IDs per Retry-Cache übersprungen.",
             changes,
+            removed_count,
             not_found,
             skipped_cached_retry,
         )
@@ -475,17 +506,30 @@ class SteamVerifiedRole(commands.Cog):
         top_pos = max((r.position for r in guild.me.roles), default=0) if guild else -1
         role_pos = role.position if role else -1
         members_present = sum(1 for i in ids if guild and guild.get_member(i))
+        members_with_role = len(role.members) if role else 0
+
+        # Zähle is_steam_friend=1 Gesamt (inkl. ohne Discord-ID) für Cold-Start-Diagnose
+        try:
+            with central_db.get_conn() as con:
+                total_friends = con.execute(
+                    "SELECT COUNT(*) as c FROM steam_links WHERE is_steam_friend=1"
+                ).fetchone()["c"]
+        except Exception:
+            total_friends = -1
+
         embed = discord.Embed(title="Verified-Role Diagnose", color=0x2ECC71)
         embed.add_field(name="Guild ID", value=str(self.guild_id), inline=True)
         embed.add_field(name="Role ID", value=str(self.verified_role_id), inline=True)
         embed.add_field(name="DB Pfad", value=self.db_path, inline=False)
         embed.add_field(name="DB vorhanden", value=str(db_exists), inline=True)
-        embed.add_field(name="Verifizierte IDs (DB)", value=str(len(ids)), inline=True)
+        embed.add_field(name="is_steam_friend=1 (gesamt)", value=str(total_friends), inline=True)
+        embed.add_field(name="Rolle-fähige IDs (verified+friend+Discord)", value=str(len(ids)), inline=True)
         embed.add_field(
-            name="Davon aktuell im Cache (get_member)",
+            name="Davon im Cache (get_member)",
             value=str(members_present),
             inline=True,
         )
+        embed.add_field(name="Mitglieder mit Rolle (aktuell)", value=str(members_with_role), inline=True)
         embed.add_field(name="Bot Manage Roles", value=str(manage_roles), inline=True)
         embed.add_field(
             name="Bot TopPos vs Role Pos", value=f"{top_pos} vs {role_pos}", inline=True

@@ -2641,20 +2641,20 @@ class BetaInviteFlow(commands.Cog):
             _trace_interaction_event("ui_animation_stopped", interaction, base_text=base_text)
 
     async def _sync_verified_on_friendship(self, discord_id: int, steam_id64: str) -> None:
-        """Sofort-Sync wenn eine Steam-Freundschaft bestätigt wird: verified=1 setzen + Rolle geben."""
+        """Sofort-Sync wenn eine Steam-Freundschaft bestätigt wird: verified=1 + is_steam_friend=1 setzen + Rolle geben."""
         try:
             with db.get_conn() as conn:
                 conn.execute(
-                    "UPDATE steam_links SET verified=1, updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND steam_id=?",
+                    "UPDATE steam_links SET verified=1, is_steam_friend=1, updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND steam_id=?",
                     (int(discord_id), steam_id64),
                 )
             log.info(
-                "Friend-Sync: verified=1 gesetzt für discord=%s, steam=%s",
+                "Friend-Sync: verified=1, is_steam_friend=1 gesetzt für discord=%s, steam=%s",
                 discord_id,
                 steam_id64,
             )
         except Exception:
-            log.exception("Friend-Sync: Konnte verified=1 nicht setzen für discord=%s", discord_id)
+            log.exception("Friend-Sync: Konnte verified=1/is_steam_friend=1 nicht setzen für discord=%s", discord_id)
 
         await self._trigger_immediate_role_assignment(discord_id)
         _trace("friend_sync_verified", discord_id=discord_id, steam_id64=steam_id64)

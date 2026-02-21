@@ -792,6 +792,12 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
             except sqlite3.OperationalError as exc:
                 if "duplicate column name" not in str(exc).lower():
                     raise
+        # Steam friend tracking: is_steam_friend=1 bedeutet der Bot ist aktuell Steam-Freund
+        try:
+            c.execute("ALTER TABLE steam_links ADD COLUMN is_steam_friend INTEGER DEFAULT 0")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
         # Steam link rank extensions (Deadlock rank snapshot from GC profile cards)
         for alter_sql in (
             "ALTER TABLE steam_links ADD COLUMN deadlock_rank INTEGER",
@@ -924,6 +930,9 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
             # Performance Indexes (2026-02-20)
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_steam_links_verified ON steam_links(verified, user_id)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_steam_links_friend ON steam_links(is_steam_friend, user_id)"
             )
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_voice_log_started_user ON voice_session_log(started_at, user_id)"

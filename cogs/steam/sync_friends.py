@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from cogs.steam.steam_master import SteamTaskClient
 from service import db
@@ -35,11 +35,11 @@ def _save_steam_friend_to_db(steam_id64: str, discord_id: int | None = None) -> 
         ).fetchone()
 
         if existing:
-            # Already linked to a Discord account, just update verified status
+            # Already linked to a Discord account, just update verified + friend status
             conn.execute(
                 """
                 UPDATE steam_links
-                SET verified = 1, updated_at = CURRENT_TIMESTAMP
+                SET verified = 1, is_steam_friend = 1, updated_at = CURRENT_TIMESTAMP
                 WHERE steam_id = ? AND user_id = ?
                 """,
                 (steam_id64, existing["user_id"]),
@@ -53,10 +53,11 @@ def _save_steam_friend_to_db(steam_id64: str, discord_id: int | None = None) -> 
             # New friend or unlinked friend
             conn.execute(
                 """
-                INSERT INTO steam_links(user_id, steam_id, name, verified)
-                VALUES(?, ?, ?, ?)
+                INSERT INTO steam_links(user_id, steam_id, name, verified, is_steam_friend)
+                VALUES(?, ?, ?, ?, 1)
                 ON CONFLICT(user_id, steam_id) DO UPDATE SET
                   verified=1,
+                  is_steam_friend=1,
                   updated_at=CURRENT_TIMESTAMP
                 """,
                 (uid, steam_id64, "", 1),
@@ -117,6 +118,20 @@ async def sync_all_friends(tasks: SteamTaskClient | None = None) -> dict:
                 log.error("Failed to save friend %s: %s", steam_id64, e)
 
         log.info("Synced %d/%d friends to database", synced, len(friends))
+
+        # Cleanup: is_steam_friend=0 für Steam-IDs die nicht mehr in der Freundesliste sind
+        friend_steam_ids = [f.get("steam_id64") for f in friends if f.get("steam_id64")]
+        if friend_steam_ids:
+            placeholders = ",".join("?" * len(friend_steam_ids))
+            with db.get_conn() as conn:
+                cleared = conn.execute(
+                    f"UPDATE steam_links SET is_steam_friend=0, updated_at=CURRENT_TIMESTAMP "
+                    f"WHERE is_steam_friend=1 AND steam_id NOT IN ({placeholders})",
+                    friend_steam_ids,
+                ).rowcount
+            if cleared:
+                log.info("Cleared is_steam_friend for %d removed friends", cleared)
+
         return {"success": True, "count": synced, "error": None}
 
     except Exception as e:
@@ -130,6 +145,26 @@ class SteamFriendsSync(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.tasks = SteamTaskClient(poll_interval=0.5, default_timeout=30.0)
+
+    async def cog_load(self) -> None:
+        self.periodic_sync.start()
+
+    def cog_unload(self) -> None:
+        self.periodic_sync.cancel()
+
+    @tasks.loop(hours=6)
+    async def periodic_sync(self) -> None:
+        """Synchronisiert alle 6h die Steam-Freundesliste mit der DB (is_steam_friend Pflege)."""
+        log.info("Periodischer Steam-Freunde-Sync gestartet...")
+        result = await sync_all_friends(self.tasks)
+        if result["success"]:
+            log.info("Periodischer Sync abgeschlossen: %d Freunde", result["count"])
+        else:
+            log.warning("Periodischer Sync fehlgeschlagen: %s", result.get("error"))
+
+    @periodic_sync.before_loop
+    async def before_periodic_sync(self) -> None:
+        await self.bot.wait_until_ready()
 
     @commands.command(name="sync_steam_friends")
     @commands.has_permissions(administrator=True)
