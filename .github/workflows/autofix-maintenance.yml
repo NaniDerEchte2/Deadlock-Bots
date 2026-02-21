@@ -30,9 +30,6 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Setup uv
-        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
-
       - name: Setup Node.js
         uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
         with:
@@ -42,9 +39,12 @@ jobs:
         run: |
           set -euo pipefail
 
+          echo "Installing tools..."
+          python -m pip install -r .github/workflows/requirements-tools.txt
+
           echo "Running ruff --fix..."
-          uvx --with ruff==0.15.1 ruff check . --fix || true
-          uvx --with ruff==0.15.1 ruff format . || true
+          ruff check . --fix || true
+          ruff format . || true
 
           if [ -f "cogs/steam/steam_presence/package-lock.json" ]; then
             echo "Running npm audit fix (lockfile only)..."

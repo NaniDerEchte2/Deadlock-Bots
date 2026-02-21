@@ -87,20 +87,22 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install Analysis Tools
+        run: python -m pip install -r .github/workflows/requirements-tools.txt
+
       # Bandit - Security Issues
       - name: Bandit Security Scan
         run: |
           echo "Running Bandit security scan..."
-          python -m pip install bandit==1.8.3
           bandit -r . -f json -o bandit-report.json -ll
           echo "✅ Bandit scan completed"
           bandit -r . -ll
+
       # Safety - Known Vulnerabilities (recursive requirements scan)
       - name: Safety Vulnerability Check
         if: needs.detect-languages.outputs.has_requirements == 'true'
         run: |
           echo "Running Safety vulnerability check (recursive requirements scan)..."
-          python -m pip install safety==3.7.0
           mkdir -p safety-reports
           found=0
           audit_fail=0
@@ -127,12 +129,12 @@ jobs:
             echo "❌ Safety found vulnerable dependencies (see artifacts)."
             exit 1
           fi
+
       # Pip-Audit (recursive requirements scan)
       - name: Pip-Audit Deep Scan
         if: needs.detect-languages.outputs.has_requirements == 'true'
         run: |
           echo "Running pip-audit (recursive requirements scan)..."
-          python -m pip install pip-audit==2.8.2
           mkdir -p pip-audit-reports
           found=0
           audit_fail=0
@@ -159,29 +161,29 @@ jobs:
             echo "❌ pip-audit found vulnerable dependencies (see artifacts)."
             exit 1
           fi
+
       # Radon - Complexity Analysis
       - name: Complexity Analysis
         run: |
           echo "Running complexity analysis..."
-          python -m pip install radon==6.0.1
           radon cc . -a -nb --total-average > radon-complexity.txt || true
           radon mi . -nb > radon-maintainability.txt || true
           echo "✅ Complexity analysis completed"
+
       # Vulture - Dead Code Detection
       - name: Find Dead Code
         run: |
           echo "Looking for dead code..."
-          python -m pip install vulture==2.14
           vulture . --min-confidence 80 > vulture-report.txt || true
           if [ -f vulture-report.txt ]; then
             lines=$(wc -l < vulture-report.txt)
             echo "Found $lines potential dead code items"
           fi
+
       # Dodgy - Suspicious code patterns
       - name: Dodgy Suspicious Pattern Check
         run: |
           echo "Running dodgy..."
-          python -m pip install dodgy==0.2.1
           dodgy > dodgy-report.txt
       - name: Upload Python Security Reports
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0

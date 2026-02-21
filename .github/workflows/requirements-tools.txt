@@ -1,15 +1,20 @@
-# Requirements for CI tools with hashes for Scorecard compliance
-# Generated manually for ruff 0.9.6 and mypy 1.15.0 on Python 3.12 (Linux/Ubuntu)
+# Requirements for CI tools
+# Essential for Scorecard compliance and reliable CI runs.
 
-ruff==0.9.6 
-    --hash=sha256:69a6f44d852579df66a50352b904f4a34b9d0349a42f56b2316e68f3be7d570d 
-    --hash=sha256:4d702330f6d625d2076044677732d847849e88941703666d929424e819b16864
-mypy==1.15.0 
-    --hash=sha256:0d7744383c261e40026e6d11623910c283842c8646b107662c5b6165d6422325 
-    --hash=sha256:598a39446d655079a4066063640b3c6753086a9bc24522d08a5416be7a001a1d
-mypy-extensions==1.0.0 
-    --hash=sha256:4392f6c0ed8548c4a339ad236244fe7a50f2240d0c4e5df4dd772f5343a45196 
-    --hash=sha256:75dbec33041f094dee8cd28892408bc882c16303259972c724773c399f92582b
-typing-extensions==4.12.2 
-    --hash=sha256:04e5de7a7cf05f939fd670691501d528ec45163f58a3683a42095f32b8fa2ae9 
-    --hash=sha256:1a7ead084f74d9e033b0035f2998a442749007466ef4706509e51c3cf13465e9
+# Ruff
+ruff==0.9.6
+
+# Mypy
+mypy==1.15.0
+mypy-extensions==1.0.0
+typing-extensions==4.12.2
+
+# Security Tools
+bandit==1.8.3
+safety==3.7.0
+pip-audit==2.8.2
+
+# Additional logic for deep-scan
+radon==6.0.1
+vulture==2.14
+dodgy==0.2.1
