@@ -150,19 +150,26 @@ class RolePermissionVoiceManager(commands.Cog):
             """
         )
         # Migration: Neue Spalten für ältere Datenbanken hinzufügen
-        for _migration_sql in [
-            "ALTER TABLE voice_channel_anchors ADD COLUMN anchor_subrank INTEGER DEFAULT 3",
-            "ALTER TABLE voice_channel_anchors ADD COLUMN score_min INTEGER",
-            "ALTER TABLE voice_channel_anchors ADD COLUMN score_max INTEGER",
-        ]:
-            try:
-                await db.execute_async(_migration_sql)
-            except Exception:
-                pass  # Spalte existiert bereits
+        try:
+            info_rows = await db.query_all_async("PRAGMA table_info(voice_channel_anchors)")
+            existing_cols = {row["name"] for row in info_rows} if info_rows else set()
+
+            migrations = [
+                ("anchor_subrank", "ALTER TABLE voice_channel_anchors ADD COLUMN anchor_subrank INTEGER DEFAULT 3"),
+                ("score_min", "ALTER TABLE voice_channel_anchors ADD COLUMN score_min INTEGER"),
+                ("score_max", "ALTER TABLE voice_channel_anchors ADD COLUMN score_max INTEGER"),
+            ]
+
+            for col_name, sql in migrations:
+                if col_name not in existing_cols:
+                    logger.info("Migriere voice_channel_anchors: Füge Spalte %s hinzu", col_name)
+                    await db.execute_async(sql)
+        except Exception as e:
+            logger.error("Fehler bei Schema-Migration für voice_channel_anchors: %s", e)
 
     async def _db_load_state_for_guild(self, guild: discord.Guild):
         """Lädt Settings & Anker der Gilde in die In-Memory-Maps."""
-        await self._db_ensure_schema()
+        # (Sichergestellt via cog_load)
 
         # Settings
         rows = await db.query_all_async(
@@ -301,6 +308,9 @@ class RolePermissionVoiceManager(commands.Cog):
 
     async def cog_load(self):
         try:
+            # Schema sicherstellen
+            await self._db_ensure_schema()
+
             # Bei Start für alle bekannten Guilds laden
             for guild in self.bot.guilds:
                 await self._db_load_state_for_guild(guild)
@@ -836,6 +846,8 @@ class RolePermissionVoiceManager(commands.Cog):
         self._startup_reconciled = True
         for guild in self.bot.guilds:
             try:
+                # Sicherstellen, dass der DB-Status für diese Guild geladen wurde (falls cog_load zu früh war)
+                await self._db_load_state_for_guild(guild)
                 await self._reconcile_live_channels(guild)
             except Exception as e:
                 logger.warning("on_ready reconcile failed for guild %s: %s", guild.id, e)
