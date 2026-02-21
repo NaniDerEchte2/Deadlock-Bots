@@ -587,6 +587,12 @@ class DashboardServer:
         candidate = (raw or "").strip()
         if not candidate:
             return fallback
+        if "\r" in candidate or "\n" in candidate:
+            return fallback
+
+        # Normalize backslashes (some browsers treat them as forward slashes)
+        candidate = candidate.replace("\\", "/")
+
         try:
             parsed = urlparse(candidate)
         except Exception:
@@ -601,10 +607,36 @@ class DashboardServer:
         if candidate.startswith("//"):
             return fallback
 
+        # Normalize path to collapse .. and .
+        path_parts = []
+        for p in parsed.path.split("/"):
+            if p == "..":
+                if path_parts:
+                    path_parts.pop()
+            elif p == "." or not p:
+                continue
+            else:
+                path_parts.append(p)
+        
+        norm_path = "/" + "/".join(path_parts)
+        if parsed.path.endswith("/") and norm_path != "/":
+            norm_path += "/"
+
+        # Final check for double slash after normalization
+        if norm_path.startswith("//"):
+             return fallback
+
         # Allowed destination prefixes
         allowed = ("/admin", "/api/", "/turnier", "/auth/")
-        if any(candidate.startswith(p) for p in allowed):
-            return candidate
+        if any(norm_path.startswith(p) for p in allowed):
+            # Reconstruct with original query/fragment
+            res = norm_path
+            if parsed.query:
+                res += "?" + parsed.query
+            if parsed.fragment:
+                res += "#" + parsed.fragment
+            return res
+
         return fallback
 
     @staticmethod
@@ -616,10 +648,15 @@ class DashboardServer:
             return fallback
         if "\r" in candidate or "\n" in candidate:
             return fallback
+        
+        # Normalize backslashes
+        candidate = candidate.replace("\\", "/")
+
         try:
             parsed = urlparse(candidate)
         except Exception:
             return fallback
+        
         # CodeQL: URL redirection from remote source.
         if parsed.scheme or parsed.netloc:
             return fallback
@@ -627,6 +664,14 @@ class DashboardServer:
             return fallback
         if candidate.startswith("//"):
             return fallback
+
+        # Path traversal check
+        path_parts = parsed.path.split("/")
+        if ".." in path_parts or "." in path_parts:
+            # We already have norm_path logic in _normalize_auth_next_path,
+            # for general internal redirects we just reject '..' for simplicity.
+            return fallback
+
         return candidate
 
     @staticmethod
@@ -636,6 +681,9 @@ class DashboardServer:
         candidate = (location or "").strip()
         if not candidate:
             return fallback
+        # Normalize backslashes
+        candidate = candidate.replace("\\", "/")
+
         if any(ch in candidate for ch in {"\r", "\n", "<", ">", '"', "'"}):
             return fallback
         try:
@@ -653,6 +701,9 @@ class DashboardServer:
             return fallback
         if candidate.startswith("//"):
             return fallback
+        # Path traversal check
+        if ".." in parsed.path.split("/"):
+            return fallback
         return candidate
 
     def _build_discord_login_url(
@@ -660,10 +711,20 @@ class DashboardServer:
     ) -> str:
         if not self._discord_auth_required:
             return "/admin"
-        normalized = self._normalize_auth_next_path(
-            next_path or (request.rel_url.path_qs if request.rel_url else "/admin")
-        )
-        return f"/auth/discord/login?{urlencode({'next': normalized})}"
+        
+        # Use provided next_path OR extract from current request
+        if next_path:
+            raw_target = next_path
+        else:
+            raw_target = (request.rel_url.path_qs if (request and request.rel_url) else "/admin")
+
+        # Strict validation of the next parameter
+        normalized = self._normalize_auth_next_path(raw_target)
+        
+        # CodeQL: URL redirection from remote source.
+        # Ensure we only return a path relative to our own /auth/discord/login
+        query = urlencode({'next': normalized})
+        return f"/auth/discord/login?{query}"
 
     @staticmethod
     def _normalize_origin(raw: Optional[str]) -> Optional[str]:
