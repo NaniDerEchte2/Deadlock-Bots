@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Rules Panel Cog - startet das neue KI-Onboarding im privaten Thread.
+Rules Panel Cog - startet das statische Multi-Step Onboarding im privaten Thread.
 - Persistente Panel-View (nur custom_id-Buttons, kein Link-Button)
-- Delegiert an AIOnboarding (cogs/ai_onboarding.py)
+- Delegiert an StaticOnboarding (cogs/onboarding.py)
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from discord import app_commands
 # ========== Konfiguration ==========
 MAIN_GUILD_ID = 1289721245281292288
 RULES_CHANNEL_ID = 1315684135175716975
+PANEL_MESSAGE_ID = 1413481216509874207  # Bestehende Panel-Message – wird editiert statt neu gepostet
 
 log = logging.getLogger("RulesPanel")
 
@@ -78,7 +79,7 @@ class RulesPanelView(discord.ui.View):
         self.cog = cog
 
     @discord.ui.button(
-        label="Weiter ➜", style=discord.ButtonStyle.primary, custom_id="rp:panel:start"
+        label="Hier starten ➜", style=discord.ButtonStyle.primary, custom_id="rp:panel:start"
     )
     async def start(self, interaction: discord.Interaction, _button: discord.ui.Button):
         await self.cog.start_in_thread(interaction)
@@ -117,12 +118,38 @@ class RulesPanel(commands.Cog):
             return
 
         emb = discord.Embed(
-            title="📜 Regelwerk · Deutsche Deadlock Community",
-            description="Klick auf **Weiter ➜**, um dein Onboarding im eigenen Thread zu starten.",
+            title="\U0001f4dc Regelwerk \u00b7 Deutsche Deadlock Community",
+            description=(
+                "### Neu hier? Klick auf **Hier starten \u27a4**\n" 
+                "und wir erkl\u00e4ren dir alles in 5 Minuten.\n\n\n"
+                "**Verhalten**\n"
+                "- Respekt gegen\u00fcber allen \u2013 keine Beleidigungen, Diskriminierung oder pers\u00f6nlichen Angriffe\n"
+                "- Keine Hassrede, kein NSFW, kein Spam, keine Fremdwerbung\n"
+                "- Privatsph\u00e4re respektieren \u2013 keine fremden Daten posten\n"
+                "- Sch\u00e4dliche Inhalte (Viren, IP-Grabber etc.) = sofortiger permanenter Bann\n\n"
+                "**Im Spielkontext erlaubt**\n"
+                "Situatives Trash Talking, Sarkasmus, Wortspiele \u2013 solange es nicht pers\u00f6nlich wird. "
+                "Ohne nonverbale Signale kann Ton schnell schiefgehen, also vorher abchecken ob alle damit fein sind.\n\n"
+                "**Universalregel:** Sei kein Arschloch \U0001f604\n\n"
+                "**Moderation**\n"
+                "Probleme? @Moderator oder @Owner pingen. "
+                "Konsequenzen je nach Schwere: Verwarnung \u2192 Timeout \u2192 Ban."
+            ),
             color=0x00AEEF,
         )
-        await ch.send(embed=emb, view=RulesPanelView(self))
-        await interaction.response.send_message("✅ Panel gesendet.", ephemeral=True)
+        view = RulesPanelView(self)
+
+        # Bestehende Message editieren statt neu posten
+        try:
+            msg = await ch.fetch_message(PANEL_MESSAGE_ID)
+            await msg.edit(embed=emb, view=view)
+            await interaction.response.send_message("✅ Panel aktualisiert.", ephemeral=True)
+        except discord.NotFound:
+            await ch.send(embed=emb, view=view)
+            await interaction.response.send_message("✅ Panel neu gesendet (alte Message nicht gefunden).", ephemeral=True)
+        except Exception as e:
+            log.error("Panel-Edit fehlgeschlagen: %s", e)
+            await interaction.response.send_message(f"❌ Fehler: {e}", ephemeral=True)
 
     # ----- Start-Flow im Thread -----
     async def start_in_thread(self, interaction: discord.Interaction):
@@ -143,15 +170,15 @@ class RulesPanel(commands.Cog):
         except Exception as exc:
             log.debug("Konnte Start-Hinweis nicht senden: %s", exc)
 
-        # KI-Onboarding starten
-        ai_cog = self.bot.get_cog("AIOnboarding")
-        if ai_cog and hasattr(ai_cog, "start_in_channel"):
+        # Statisches Onboarding starten
+        onboard_cog = self.bot.get_cog("StaticOnboarding")
+        if onboard_cog and hasattr(onboard_cog, "start_in_channel"):
             try:
-                ok = await ai_cog.start_in_channel(thread, interaction.user)  # type: ignore
+                ok = await onboard_cog.start_in_channel(thread, interaction.user)  # type: ignore
                 if ok:
                     return
             except Exception as e:
-                log.warning("AIOnboarding.start_in_channel fehlgeschlagen: %r", e)
+                log.warning("StaticOnboarding.start_in_channel fehlgeschlagen: %r", e)
 
         # Minimaler Fallback, falls die KI nicht läuft
         fallback_embed = discord.Embed(

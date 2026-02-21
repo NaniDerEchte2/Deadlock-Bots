@@ -303,14 +303,14 @@ class WelcomeDM(commands.Cog):
     async def run_flow_in_channel(
         self, channel: discord.abc.Messageable, member: discord.Member
     ) -> bool:
-        """Delegiert an das KI-Onboarding (Backwards-Compat für alte Aufrufer)."""
-        ai_cog = getattr(self.bot, "get_cog", lambda name: None)("AIOnboarding")
-        if ai_cog and hasattr(ai_cog, "start_in_channel"):
+        """Delegiert an das statische Onboarding (Backwards-Compat für alte Aufrufer)."""
+        onboard_cog = getattr(self.bot, "get_cog", lambda name: None)("StaticOnboarding")
+        if onboard_cog and hasattr(onboard_cog, "start_in_channel"):
             try:
-                return await ai_cog.start_in_channel(channel, member)  # type: ignore
+                return await onboard_cog.start_in_channel(channel, member)  # type: ignore
             except Exception as exc:
                 logger.warning(
-                    "AIOnboarding.start_in_channel fehlgeschlagen: %s",
+                    "StaticOnboarding.start_in_channel fehlgeschlagen: %s",
                     exc,
                     exc_info=True,
                 )
