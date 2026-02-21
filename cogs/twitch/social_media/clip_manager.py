@@ -189,7 +189,7 @@ class ClipManager:
                     log.exception("Fehler beim Registrieren von Clip %s", clip.get("id"))
                     continue
 
-            log.info(
+            log.debug(
                 "Fetched %d clips für %s, davon %d registriert",
                 len(clips),
                 streamer_login,

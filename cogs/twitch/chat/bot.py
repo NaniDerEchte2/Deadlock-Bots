@@ -560,7 +560,7 @@ if TWITCHIO_AVAILABLE:
                         self._periodic_promo_loop(),
                         name="twitch.chat_bot.promos",
                     )
-                    log.info(
+                    log.debug(
                         "Chat-Promo-Loop gestartet (Check alle %ss)",
                         max(15, int(PROMO_LOOP_INTERVAL_SEC)),
                     )

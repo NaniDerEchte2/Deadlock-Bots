@@ -158,7 +158,7 @@ class TwitchBaseCog(commands.Cog):
                     else None
                 )
                 self._webhook_secret: str | None = _webhook_secret
-                log.info(
+                log.debug(
                     "EventSub Webhook Handler initialisiert (base_url=%s)",
                     self._webhook_base_url,
                 )
@@ -1051,7 +1051,7 @@ class TwitchBaseCog(commands.Cog):
                 # Verknüpfe Chat-Bot mit Raid-Bot für Recruitment-Messages
                 if self._raid_bot:
                     self._raid_bot.set_chat_bot(self._twitch_chat_bot)
-                    log.info("Chat-Bot mit Raid-Bot verknüpft für Recruitment-Messages")
+                    log.debug("Chat-Bot mit Raid-Bot verknüpft für Recruitment-Messages")
 
                 # Periodisch neue Partner-Channels joinen
                 asyncio.create_task(
