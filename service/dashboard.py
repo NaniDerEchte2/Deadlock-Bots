@@ -804,8 +804,16 @@ class DashboardServer:
             path="/",
         )
 
-    def _clear_discord_session_cookie(self, response: web.StreamResponse) -> None:
-        response.del_cookie(self._discord_session_cookie, path="/")
+    def _clear_discord_session_cookie(
+        self, response: web.StreamResponse, request: web.Request
+    ) -> None:
+        response.del_cookie(
+            self._discord_session_cookie,
+            path="/",
+            httponly=True,
+            samesite="Lax",
+            secure=self._is_secure_request(request),
+        )
 
     def _get_discord_auth_session(self, request: web.Request) -> dict[str, Any] | None:
         if not self._discord_auth_required:
@@ -1736,7 +1744,7 @@ class DashboardServer:
             self._discord_sessions.pop(session_id, None)
         login_url = MASTER_DISCORD_ADMIN_LOGIN_URL if self._discord_auth_required else "/admin"
         response = web.HTTPFound(login_url)
-        self._clear_discord_session_cookie(response)
+        self._clear_discord_session_cookie(response, request)
         raise response
 
     async def _handle_auth_me(self, request: web.Request) -> web.Response:

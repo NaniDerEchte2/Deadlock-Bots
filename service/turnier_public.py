@@ -17,6 +17,7 @@ import math
 import os
 import secrets
 import time
+from hmac import compare_digest
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -38,6 +39,7 @@ STEAM_LINK_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or "https://link.earlysalty.
 
 SESSION_COOKIE = "turnier_pub_session"
 SESSION_TTL = 6 * 3600  # 6 hours
+SESSION_TOKEN_HEX_LEN = 64
 
 TURNIER_ROLE_ID = 1474210107255554331
 
@@ -223,6 +225,8 @@ class TurnierPublicServer:
         resp.headers["Cache-Control"] = "no-store"
         resp.headers["X-Content-Type-Options"] = "nosniff"
         resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        resp.headers["X-Frame-Options"] = "DENY"
+        resp.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
         return resp
 
     # ── Session management ────────────────────────────────────────────────────
@@ -241,8 +245,10 @@ class TurnierPublicServer:
         return session_token, csrf_token
 
     def _get_session(self, request: web.Request) -> dict[str, Any] | None:
-        token = request.cookies.get(SESSION_COOKIE)
+        token = (request.cookies.get(SESSION_COOKIE) or "").strip()
         if not token:
+            return None
+        if len(token) != SESSION_TOKEN_HEX_LEN or any(c not in "0123456789abcdef" for c in token):
             return None
         data = self._sessions.get(token)
         if not data:
@@ -250,6 +256,8 @@ class TurnierPublicServer:
         if data["expires_at"] < time.time():
             self._sessions.pop(token, None)
             return None
+        # Sliding expiration for active users.
+        data["expires_at"] = time.time() + SESSION_TTL
         return data
 
     def _delete_session(self, request: web.Request) -> None:
@@ -264,8 +272,14 @@ class TurnierPublicServer:
             del self._sessions[k]
 
     def _check_csrf(self, request: web.Request, session: dict[str, Any]) -> bool:
-        header_token = request.headers.get("X-CSRF-Token", "")
-        return header_token == session.get("csrf_token", "")
+        header_token = str(request.headers.get("X-CSRF-Token", "") or "").strip()
+        expected = str(session.get("csrf_token", "") or "").strip()
+        if not header_token or not expected:
+            return False
+        try:
+            return compare_digest(header_token, expected)
+        except Exception:
+            return False
 
     # ── Guild resolution ──────────────────────────────────────────────────────
 
@@ -294,7 +308,10 @@ class TurnierPublicServer:
         raise web.HTTPFound(location=url)
 
     async def handle_auth_complete(self, request: web.Request) -> web.Response:
-        token = request.query.get("token", "")
+        token = str(request.query.get("token", "") or "").strip()
+        # One-time tokens are expected to be short URL-safe strings.
+        if len(token) > 256 or any(ch.isspace() for ch in token):
+            raise web.HTTPFound(location="/")
         if not token:
             raise web.HTTPFound(location="/")
 
@@ -319,13 +336,14 @@ class TurnierPublicServer:
             samesite="Lax",
             max_age=SESSION_TTL,
             secure=True,
+            path="/",
         )
         raise resp
 
     async def handle_auth_logout(self, request: web.Request) -> web.Response:
         self._delete_session(request)
         resp = web.HTTPFound(location="/")
-        resp.del_cookie(SESSION_COOKIE)
+        resp.del_cookie(SESSION_COOKIE, path="/", httponly=True, samesite="Lax", secure=True)
         raise resp
 
     async def handle_api_overview(self, request: web.Request) -> web.Response:
