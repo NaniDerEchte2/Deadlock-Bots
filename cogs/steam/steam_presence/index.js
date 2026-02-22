@@ -1362,6 +1362,7 @@ const markFriendRequestFailedStmt = db.prepare(`
 const verifySteamLinkStmt = db.prepare(`
   UPDATE steam_links
   SET verified = 1,
+      is_steam_friend = 1,
       name = COALESCE(NULLIF(@name, ''), name),
       updated_at = CURRENT_TIMESTAMP
   WHERE steam_id = @steam_id
@@ -1370,6 +1371,7 @@ const verifySteamLinkStmt = db.prepare(`
 const unverifySteamLinkStmt = db.prepare(`
   UPDATE steam_links
   SET verified = 0,
+      is_steam_friend = 0,
       updated_at = CURRENT_TIMESTAMP
   WHERE steam_id = ?
 `);
