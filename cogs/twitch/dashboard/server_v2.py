@@ -188,7 +188,10 @@ class DashboardV2Server(
             return True
         if not token or not self._token:
             return False
-        return token == self._token
+        try:
+            return secrets.compare_digest(str(token), str(self._token))
+        except Exception:
+            return False
 
     @staticmethod
     def _host_without_port(raw: str | None) -> str:
@@ -389,8 +392,16 @@ class DashboardV2Server(
             path="/",
         )
 
-    def _clear_discord_admin_cookie(self, response: web.StreamResponse) -> None:
-        response.del_cookie(self._discord_admin_cookie_name, path="/")
+    def _clear_discord_admin_cookie(
+        self, response: web.StreamResponse, request: web.Request
+    ) -> None:
+        response.del_cookie(
+            self._discord_admin_cookie_name,
+            path="/",
+            httponly=True,
+            samesite="Lax",
+            secure=self._is_secure_request(request),
+        )
 
     def _get_discord_admin_session(self, request: web.Request) -> dict[str, Any] | None:
         if not self._discord_admin_required:
@@ -639,7 +650,7 @@ class DashboardV2Server(
             TWITCH_ADMIN_DISCORD_LOGIN_URL if self._discord_admin_required else "/twitch/admin"
         )
         response = web.HTTPFound(login_url)
-        self._clear_discord_admin_cookie(response)
+        self._clear_discord_admin_cookie(response, request)
         raise response
 
     async def _do_add(self, raw: str) -> str:
@@ -1033,8 +1044,14 @@ class DashboardV2Server(
             path="/",
         )
 
-    def _clear_session_cookie(self, response: web.StreamResponse) -> None:
-        response.del_cookie(self._session_cookie_name, path="/")
+    def _clear_session_cookie(self, response: web.StreamResponse, request: web.Request) -> None:
+        response.del_cookie(
+            self._session_cookie_name,
+            path="/",
+            httponly=True,
+            samesite="Lax",
+            secure=self._is_secure_request(request),
+        )
 
     def _create_dashboard_session(
         self, *, twitch_login: str, twitch_user_id: str, display_name: str
@@ -2145,7 +2162,7 @@ new Chart(ctx, {{
             )
 
         response = web.HTTPFound(TWITCH_DASHBOARD_V2_LOGIN_URL)
-        self._clear_session_cookie(response)
+        self._clear_session_cookie(response, request)
         raise response
 
     async def discord_link(self, request: web.Request) -> web.StreamResponse:
