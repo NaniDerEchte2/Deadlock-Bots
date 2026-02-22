@@ -23,9 +23,9 @@ log = logging.getLogger("TempVoiceCore")
 #   Street Brawl   → Kategorie 1357422957017698478 | Staging 1357422958544420944
 CASUAL_STAGING_ID = 1330278323145801758  # Chill Staging
 STAGING_CHANNEL_IDS: set[int] = {
-    CASUAL_STAGING_ID,          # Chill Staging
-    1357422958544420944,        # Street Brawl Staging
-    1412804671432818890,        # Comp/Ranked Staging
+    CASUAL_STAGING_ID,  # Chill Staging
+    1357422958544420944,  # Street Brawl Staging
+    1412804671432818890,  # Comp/Ranked Staging
 }
 FIXED_LANE_IDS: set[int] = {
     1411391356278018245,  # Dauerhafter Voice-Channel (nicht von TempVoice verwalten)
@@ -86,10 +86,17 @@ MANAGED_PREFIXES = {"lane", "street brawl", CASUAL_RANK_FALLBACK.lower()}.union(
 
 # Kurzname → Vollname für Sub-Rang Rollen (z.B. "Asc 3" → "ascendant")
 _RANK_SHORT_MAP: dict[str, str] = {
-    "ini": "initiate", "see": "seeker", "alc": "alchemist",
-    "arc": "arcanist", "rit": "ritualist", "emi": "emissary",
-    "arch": "archon", "ora": "oracle", "pha": "phantom",
-    "asc": "ascendant", "ete": "eternus",
+    "ini": "initiate",
+    "see": "seeker",
+    "alc": "alchemist",
+    "arc": "arcanist",
+    "rit": "ritualist",
+    "emi": "emissary",
+    "arch": "archon",
+    "ora": "oracle",
+    "pha": "phantom",
+    "asc": "ascendant",
+    "ete": "eternus",
 }
 
 # Export-Intent für andere Module (verhindert "unused global variable")
@@ -1447,10 +1454,12 @@ class TempVoiceCore(commands.Cog):
 
                 rules = self._rules_for_staging(staging)
                 cat = staging.category
-                
+
                 # Bestimme initialen Namen: Wenn Ranked-Kategorie, Grind oder prefix_from_rank
-                use_rank_name = rules.get("prefix_from_rank") or (cat and cat.id in MINRANK_CATEGORY_IDS)
-                
+                use_rank_name = rules.get("prefix_from_rank") or (
+                    cat and cat.id in MINRANK_CATEGORY_IDS
+                )
+
                 mgr = self.bot.get_cog("RolePermissionVoiceManager")
                 if use_rank_name:
                     # Versuche den Rang-Manager zu nutzen
@@ -1594,6 +1603,7 @@ class TempVoiceCore(commands.Cog):
                 # NUR für Lanes die vom RolePermissionVoiceManager überwacht werden (Ranked/Grind).
                 # is_monitored_channel prüft monitored_categories – das schließt Chill/Normal Lanes aus.
                 if mgr and mgr.is_monitored_channel(lane):
+
                     async def _delayed_rank_setup(ch, m, mgr_ref):
                         try:
                             # 1s warten damit Discord den Member im Channel sieht
@@ -1607,7 +1617,7 @@ class TempVoiceCore(commands.Cog):
                             await mgr_ref.update_channel_permissions_via_roles(ch, force=True)
                         except Exception as exc:
                             log.debug("Delayed rank setup failed for lane %s: %r", ch.id, exc)
-                    
+
                     asyncio.create_task(_delayed_rank_setup(lane, member, mgr))
 
                 # NUR hier initial den Namen setzen (innerhalb des Create-Fensters)

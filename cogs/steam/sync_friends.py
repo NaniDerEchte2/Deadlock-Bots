@@ -96,7 +96,12 @@ async def sync_all_friends(tasks: SteamTaskClient | None = None) -> dict:
 
         if not outcome.result or not isinstance(outcome.result, dict):
             log.error("Invalid result format from AUTH_GET_FRIENDS_LIST")
-            return {"success": False, "count": 0, "cleared_count": 0, "error": "Invalid result format"}
+            return {
+                "success": False,
+                "count": 0,
+                "cleared_count": 0,
+                "error": "Invalid result format",
+            }
 
         data = outcome.result.get("data", {})
         friends = data.get("friends", [])
@@ -159,7 +164,9 @@ class SteamFriendsSync(commands.Cog):
             self.bot.tree.add_command(self.slash_sync_friends, guild=guild_obj)
             try:
                 synced = await self.bot.tree.sync(guild=guild_obj)
-                log.info("SteamFriendsSync: Guild-Command sync abgeschlossen (%d commands)", len(synced))
+                log.info(
+                    "SteamFriendsSync: Guild-Command sync abgeschlossen (%d commands)", len(synced)
+                )
             except Exception as exc:
                 log.warning("SteamFriendsSync: Guild-Command-Sync fehlgeschlagen: %s", exc)
 
@@ -193,7 +200,9 @@ class SteamFriendsSync(commands.Cog):
 
         if not result["success"]:
             error = result.get("error", "Unbekannter Fehler")
-            await interaction.followup.send(f"❌ Steam-Sync fehlgeschlagen: `{error}`", ephemeral=True)
+            await interaction.followup.send(
+                f"❌ Steam-Sync fehlgeschlagen: `{error}`", ephemeral=True
+            )
             return
 
         synced = result["count"]

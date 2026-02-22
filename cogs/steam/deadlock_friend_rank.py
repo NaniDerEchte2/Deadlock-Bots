@@ -838,7 +838,9 @@ class DeadlockFriendRank(commands.Cog):
                 (discord_user_id,),
             )
             if not rows:
-                log.info("check_rank_for_discord_user: Kein Steam-Link für User %s", discord_user_id)
+                log.info(
+                    "check_rank_for_discord_user: Kein Steam-Link für User %s", discord_user_id
+                )
                 return False
 
             steam_ids = {str(r["steam_id"]).strip() for r in rows if r["steam_id"]}
@@ -848,7 +850,9 @@ class DeadlockFriendRank(commands.Cog):
             stats = SyncStats()
             snapshots = await self._fetch_rank_snapshots(steam_ids, stats)
             if not snapshots:
-                log.info("check_rank_for_discord_user: Keine Rank-Daten für User %s", discord_user_id)
+                log.info(
+                    "check_rank_for_discord_user: Keine Rank-Daten für User %s", discord_user_id
+                )
                 return False
 
             await self._persist_rank_snapshots(snapshots)

@@ -34,7 +34,7 @@ STEAM_RETURN_URL = urljoin(PUBLIC_BASE_URL + "/", STEAM_RETURN_PATH.lstrip("/"))
 
 HTTP_HOST = settings.http_host
 HTTP_PORT = settings.http_port
-# CLIENT_SECRET is sensitive, keep it as env/secret handled by settings if possible, 
+# CLIENT_SECRET is sensitive, keep it as env/secret handled by settings if possible,
 # but for now we follow the user's wish to reduce logic-level os.getenv.
 CLIENT_SECRET = (os.getenv("DISCORD_OAUTH_CLIENT_SECRET") or "").strip()
 
