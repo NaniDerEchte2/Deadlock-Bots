@@ -13,14 +13,40 @@ permissions: read-all
 
 jobs:
   fortify-ast-scan:
-    if: ${{ false }}  # Disabled: requires Fortify license; internal sub-action cannot be SHA-pinned
     runs-on: ubuntu-latest
 
     steps:
       - name: Check Out Source Code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Check Fortify Credentials
+        id: fortify-creds
+        env:
+          FOD_CLIENT_ID: ${{ secrets.FOD_CLIENT_ID }}
+          FOD_CLIENT_SECRET: ${{ secrets.FOD_CLIENT_SECRET }}
+          FOD_USER: ${{ secrets.FOD_USER }}
+          FOD_PAT: ${{ secrets.FOD_PAT }}
+        run: |
+          has_oauth=false
+          has_user_pat=false
+
+          if [ -n "${FOD_CLIENT_ID:-}" ] && [ -n "${FOD_CLIENT_SECRET:-}" ]; then
+            has_oauth=true
+          fi
+          if [ -n "${FOD_USER:-}" ] && [ -n "${FOD_PAT:-}" ]; then
+            has_user_pat=true
+          fi
+
+          if [ "$has_oauth" = true ] || [ "$has_user_pat" = true ]; then
+            echo "run_scan=true" >> "$GITHUB_OUTPUT"
+            echo "Fortify credentials detected."
+          else
+            echo "run_scan=false" >> "$GITHUB_OUTPUT"
+            echo "Fortify credentials missing. Skipping Fortify scan."
+          fi
+
       - name: Run Fortify Scan
+        if: steps.fortify-creds.outputs.run_scan == 'true'
         uses: fortify/github-action/fod-sast-scan@714fe84b03a813fe8124e5ef4ce22da010ab1839 # v2.2.0
         with:
           # sast-scan input is not needed for the specific sub-action
@@ -52,3 +78,7 @@ jobs:
           # SC_SAST_TOKEN: ${{ secrets.SC_CLIENT_AUTH_TOKEN }}
           # DEBRICKED_TOKEN: ${{ secrets.DEBRICKED_TOKEN }}
           # SC_SAST_SENSOR_VERSION: 24.4.0
+
+      - name: Fortify Scan Skipped
+        if: steps.fortify-creds.outputs.run_scan != 'true'
+        run: echo "Fortify scan skipped because required credentials are not configured."

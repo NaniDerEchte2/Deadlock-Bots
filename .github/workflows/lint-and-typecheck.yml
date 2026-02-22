@@ -25,15 +25,14 @@ jobs:
         run: python -m pip install --require-hashes -r .github/requirements-tools-locked.txt
 
       - name: Run Ruff Check
-        run: ruff check . --output-format=github --target-version=py311 --exit-zero
+        run: ruff check . --output-format=github --target-version=py311
 
       - name: Run Ruff Format Check
-        run: ruff format . --check --target-version=py311 || true
+        run: ruff format . --check --target-version=py311
 
   mypy:
     name: "🎯 Mypy (Static Type Check)"
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -49,4 +48,4 @@ jobs:
         run: |
           # We run mypy on the core directories. 
           # Some legacy files might have many errors, so we start with core logic.
-          mypy service cogs --ignore-missing-imports --follow-imports=skip --install-types --non-interactive || true
+          mypy service cogs --ignore-missing-imports --follow-imports=skip --install-types --non-interactive

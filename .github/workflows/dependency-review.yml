@@ -1,6 +1,8 @@
 name: 'Dependency Review & Security'
 on: 
   pull_request:
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [ main, master, develop ]
   schedule:

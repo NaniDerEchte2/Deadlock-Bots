@@ -275,18 +275,18 @@ jobs:
             eslint-plugin-security@3.0.1 \
             eslint-plugin-no-secrets@2.2.2
           cat > "$ESLINT_DIR/eslint.config.mjs" << 'ESLINTEOF'
-import pluginSecurity from "eslint-plugin-security";
-import noSecrets from "eslint-plugin-no-secrets";
-export default [
-  pluginSecurity.configs.recommended,
-  {
-    files: ["**/*.js", "**/*.ts", "**/*.jsx", "**/*.tsx"],
-    ignores: ["**/node_modules/**", "**/.venv/**", "**/dist/**", "**/build/**"],
-    plugins: { "no-secrets": noSecrets },
-    rules: { "no-secrets/no-secrets": "error" },
-  },
-];
-ESLINTEOF
+          import pluginSecurity from "eslint-plugin-security";
+          import noSecrets from "eslint-plugin-no-secrets";
+          export default [
+            pluginSecurity.configs.recommended,
+            {
+              files: ["**/*.js", "**/*.ts", "**/*.jsx", "**/*.tsx"],
+              ignores: ["**/node_modules/**", "**/.venv/**", "**/dist/**", "**/build/**"],
+              plugins: { "no-secrets": noSecrets },
+              rules: { "no-secrets/no-secrets": "error" },
+            },
+          ];
+          ESLINTEOF
           "$ESLINT_DIR/node_modules/.bin/eslint" \
             --config "$ESLINT_DIR/eslint.config.mjs" \
             --format json \
