@@ -518,7 +518,14 @@ class TwitchAnalyticsMixin:
             event.get("user_login") or event.get("user_name") or ""
         ).strip().lower() or None
         amount = int(event.get("bits") or event.get("amount") or 0)
-        message = (event.get("message") or "").strip() or None
+        # Message kann ein String oder ein Dict {"text": "...", "emotes": ...} sein
+        message_data = event.get("message")
+        if isinstance(message_data, dict):
+            message = (message_data.get("text") or "").strip() or None
+        elif isinstance(message_data, str):
+            message = message_data.strip() or None
+        else:
+            message = None
         if not amount:
             return
         # Session ID für den aktuellen Stream bestimmen (optional)
