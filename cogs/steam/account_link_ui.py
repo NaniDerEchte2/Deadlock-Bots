@@ -15,7 +15,6 @@ Verwendung:
 from __future__ import annotations
 
 import logging
-import os
 
 import discord
 
@@ -142,6 +141,7 @@ async def send_link_panel(
 def _get_urls(user_id: int) -> tuple[str, str]:
     """Gibt (discord_url, steam_url) zurück. Leere Strings bei Fehler."""
     from service.config import settings
+
     base = settings.public_base_url.rstrip("/")
     if not base:
         return "", ""

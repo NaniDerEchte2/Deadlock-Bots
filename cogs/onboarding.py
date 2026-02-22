@@ -6,6 +6,7 @@ import logging
 
 import discord
 from discord.ext import commands
+
 from service.config import settings
 
 log = logging.getLogger(__name__)
@@ -23,7 +24,7 @@ CH_CLIPS = 1425215762460835931  # #clip-submission
 CH_COACHING = 1357421075188813897  # #ich-brauch-einen-coach
 CH_TICKET = None  # #ticket-eröffnen (Mention via Text)
 CH_BETA = 1428745737323155679  # #beta-zugang
-CH_STREAMER_INFO = 1374364800817303632 # #streamer-info (Beispiel)
+CH_STREAMER_INFO = 1374364800817303632  # #streamer-info (Beispiel)
 
 
 # ---------------------------------------------------------------------------
@@ -236,7 +237,7 @@ class NextStepView(discord.ui.View):
             return
 
         next_index = self.step_index + 1
-        
+
         # Streamer-Schritt überspringen, wenn der User kein Streamer ist
         if next_index == _STREAMER_STEP_INDEX:
             is_streamer = any(r.id == CONTENT_CREATOR_ROLE_ID for r in interaction.user.roles)
@@ -253,11 +254,13 @@ class NextStepView(discord.ui.View):
         if next_index == _ACCOUNT_STEP_INDEX:
             # Schritt: Account verknüpfen
             already_verified = any(r.id == VERIFIED_ROLE_ID for r in interaction.user.roles)
-            
+
             # Immer OnboardingAccountLinkView nutzen (damit die Link-Buttons da sind)
             # Aber: "Weiter" Button nur zeigen wenn schon verifiziert
-            view = OnboardingAccountLinkView(self.cog, next_index, self.user_id, show_next=already_verified)
-            
+            view = OnboardingAccountLinkView(
+                self.cog, next_index, self.user_id, show_next=already_verified
+            )
+
             if not already_verified:
                 await self.cog._register_pending_verify(self.user_id, interaction.channel.id)
             
@@ -304,12 +307,15 @@ class OnboardingContentCreatorView(discord.ui.View):
     )
     async def start_setup(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Das ist nicht dein Onboarding.", ephemeral=True)
+            await interaction.response.send_message(
+                "Das ist nicht dein Onboarding.", ephemeral=True
+            )
             return
 
         # Trigger den Streamer-Setup-Flow (DMs)
         try:
             from cogs.welcome_dm.step_streamer import StreamerIntroView
+
             dm = await interaction.user.create_dm()
             await dm.send(
                 embed=StreamerIntroView.build_embed(interaction.user),
@@ -318,12 +324,12 @@ class OnboardingContentCreatorView(discord.ui.View):
             await interaction.response.send_message(
                 "✅ **Setup gestartet!** Ich habe dir alle Details in deine DMs geschickt.\n"
                 "Du kannst hier im Onboarding währenddessen einfach auf 'Weiter' klicken.",
-                ephemeral=True
+                ephemeral=True,
             )
         except discord.Forbidden:
             await interaction.response.send_message(
                 "⚠️ Ich konnte dir keine DM senden. Bitte aktiviere DMs für diesen Server.",
-                ephemeral=True
+                ephemeral=True,
             )
         except Exception:
             log.exception("Konnte Streamer-Setup aus Onboarding nicht starten")
@@ -334,12 +340,14 @@ class OnboardingContentCreatorView(discord.ui.View):
     @discord.ui.button(label="Weiter ➜", style=discord.ButtonStyle.primary, row=1)
     async def next_step(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Das ist nicht dein Onboarding.", ephemeral=True)
+            await interaction.response.send_message(
+                "Das ist nicht dein Onboarding.", ephemeral=True
+            )
             return
 
         next_index = self.step_index + 1
         embed = _build_embed(next_index, interaction.user)
-        
+
         # Nach CC kommt immer der Voice-Lane Schritt (Index 3)
         view = NextStepView(self.cog, next_index, self.user_id)
         await interaction.response.send_message(embed=embed, view=view)
@@ -353,7 +361,9 @@ class OnboardingAccountLinkView(discord.ui.View):
     'Weiter' Button wird nur gezeigt, wenn der User bereits verifiziert ist.
     """
 
-    def __init__(self, cog: StaticOnboarding, step_index: int, user_id: int, show_next: bool = False):
+    def __init__(
+        self, cog: StaticOnboarding, step_index: int, user_id: int, show_next: bool = False
+    ):
         super().__init__(timeout=3600)
         self.cog = cog
         self.step_index = step_index
@@ -361,6 +371,7 @@ class OnboardingAccountLinkView(discord.ui.View):
 
         # URLs für Steam-Link holen (mit Fallback auf Standard-Domain aus Config)
         from service.config import settings
+
         base = settings.public_base_url.rstrip("/")
         uid = int(user_id)
         discord_url = f"{base}/discord/login?uid={uid}"
@@ -391,15 +402,19 @@ class OnboardingAccountLinkView(discord.ui.View):
             self.add_item(btn)
         else:
             # Fallback: Manueller Refresh-Button falls automatische Erkennung klemmt
-            btn = discord.ui.Button(label="Status prüfen 🔄", style=discord.ButtonStyle.secondary, row=1)
+            btn = discord.ui.Button(
+                label="Status prüfen 🔄", style=discord.ButtonStyle.secondary, row=1
+            )
             btn.callback = self.refresh_status
             self.add_item(btn)
 
     async def refresh_status(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Das ist nicht dein Onboarding.", ephemeral=True)
+            await interaction.response.send_message(
+                "Das ist nicht dein Onboarding.", ephemeral=True
+            )
             return
-            
+
         already_verified = any(r.id == VERIFIED_ROLE_ID for r in interaction.user.roles)
         if already_verified:
             await self.next_step(interaction)
@@ -407,7 +422,7 @@ class OnboardingAccountLinkView(discord.ui.View):
             await interaction.response.send_message(
                 "Du hast die **Verified**-Rolle noch nicht. Bitte stelle sicher, dass du deinen Account verknüpft hast "
                 "und die Freundschaftsanfrage vom Steam-Bot angenommen hast. (Es kann ein paar Minuten dauern)",
-                ephemeral=True
+                ephemeral=True,
             )
 
     async def next_step(self, interaction: discord.Interaction):
@@ -418,7 +433,7 @@ class OnboardingAccountLinkView(discord.ui.View):
             return
 
         next_index = self.step_index + 1
-        
+
         # Falls es nach Steam Link noch was gäbe (aktuell letzter Schritt)
         if next_index >= len(STEPS):
             view = DoneView(self.user_id)
@@ -426,13 +441,13 @@ class OnboardingAccountLinkView(discord.ui.View):
                 "Nice, jetzt weißt du alles! Falls doch mal Fragen sind: "
                 "einfach ein Ticket aufmachen oder einen Mod fragen. Have fun! 🎮",
                 ephemeral=True,
-                view=view
+                view=view,
             )
             self.stop()
             return
 
         embed = _build_embed(next_index, interaction.user)
-        view = DoneView(self.user_id) # Letzter Schritt nach Steam Link
+        view = DoneView(self.user_id)  # Letzter Schritt nach Steam Link
 
         await interaction.response.send_message(embed=embed, view=view)
         self.stop()
@@ -473,17 +488,17 @@ def _build_embed(step_index: int, user: discord.Member | None = None) -> discord
         description=step["description"],
         color=step["color"],
     )
-    
+
     # Dynamische Footer-Berechnung
     is_streamer = False
     if user:
         is_streamer = any(r.id == CONTENT_CREATOR_ROLE_ID for r in user.roles)
-    
+
     total_steps = 8 if is_streamer else 7
     display_step = step_index + 1
     if not is_streamer and step_index > _STREAMER_STEP_INDEX:
         display_step -= 1
-        
+
     embed.set_footer(text=f"Deutsche Deadlock Community · Schritt {display_step} / {total_steps}")
     return embed
 
@@ -523,15 +538,17 @@ class StaticOnboarding(commands.Cog):
 
     async def _register_pending_verify(self, user_id: int, channel_id: int):
         from service import db
+
         self._pending_verify[user_id] = channel_id
         await db.execute_async(
             "INSERT INTO onboarding_pending_verify(user_id, channel_id) VALUES(?, ?) "
             "ON CONFLICT(user_id) DO UPDATE SET channel_id=excluded.channel_id, updated_at=CURRENT_TIMESTAMP",
-            (user_id, channel_id)
+            (user_id, channel_id),
         )
 
     async def _pop_pending_verify(self, user_id: int) -> int | None:
         from service import db
+
         channel_id = self._pending_verify.pop(user_id, None)
         if channel_id:
             await db.execute_async("DELETE FROM onboarding_pending_verify WHERE user_id=?", (user_id,))
@@ -552,21 +569,26 @@ class StaticOnboarding(commands.Cog):
                     try:
                         channel = await self.bot.fetch_channel(channel_id)
                     except Exception:
-                        log.warning("Konnte Onboarding-Channel %s nicht finden für User %s", channel_id, after.id)
+                        log.warning(
+                            "Konnte Onboarding-Channel %s nicht finden für User %s",
+                            channel_id,
+                            after.id,
+                        )
                         return
-                
+
                 if channel:
                     try:
                         await channel.send(
                             content=f"<@{after.id}> ✅ **Verifizierung erfolgreich!**\n\n"
-                                    "Nice, jetzt weißt du alles! Falls doch mal Fragen sind: "
-                                    "einfach ein Ticket aufmachen oder einen Mod fragen. Have fun! 🎮",
-                            view=DoneView(after.id)
+                            "Nice, jetzt weißt du alles! Falls doch mal Fragen sind: "
+                            "einfach ein Ticket aufmachen oder einen Mod fragen. Have fun! 🎮",
+                            view=DoneView(after.id),
                         )
                     except Exception:
                         log.exception(
-                            "Konnte Abschluss-Nachricht nicht senden für User %s in Channel %s", 
-                            after.id, channel_id
+                            "Konnte Abschluss-Nachricht nicht senden für User %s in Channel %s",
+                            after.id,
+                            channel_id,
                         )
 
     # Öffentliche API – kompatibel mit rules_channel.py

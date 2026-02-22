@@ -5,6 +5,7 @@ import importlib
 import logging
 import time
 from collections.abc import Callable
+
 from bot_core.bootstrap import _load_env_robust
 
 logger = logging.getLogger(__name__)

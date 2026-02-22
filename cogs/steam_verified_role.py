@@ -201,7 +201,9 @@ class SteamVerifiedRole(commands.Cog):
         try:
             rank_cog = self.bot.get_cog("DeadlockFriendRank")
             if rank_cog is None:
-                log.debug("DeadlockFriendRank nicht geladen, überspringe Rang-Check für %s", user_id)
+                log.debug(
+                    "DeadlockFriendRank nicht geladen, überspringe Rang-Check für %s", user_id
+                )
                 return
             await rank_cog.check_rank_for_discord_user(user_id)
             log.info("Rang-Check nach Verifizierung für User %s abgeschlossen.", user_id)
@@ -404,11 +406,15 @@ class SteamVerifiedRole(commands.Cog):
                 if member.id in verified_ids:
                     continue
                 if self.dry_run:
-                    log.info("[DRY] Würde Rolle entfernen bei %s (%s)", member.id, member.display_name)
+                    log.info(
+                        "[DRY] Würde Rolle entfernen bei %s (%s)", member.id, member.display_name
+                    )
                     removed_count += 1
                     continue
                 try:
-                    await member.remove_roles(role, reason="Steam-Freundschaft beendet (is_steam_friend=0)")
+                    await member.remove_roles(
+                        role, reason="Steam-Freundschaft beendet (is_steam_friend=0)"
+                    )
                     removed_count += 1
                     removal_lines.append(
                         f"❌ <@{member.id}> ({member.display_name}) – Verified-Rolle entfernt (Steam-Freundschaft beendet)."
@@ -416,7 +422,11 @@ class SteamVerifiedRole(commands.Cog):
                     log.info("Verified-Rolle entfernt: %s (%s)", member.id, member.display_name)
                     await asyncio.sleep(0.25)
                 except discord.Forbidden:
-                    log.error("Forbidden: Konnte Rolle nicht entfernen bei %s (%s)", member.id, member.display_name)
+                    log.error(
+                        "Forbidden: Konnte Rolle nicht entfernen bei %s (%s)",
+                        member.id,
+                        member.display_name,
+                    )
                 except discord.HTTPException as exc:
                     log.warning("HTTP-Fehler beim Entfernen der Rolle bei %s: %s", member.id, exc)
             if removal_lines and not self._http_session_closed():
@@ -523,13 +533,17 @@ class SteamVerifiedRole(commands.Cog):
         embed.add_field(name="DB Pfad", value=self.db_path, inline=False)
         embed.add_field(name="DB vorhanden", value=str(db_exists), inline=True)
         embed.add_field(name="is_steam_friend=1 (gesamt)", value=str(total_friends), inline=True)
-        embed.add_field(name="Rolle-fähige IDs (verified+friend+Discord)", value=str(len(ids)), inline=True)
+        embed.add_field(
+            name="Rolle-fähige IDs (verified+friend+Discord)", value=str(len(ids)), inline=True
+        )
         embed.add_field(
             name="Davon im Cache (get_member)",
             value=str(members_present),
             inline=True,
         )
-        embed.add_field(name="Mitglieder mit Rolle (aktuell)", value=str(members_with_role), inline=True)
+        embed.add_field(
+            name="Mitglieder mit Rolle (aktuell)", value=str(members_with_role), inline=True
+        )
         embed.add_field(name="Bot Manage Roles", value=str(manage_roles), inline=True)
         embed.add_field(
             name="Bot TopPos vs Role Pos", value=f"{top_pos} vs {role_pos}", inline=True
