@@ -56,6 +56,7 @@ MASTER_DISCORD_ADMIN_LOGIN_URL = "/auth/discord/login?next=%2Fadmin"
 DEFAULT_NSSM_SERVICE_NAME = KEYRING_SERVICE_NAME
 DEFAULT_NSSM_RESTART_DELAY_SECONDS = 1.0
 DEFAULT_BOT_RESTART_MIN_INTERVAL_SECONDS = 15.0
+DEFAULT_DASHBOARD_SESSION_TTL_SECONDS = 6 * 3600
 NSSM_PATH_CANDIDATES = (
     r"C:\ProgramData\chocolatey\lib\NSSM\tools\nssm.exe",
     r"C:\ProgramData\chocolatey\bin\nssm.exe",
@@ -164,8 +165,21 @@ class DashboardServer:
         self._discord_session_cookie = "master_dash_session"
         self._discord_sessions: dict[str, dict[str, Any]] = {}
         self._discord_oauth_states: dict[str, dict[str, Any]] = {}
+        self._auth_rate_limits: dict[str, list[float]] = {}
         self._discord_oauth_state_ttl = 600
-        self._discord_session_ttl = 12 * 3600
+        self._discord_session_ttl = max(
+            DEFAULT_DASHBOARD_SESSION_TTL_SECONDS,
+            int(
+                self._parse_positive_float(
+                    os.getenv(
+                        "MASTER_DASHBOARD_SESSION_TTL_SEC",
+                        str(DEFAULT_DASHBOARD_SESSION_TTL_SECONDS),
+                    ),
+                    default=float(DEFAULT_DASHBOARD_SESSION_TTL_SECONDS),
+                    env_name="MASTER_DASHBOARD_SESSION_TTL_SEC",
+                )
+            ),
+        )
         self._discord_auth_required = (
             self._discord_auth_enabled and self._is_discord_oauth_configured()
         )
@@ -238,6 +252,26 @@ class DashboardServer:
 
     def _json(self, payload: Any, **kwargs: Any) -> web.Response:
         return web.json_response(self._sanitize(payload), **kwargs)
+
+    def _check_auth_rate_limit(
+        self,
+        request: web.Request,
+        *,
+        max_requests: int = 10,
+        window_seconds: float = 60.0,
+    ) -> bool:
+        peer = self._peer_host(request) or "unknown"
+        now = time.time()
+        hits = self._auth_rate_limits.get(peer, [])
+        hits = [t for t in hits if now - t < window_seconds]
+        if len(hits) >= max_requests:
+            self._auth_rate_limits[peer] = hits
+            return False
+        hits.append(now)
+        self._auth_rate_limits[peer] = hits
+        if len(self._auth_rate_limits) > 2000:
+            self._auth_rate_limits.clear()
+        return True
 
     async def _cleanup(self) -> None:
         if self._site:
@@ -1597,6 +1631,11 @@ class DashboardServer:
         return urlunparse((scheme, parsed.netloc, "/auth/discord/callback", "", "", ""))
 
     async def _handle_discord_login(self, request: web.Request) -> web.StreamResponse:
+        if not self._check_auth_rate_limit(request, max_requests=10, window_seconds=60.0):
+            raise web.HTTPTooManyRequests(
+                text="Zu viele Login-Versuche. Bitte in einer Minute erneut versuchen.",
+                headers={"Retry-After": "60"},
+            )
         if self._auth_misconfigured:
             raise web.HTTPServiceUnavailable(
                 text=(
@@ -1644,6 +1683,11 @@ class DashboardServer:
         raise web.HTTPFound(f"{DISCORD_API_BASE_URL}/oauth2/authorize?{query}")
 
     async def _handle_discord_callback(self, request: web.Request) -> web.StreamResponse:
+        if not self._check_auth_rate_limit(request, max_requests=20, window_seconds=60.0):
+            raise web.HTTPTooManyRequests(
+                text="Zu viele OAuth-Callback-Anfragen. Bitte in einer Minute erneut versuchen.",
+                headers={"Retry-After": "60"},
+            )
         if not self._discord_auth_required:
             raise web.HTTPFound("/admin")
 

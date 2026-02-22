@@ -133,8 +133,8 @@ class TwitchBaseCog(commands.Cog):
             os.getenv("TWITCH_DASHBOARD_AUTH_REDIRECT_URI") or ""
         ).strip() or "https://twitch.earlysalty.com/twitch/auth/callback"
         self._dashboard_session_ttl = max(
-            1800,
-            _parse_env_int("TWITCH_DASHBOARD_SESSION_TTL_SEC", 12 * 3600),
+            6 * 3600,
+            _parse_env_int("TWITCH_DASHBOARD_SESSION_TTL_SEC", 6 * 3600),
         )
         self._legacy_stats_url = (os.getenv("TWITCH_LEGACY_STATS_URL") or "").strip() or None
         self._required_marker_default = TWITCH_REQUIRED_DISCORD_MARKER or None

@@ -62,7 +62,7 @@ class DashboardV2Server(
         oauth_client_id: str | None = None,
         oauth_client_secret: str | None = None,
         oauth_redirect_uri: str | None = None,
-        session_ttl_seconds: int = 12 * 3600,
+        session_ttl_seconds: int = 6 * 3600,
         legacy_stats_url: str | None = None,
         add_cb: Callable[[str, bool], Awaitable[str]] | None = None,
         remove_cb: Callable[[str], Awaitable[str]] | None = None,
@@ -83,7 +83,7 @@ class DashboardV2Server(
         self._oauth_client_id = oauth_client_id
         self._oauth_client_secret = oauth_client_secret
         self._oauth_redirect_uri = oauth_redirect_uri
-        self._session_ttl_seconds = max(1800, int(session_ttl_seconds or 12 * 3600))
+        self._session_ttl_seconds = max(6 * 3600, int(session_ttl_seconds or 6 * 3600))
         self._legacy_stats_url = (legacy_stats_url or "").strip() or None
         self._reload_cb = reload_cb
         self._session_cookie_name = "twitch_dash_session"
@@ -127,7 +127,7 @@ class DashboardV2Server(
         self._discord_admin_moderator_role_id = DEFAULT_DASHBOARD_MODERATOR_ROLE_ID
         self._discord_admin_guild_ids: tuple[int, ...] = ()
         self._discord_admin_cookie_name = "twitch_admin_session"
-        self._discord_admin_session_ttl = 12 * 3600
+        self._discord_admin_session_ttl = self._session_ttl_seconds
         self._discord_admin_state_ttl = 600
         self._discord_admin_oauth_states: dict[str, dict[str, Any]] = {}
         self._discord_admin_sessions: dict[str, dict[str, Any]] = {}
@@ -518,6 +518,11 @@ class DashboardV2Server(
         return False, "missing_admin_or_moderator_role"
 
     async def discord_auth_login(self, request: web.Request) -> web.StreamResponse:
+        if not self._check_rate_limit(request, max_requests=10, window_seconds=60.0):
+            raise web.HTTPTooManyRequests(
+                text="Too many login attempts. Please wait a minute and try again.",
+                headers={"Retry-After": "60"},
+            )
         if not self._discord_admin_required:
             raise web.HTTPFound("/twitch/admin")
         existing = self._get_discord_admin_session(request)
@@ -559,6 +564,11 @@ class DashboardV2Server(
         raise web.HTTPFound(f"{DISCORD_API_BASE_URL}/oauth2/authorize?{query}")
 
     async def discord_auth_callback(self, request: web.Request) -> web.StreamResponse:
+        if not self._check_rate_limit(request, max_requests=20, window_seconds=60.0):
+            raise web.HTTPTooManyRequests(
+                text="Too many OAuth callback requests. Please wait a minute and try again.",
+                headers={"Retry-After": "60"},
+            )
         if not self._discord_admin_required:
             raise web.HTTPFound("/twitch/admin")
 
@@ -2779,7 +2789,7 @@ def build_v2_app(
     oauth_client_id: str | None = None,
     oauth_client_secret: str | None = None,
     oauth_redirect_uri: str | None = None,
-    session_ttl_seconds: int = 12 * 3600,
+    session_ttl_seconds: int = 6 * 3600,
     legacy_stats_url: str | None = None,
     add_cb: Callable[[str, bool], Awaitable[str]] | None = None,
     remove_cb: Callable[[str], Awaitable[str]] | None = None,
