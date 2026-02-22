@@ -274,7 +274,8 @@ class DeadlockFriendRank(commands.Cog):
     ) -> list[str]:
         rank_num = DeadlockFriendRank._safe_int(rank_value)
         subrank_num = DeadlockFriendRank._safe_int(subrank_value)
-        if rank_num is None or rank_num not in RANK_ROLE_IDS:
+        # Check if rank tier is within 1-11 range (Initiate to Eternus)
+        if rank_num is None or rank_num < 1 or rank_num > 11:
             return []
         if subrank_num is None or subrank_num < SUBRANK_MIN or subrank_num > SUBRANK_MAX:
             return []
@@ -512,7 +513,7 @@ class DeadlockFriendRank(commands.Cog):
         await db.executemany_async(
             """
             UPDATE steam_links
-            SET verified = 1, updated_at = CURRENT_TIMESTAMP
+            SET verified = 1, is_steam_friend = 1, updated_at = CURRENT_TIMESTAMP
             WHERE steam_id = ?
             """,
             update_rows,
@@ -524,10 +525,11 @@ class DeadlockFriendRank(commands.Cog):
 
         await db.executemany_async(
             """
-            INSERT INTO steam_links(user_id, steam_id, name, verified)
-            VALUES(0, ?, '', 1)
+            INSERT INTO steam_links(user_id, steam_id, name, verified, is_steam_friend)
+            VALUES(0, ?, '', 1, 1)
             ON CONFLICT(user_id, steam_id) DO UPDATE SET
               verified=1,
+              is_steam_friend=1,
               updated_at=CURRENT_TIMESTAMP
             """,
             placeholder_rows,
@@ -628,7 +630,14 @@ class DeadlockFriendRank(commands.Cog):
     def _target_guilds_for_rank_roles(self) -> list[discord.Guild]:
         targets: list[discord.Guild] = []
         for guild in self.bot.guilds:
-            if any(guild.get_role(role_id) for role_id in RANK_ROLE_ID_SET):
+            # Check for old main rank roles
+            has_main_roles = any(guild.get_role(role_id) for role_id in RANK_ROLE_ID_SET)
+            if has_main_roles:
+                targets.append(guild)
+                continue
+            
+            # Also check for subrank roles (e.g. "Initiate 1")
+            if self._collect_subrank_role_ids(guild):
                 targets.append(guild)
         return targets
 
@@ -652,118 +661,74 @@ class DeadlockFriendRank(commands.Cog):
         stats: SyncStats,
     ) -> None:
         me = guild.me
-        if me is None:
-            return
-        if not me.guild_permissions.manage_roles:
+        if me is None or not me.guild_permissions.manage_roles:
             return
 
         # Find the best snapshot (highest rank score) across all linked accounts
-        # This prevents duplicate roles from multiple accounts.
         best_snapshot = None
         best_score = -1
         for snapshot in target_snapshots:
             rv = snapshot.rank_value if snapshot.rank_value is not None else 0
             sr = snapshot.subrank if snapshot.subrank is not None else 0
-            # Higher Tier takes precedence, then higher subrank
-            # Using same factor 6 as in rank_voice_manager for consistency
-            score = rv * 6 + sr
+            score = rv * 10 + sr # Weighted for clear precedence
             if score > best_score:
                 best_score = score
                 best_snapshot = snapshot
 
-        # Use only the best snapshot
-        actual_snapshots = [best_snapshot] if best_snapshot else []
+        if not best_snapshot:
+            return
 
-        target_rank_roles_by_id: dict[int, discord.Role] = {}
-        target_subrank_roles_by_id: dict[int, discord.Role] = {}
+        target_rank_num = self._safe_int(best_snapshot.rank_value)
+        target_subrank_num = self._safe_int(best_snapshot.subrank)
 
-        for snapshot in actual_snapshots:
-            target_rank_num = self._safe_int(snapshot.rank_value)
-            if target_rank_num is not None:
-                target_role_id = RANK_ROLE_IDS.get(target_rank_num)
-                if target_role_id:
-                    role = guild.get_role(target_role_id)
-                    if role and role.position < me.top_role.position:
-                        target_rank_roles_by_id[role.id] = role
-
-            target_subrank_num = self._safe_int(snapshot.subrank)
-            if target_rank_num is None or target_subrank_num is None:
-                continue
-
-            target_subrank_role: discord.Role | None = None
+        # 1. Determine target subrank role (Priority: DB-ID, Fallback: Name)
+        target_role: discord.Role | None = None
+        
+        # Try ID from DB first
+        if target_rank_num is not None and target_subrank_num is not None:
             mapped_role_id = subrank_role_map.get((target_rank_num, target_subrank_num))
             if mapped_role_id:
-                role = guild.get_role(mapped_role_id)
-                if role and role.position < me.top_role.position:
-                    target_subrank_role = role
+                target_role = guild.get_role(mapped_role_id)
+        
+        # Fallback to Name Search
+        if target_role is None and target_rank_num is not None and target_subrank_num is not None:
+            candidate_names = self._expected_subrank_role_names(target_rank_num, target_subrank_num)
+            for name in candidate_names:
+                role = self._find_role_by_name_casefold(guild, name)
+                if role:
+                    target_role = role
+                    break
 
-            if target_subrank_role is None:
-                target_subrank_role_names = self._expected_subrank_role_names(
-                    target_rank_num,
-                    target_subrank_num,
-                )
-                for candidate in target_subrank_role_names:
-                    role = self._find_role_by_name_casefold(guild, candidate)
-                    if role and role.position < me.top_role.position:
-                        target_subrank_role = role
-                        break
+        # Safety check: Bot hierarchy
+        if target_role and target_role.position >= me.top_role.position:
+            log.warning("Role %s is above bot hierarchy in %s", target_role.name, guild.id)
+            target_role = None
 
-            if target_subrank_role is not None:
-                target_subrank_roles_by_id[target_subrank_role.id] = target_subrank_role
-
+        # 2. Identify roles to remove (all other rank/subrank roles)
         mapped_subrank_role_ids = {role_id for role_id in subrank_role_map.values() if role_id > 0}
-        subrank_role_id_set = mapped_subrank_role_ids | self._collect_subrank_role_ids(guild)
-        target_roles_by_id: dict[int, discord.Role] = dict(target_rank_roles_by_id)
-        target_roles_by_id.update(target_subrank_roles_by_id)
-        target_roles = list(target_roles_by_id.values())
-        target_role_ids = set(target_roles_by_id.keys())
-
-        removable_roles = [
-            role
-            for role in member.roles
-            if role.position < me.top_role.position
-            and (role.id in RANK_ROLE_ID_SET or role.id in subrank_role_id_set)
+        all_subrank_ids = mapped_subrank_role_ids | self._collect_subrank_role_ids(guild)
+        
+        # Combined set of all roles we manage (old main roles + all possible subranks)
+        managed_role_ids = RANK_ROLE_ID_SET | all_subrank_ids
+        
+        roles_to_remove = [
+            role for role in member.roles
+            if role.id in managed_role_ids 
+            and (not target_role or role.id != target_role.id)
+            and role.position < me.top_role.position
         ]
-        roles_to_remove = [role for role in removable_roles if role.id not in target_role_ids]
 
+        # 3. Apply changes
         try:
             if roles_to_remove:
                 await member.remove_roles(*roles_to_remove, reason="Deadlock rank auto-sync")
                 stats.roles_removed += len(roles_to_remove)
-        except discord.Forbidden:
-            log.warning(
-                "Missing permissions to remove rank roles",
-                extra={"guild_id": guild.id, "user_id": member.id},
-            )
-            return
+            
+            if target_role and target_role not in member.roles:
+                await member.add_roles(target_role, reason="Deadlock rank auto-sync")
+                stats.roles_added += 1
         except discord.HTTPException as exc:
-            log.warning(
-                "HTTP error while removing rank roles",
-                extra={"guild_id": guild.id, "user_id": member.id, "error": str(exc)},
-            )
-            return
-
-        roles_to_add: list[discord.Role] = []
-        for target_role in target_roles:
-            if target_role not in member.roles:
-                roles_to_add.append(target_role)
-
-        if not roles_to_add:
-            return
-
-        try:
-            await member.add_roles(*roles_to_add, reason="Deadlock rank auto-sync")
-            stats.roles_added += len(roles_to_add)
-        except discord.Forbidden:
-            log.warning(
-                "Missing permissions to add rank role",
-                extra={"guild_id": guild.id, "user_id": member.id},
-            )
-        except discord.HTTPException as exc:
-            log.warning(
-                "HTTP error while adding rank role",
-                extra={"guild_id": guild.id, "user_id": member.id, "error": str(exc)},
-            )
+            log.warning("Failed to update roles for %s: %s", member.id, exc)
 
     async def _sync_rank_roles(
         self,

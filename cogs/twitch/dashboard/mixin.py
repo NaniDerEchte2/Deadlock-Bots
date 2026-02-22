@@ -1579,7 +1579,7 @@ class TwitchDashboardMixin:
                     oauth_client_id=self.client_id or None,
                     oauth_client_secret=self.client_secret or None,
                     oauth_redirect_uri=getattr(self, "_dashboard_auth_redirect_uri", None),
-                    session_ttl_seconds=getattr(self, "_dashboard_session_ttl", 12 * 3600),
+                    session_ttl_seconds=getattr(self, "_dashboard_session_ttl", 6 * 3600),
                     legacy_stats_url=getattr(self, "_legacy_stats_url", None),
                     add_cb=self._dashboard_add,
                     remove_cb=self._dashboard_remove,

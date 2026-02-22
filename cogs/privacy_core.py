@@ -49,6 +49,7 @@ _USER_TABLES: tuple[tuple[str, str], ...] = (
     ("tempvoice_bans", "owner_id"),
     ("tempvoice_bans", "banned_id"),
     ("steam_quick_invites", "reserved_by"),
+    ("issue_reports", "user_id"),
 )
 
 _STEAM_SIDE_TABLES: tuple[tuple[str, str], ...] = (

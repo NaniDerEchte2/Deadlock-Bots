@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import logging
 import time
+import sqlite3
 
 import discord
 from discord.ext import commands
@@ -19,6 +20,10 @@ ERROR_BACKOFF_SECONDS = 10.0
 # Discord allows channel renames only very sparsely in practice.
 RENAME_THROTTLE_SECONDS = 360
 MAX_RETRIES = 5
+# How often we retry when SQLite returns "database is locked"
+DB_LOCK_MAX_RETRIES = 5
+DB_LOCK_BACKOFF_BASE_SECONDS = 0.4
+DB_LOCK_BACKOFF_MAX_SECONDS = 6.0
 
 
 class RenameManagerCog(commands.Cog):
@@ -127,6 +132,34 @@ class RenameManagerCog(commands.Cog):
                 (channel_id, new_name, reason),
             )
 
+    async def _claim_next_request_with_retry(self) -> dict[str, object] | None:
+        """
+        Wraps _claim_next_request with retries on transient SQLite lock errors.
+        Prevents the worker from crashing when another process briefly holds the DB write lock.
+        """
+        last_error: sqlite3.OperationalError | None = None
+        for attempt in range(1, DB_LOCK_MAX_RETRIES + 1):
+            try:
+                return await self._claim_next_request()
+            except sqlite3.OperationalError as e:
+                if "locked" not in str(e).lower():
+                    raise
+                last_error = e
+                backoff = min(
+                    DB_LOCK_BACKOFF_BASE_SECONDS * (2**(attempt - 1)),
+                    DB_LOCK_BACKOFF_MAX_SECONDS,
+                )
+                logger.warning(
+                    "Rename queue DB locked (attempt %s/%s). Retrying in %.1fs.",
+                    attempt,
+                    DB_LOCK_MAX_RETRIES,
+                    backoff,
+                )
+                await asyncio.sleep(backoff)
+        if last_error:
+            raise last_error
+        return None
+
     async def _claim_next_request(self) -> dict[str, object] | None:
         async with db.transaction() as conn:
             row = conn.execute(
@@ -223,7 +256,7 @@ class RenameManagerCog(commands.Cog):
         while not self.bot.is_closed():
             try:
                 await asyncio.sleep(QUEUE_CHECK_INTERVAL_SECONDS)
-                request = await self._claim_next_request()
+                request = await self._claim_next_request_with_retry()
                 if not request:
                     continue
 

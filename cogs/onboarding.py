@@ -262,8 +262,8 @@ class NextStepView(discord.ui.View):
             )
 
             if not already_verified:
-                self.cog._register_pending_verify(self.user_id, interaction.channel.id)
-
+                await self.cog._register_pending_verify(self.user_id, interaction.channel.id)
+            
             embed = _build_embed(next_index, interaction.user)
             await interaction.response.send_message(embed=embed, view=view)
             self.stop()
@@ -517,18 +517,13 @@ class StaticOnboarding(commands.Cog):
         self._pending_verify: dict[int, int] = {}
 
     async def cog_load(self):
-        self._db_ensure_schema()
-        self._db_load_pending()
-        log.info(
-            "StaticOnboarding geladen (%d Schritte, %d wartende Verifizierungen).",
-            len(STEPS),
-            len(self._pending_verify),
-        )
+        await self._db_ensure_schema()
+        await self._db_load_pending()
+        log.info("StaticOnboarding geladen (%d Schritte, %d wartende Verifizierungen).", len(STEPS), len(self._pending_verify))
 
-    def _db_ensure_schema(self):
+    async def _db_ensure_schema(self):
         from service import db
-
-        db.execute("""
+        await db.execute_async("""
             CREATE TABLE IF NOT EXISTS onboarding_pending_verify (
                 user_id INTEGER PRIMARY KEY,
                 channel_id INTEGER NOT NULL,
@@ -536,28 +531,27 @@ class StaticOnboarding(commands.Cog):
             )
         """)
 
-    def _db_load_pending(self):
+    async def _db_load_pending(self):
         from service import db
-
-        rows = db.query_all("SELECT user_id, channel_id FROM onboarding_pending_verify")
+        rows = await db.query_all_async("SELECT user_id, channel_id FROM onboarding_pending_verify")
         self._pending_verify = {r["user_id"]: r["channel_id"] for r in rows}
 
-    def _register_pending_verify(self, user_id: int, channel_id: int):
+    async def _register_pending_verify(self, user_id: int, channel_id: int):
         from service import db
 
         self._pending_verify[user_id] = channel_id
-        db.execute(
+        await db.execute_async(
             "INSERT INTO onboarding_pending_verify(user_id, channel_id) VALUES(?, ?) "
             "ON CONFLICT(user_id) DO UPDATE SET channel_id=excluded.channel_id, updated_at=CURRENT_TIMESTAMP",
             (user_id, channel_id),
         )
 
-    def _pop_pending_verify(self, user_id: int) -> int | None:
+    async def _pop_pending_verify(self, user_id: int) -> int | None:
         from service import db
 
         channel_id = self._pending_verify.pop(user_id, None)
         if channel_id:
-            db.execute("DELETE FROM onboarding_pending_verify WHERE user_id=?", (user_id,))
+            await db.execute_async("DELETE FROM onboarding_pending_verify WHERE user_id=?", (user_id,))
         return channel_id
 
     @commands.Cog.listener()
@@ -568,7 +562,7 @@ class StaticOnboarding(commands.Cog):
         had_role = any(r.id == VERIFIED_ROLE_ID for r in before.roles)
         has_role = any(r.id == VERIFIED_ROLE_ID for r in after.roles)
         if not had_role and has_role:
-            channel_id = self._pop_pending_verify(after.id)
+            channel_id = await self._pop_pending_verify(after.id)
             if channel_id:
                 channel = self.bot.get_channel(channel_id)
                 if not channel:
@@ -604,20 +598,6 @@ class StaticOnboarding(commands.Cog):
         """Postet Schritt 0 in den Thread/Channel und startet den Flow."""
         try:
             embed = _build_embed(0, member)
-            view = NextStepView(self, step_index=0, user_id=member.id)
-            await channel.send(embed=embed, view=view)
-            return True
-        except Exception:
-            log.exception("StaticOnboarding konnte nicht gestartet werden")
-            return False
-
-    # Öffentliche API – kompatibel mit rules_channel.py
-    async def start_in_channel(
-        self, channel: discord.abc.Messageable, member: discord.Member
-    ) -> bool:
-        """Postet Schritt 0 in den Thread/Channel und startet den Flow."""
-        try:
-            embed = _build_embed(0)
             view = NextStepView(self, step_index=0, user_id=member.id)
             await channel.send(embed=embed, view=view)
             return True

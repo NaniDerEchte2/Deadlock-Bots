@@ -1,5 +1,4 @@
 import asyncio
-import atexit
 import json
 import logging
 import os
@@ -137,18 +136,6 @@ NOTIFICATION_START_HOUR = 8
 NOTIFICATION_END_HOUR = 22
 
 # ============= ZENTRALE DB - immer ueber service.db =============
-
-
-def _vacuum_db():
-    try:
-        with central_db.get_conn() as conn:
-            conn.execute("VACUUM")
-    except Exception as e:
-        logger.warning(f"Database vacuum failed: {e}")
-
-
-atexit.register(_vacuum_db)
-
 
 def init_database():
     """

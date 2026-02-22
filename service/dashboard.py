@@ -56,6 +56,7 @@ MASTER_DISCORD_ADMIN_LOGIN_URL = "/auth/discord/login?next=%2Fadmin"
 DEFAULT_NSSM_SERVICE_NAME = KEYRING_SERVICE_NAME
 DEFAULT_NSSM_RESTART_DELAY_SECONDS = 1.0
 DEFAULT_BOT_RESTART_MIN_INTERVAL_SECONDS = 15.0
+DEFAULT_DASHBOARD_SESSION_TTL_SECONDS = 6 * 3600
 NSSM_PATH_CANDIDATES = (
     r"C:\ProgramData\chocolatey\lib\NSSM\tools\nssm.exe",
     r"C:\ProgramData\chocolatey\bin\nssm.exe",
@@ -164,8 +165,21 @@ class DashboardServer:
         self._discord_session_cookie = "master_dash_session"
         self._discord_sessions: dict[str, dict[str, Any]] = {}
         self._discord_oauth_states: dict[str, dict[str, Any]] = {}
+        self._auth_rate_limits: dict[str, list[float]] = {}
         self._discord_oauth_state_ttl = 600
-        self._discord_session_ttl = 12 * 3600
+        self._discord_session_ttl = max(
+            DEFAULT_DASHBOARD_SESSION_TTL_SECONDS,
+            int(
+                self._parse_positive_float(
+                    os.getenv(
+                        "MASTER_DASHBOARD_SESSION_TTL_SEC",
+                        str(DEFAULT_DASHBOARD_SESSION_TTL_SECONDS),
+                    ),
+                    default=float(DEFAULT_DASHBOARD_SESSION_TTL_SECONDS),
+                    env_name="MASTER_DASHBOARD_SESSION_TTL_SEC",
+                )
+            ),
+        )
         self._discord_auth_required = (
             self._discord_auth_enabled and self._is_discord_oauth_configured()
         )
@@ -238,6 +252,26 @@ class DashboardServer:
 
     def _json(self, payload: Any, **kwargs: Any) -> web.Response:
         return web.json_response(self._sanitize(payload), **kwargs)
+
+    def _check_auth_rate_limit(
+        self,
+        request: web.Request,
+        *,
+        max_requests: int = 10,
+        window_seconds: float = 60.0,
+    ) -> bool:
+        peer = self._peer_host(request) or "unknown"
+        now = time.time()
+        hits = self._auth_rate_limits.get(peer, [])
+        hits = [t for t in hits if now - t < window_seconds]
+        if len(hits) >= max_requests:
+            self._auth_rate_limits[peer] = hits
+            return False
+        hits.append(now)
+        self._auth_rate_limits[peer] = hits
+        if len(self._auth_rate_limits) > 2000:
+            self._auth_rate_limits.clear()
+        return True
 
     async def _cleanup(self) -> None:
         if self._site:
@@ -804,8 +838,16 @@ class DashboardServer:
             path="/",
         )
 
-    def _clear_discord_session_cookie(self, response: web.StreamResponse) -> None:
-        response.del_cookie(self._discord_session_cookie, path="/")
+    def _clear_discord_session_cookie(
+        self, response: web.StreamResponse, request: web.Request
+    ) -> None:
+        response.del_cookie(
+            self._discord_session_cookie,
+            path="/",
+            httponly=True,
+            samesite="Lax",
+            secure=self._is_secure_request(request),
+        )
 
     def _get_discord_auth_session(self, request: web.Request) -> dict[str, Any] | None:
         if not self._discord_auth_required:
@@ -1589,6 +1631,11 @@ class DashboardServer:
         return urlunparse((scheme, parsed.netloc, "/auth/discord/callback", "", "", ""))
 
     async def _handle_discord_login(self, request: web.Request) -> web.StreamResponse:
+        if not self._check_auth_rate_limit(request, max_requests=10, window_seconds=60.0):
+            raise web.HTTPTooManyRequests(
+                text="Zu viele Login-Versuche. Bitte in einer Minute erneut versuchen.",
+                headers={"Retry-After": "60"},
+            )
         if self._auth_misconfigured:
             raise web.HTTPServiceUnavailable(
                 text=(
@@ -1636,6 +1683,11 @@ class DashboardServer:
         raise web.HTTPFound(f"{DISCORD_API_BASE_URL}/oauth2/authorize?{query}")
 
     async def _handle_discord_callback(self, request: web.Request) -> web.StreamResponse:
+        if not self._check_auth_rate_limit(request, max_requests=20, window_seconds=60.0):
+            raise web.HTTPTooManyRequests(
+                text="Zu viele OAuth-Callback-Anfragen. Bitte in einer Minute erneut versuchen.",
+                headers={"Retry-After": "60"},
+            )
         if not self._discord_auth_required:
             raise web.HTTPFound("/admin")
 
@@ -1736,7 +1788,7 @@ class DashboardServer:
             self._discord_sessions.pop(session_id, None)
         login_url = MASTER_DISCORD_ADMIN_LOGIN_URL if self._discord_auth_required else "/admin"
         response = web.HTTPFound(login_url)
-        self._clear_discord_session_cookie(response)
+        self._clear_discord_session_cookie(response, request)
         raise response
 
     async def _handle_auth_me(self, request: web.Request) -> web.Response:
@@ -4382,51 +4434,27 @@ class DashboardServer:
             service_pid = self._query_windows_service_pid(self._nssm_service_name)
             current_pid = os.getpid()
             parent_pid = os.getppid()
-
             if (
-                lifecycle
-                and service_pid is not None
+                service_pid is not None
                 and service_pid not in {current_pid, parent_pid}
             ):
                 logger.warning(
-                    "Skipping NSSM restart for service '%s' (service PID=%s, current PID=%s, "
-                    "parent PID=%s); using lifecycle restart instead.",
+                    "Configured NSSM service '%s' PID (%s) does not match current process tree "
+                    "(current=%s, parent=%s). Continuing with hard service restart.",
                     self._safe_log_value(self._nssm_service_name),
                     service_pid,
                     current_pid,
                     parent_pid,
                 )
-                scheduled = await lifecycle.request_restart(
-                    reason="dashboard_lifecycle_pid_mismatch"
-                )
-                if scheduled:
-                    self._last_bot_restart_request_monotonic = now
-                    return self._json(
-                        {
-                            "ok": True,
-                            "message": (
-                                "Lifecycle restart scheduled (configured NSSM service PID does not "
-                                "match current process tree: "
-                                f"service={service_pid}, current={current_pid}, parent={parent_pid})"
-                            ),
-                            "restart_mode": "lifecycle_fallback",
-                        }
-                    )
-                return self._json(
-                    {
-                        "ok": False,
-                        "message": "Restart already pending (lifecycle fallback path)",
-                        "restart_mode": "lifecycle_fallback",
-                    }
-                )
 
+            # Hard restart first (Windows service via NSSM).
             service_restart_ok, service_message = self._schedule_nssm_service_restart()
             if service_restart_ok:
                 self._last_bot_restart_request_monotonic = now
                 return self._json(
                     {
                         "ok": True,
-                        "message": service_message,
+                        "message": f"Hard restart requested via service: {service_message}",
                         "restart_mode": "nssm_service",
                     }
                 )
@@ -4446,14 +4474,14 @@ class DashboardServer:
                     }
                 )
 
-            scheduled = await lifecycle.request_restart(reason="dashboard_lifecycle_fallback")
+            scheduled = await lifecycle.request_restart(reason="dashboard_lifecycle_after_nssm_failure")
             if scheduled:
                 self._last_bot_restart_request_monotonic = now
                 return self._json(
                     {
                         "ok": True,
                         "message": (
-                            "Lifecycle restart scheduled (NSSM service restart unavailable): "
+                            "Hard restart unavailable; lifecycle fallback scheduled: "
                             f"{service_message}"
                         ),
                         "restart_mode": "lifecycle_fallback",
