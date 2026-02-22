@@ -4434,51 +4434,27 @@ class DashboardServer:
             service_pid = self._query_windows_service_pid(self._nssm_service_name)
             current_pid = os.getpid()
             parent_pid = os.getppid()
-
             if (
-                lifecycle
-                and service_pid is not None
+                service_pid is not None
                 and service_pid not in {current_pid, parent_pid}
             ):
                 logger.warning(
-                    "Skipping NSSM restart for service '%s' (service PID=%s, current PID=%s, "
-                    "parent PID=%s); using lifecycle restart instead.",
+                    "Configured NSSM service '%s' PID (%s) does not match current process tree "
+                    "(current=%s, parent=%s). Continuing with hard service restart.",
                     self._safe_log_value(self._nssm_service_name),
                     service_pid,
                     current_pid,
                     parent_pid,
                 )
-                scheduled = await lifecycle.request_restart(
-                    reason="dashboard_lifecycle_pid_mismatch"
-                )
-                if scheduled:
-                    self._last_bot_restart_request_monotonic = now
-                    return self._json(
-                        {
-                            "ok": True,
-                            "message": (
-                                "Lifecycle restart scheduled (configured NSSM service PID does not "
-                                "match current process tree: "
-                                f"service={service_pid}, current={current_pid}, parent={parent_pid})"
-                            ),
-                            "restart_mode": "lifecycle_fallback",
-                        }
-                    )
-                return self._json(
-                    {
-                        "ok": False,
-                        "message": "Restart already pending (lifecycle fallback path)",
-                        "restart_mode": "lifecycle_fallback",
-                    }
-                )
 
+            # Hard restart first (Windows service via NSSM).
             service_restart_ok, service_message = self._schedule_nssm_service_restart()
             if service_restart_ok:
                 self._last_bot_restart_request_monotonic = now
                 return self._json(
                     {
                         "ok": True,
-                        "message": service_message,
+                        "message": f"Hard restart requested via service: {service_message}",
                         "restart_mode": "nssm_service",
                     }
                 )
@@ -4498,14 +4474,14 @@ class DashboardServer:
                     }
                 )
 
-            scheduled = await lifecycle.request_restart(reason="dashboard_lifecycle_fallback")
+            scheduled = await lifecycle.request_restart(reason="dashboard_lifecycle_after_nssm_failure")
             if scheduled:
                 self._last_bot_restart_request_monotonic = now
                 return self._json(
                     {
                         "ok": True,
                         "message": (
-                            "Lifecycle restart scheduled (NSSM service restart unavailable): "
+                            "Hard restart unavailable; lifecycle fallback scheduled: "
                             f"{service_message}"
                         ),
                         "restart_mode": "lifecycle_fallback",

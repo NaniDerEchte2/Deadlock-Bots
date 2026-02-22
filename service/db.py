@@ -264,6 +264,8 @@ def connect() -> sqlite3.Connection:
         timeout=DB_CONNECT_TIMEOUT,
     )
     _CONN.row_factory = sqlite3.Row
+    # Ensure sqlite waits for locks before failing; supplement the connect(timeout=...) default.
+    _CONN.execute(f"PRAGMA busy_timeout={DB_BUSY_TIMEOUT_MS};")
 
     with _LOCK:
         # PRAGMAs: stabil & praxiserprobt
@@ -741,6 +743,25 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
               updated_at INTEGER DEFAULT (strftime('%s','now'))
             );
 
+            -- Bug/Problem Reports mit automatischer Codex-Bearbeitung
+            CREATE TABLE IF NOT EXISTS issue_reports(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_id INTEGER,
+              guild_id INTEGER,
+              channel_id INTEGER,
+              message_id INTEGER,
+              category TEXT,
+              title TEXT,
+              description TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'pending',
+              ai_response TEXT,
+              ai_model TEXT,
+              ai_error TEXT,
+              created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+              updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+              answered_at INTEGER
+            );
+
             """
         )
         # Steam-Task-Retention: Trigger + initial Cleanup
@@ -927,6 +948,12 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_user_privacy_opted ON user_privacy(opted_out)"
             )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_issue_reports_status ON issue_reports(status, created_at)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_issue_reports_user ON issue_reports(user_id, created_at DESC)"
+            )
             # Performance Indexes (2026-02-20)
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_steam_links_verified ON steam_links(verified, user_id)"
@@ -1099,13 +1126,8 @@ async def transaction() -> AsyncIterator[DBConnectionProxy]:
 # ---------- Pflege ----------
 
 
-@atexit.register
-def _vacuum_on_shutdown() -> None:
-    try:
-        with _LOCK:
-            if _CONN is not None:
-                # kleines Timeout für sauberes Beenden unter Last
-                _CONN.execute("PRAGMA busy_timeout=1000;")
-                _CONN.execute("VACUUM;")
-    except sqlite3.Error as e:
-        logger.debug("VACUUM beim Shutdown übersprungen/fehlgeschlagen: %s", e, exc_info=True)
+# Hinweis: Kein automatisches VACUUM mehr bei Prozess-Beendigung.
+# Mehrere laufende Bots teilen sich die DB; ein exklusives VACUUM im atexit
+# führte zu „database is locked“ Fehlern in parallel laufenden Prozessen.
+# Stattdessen sollte Wartung (VACUUM/REINDEX) manuell oder in dedizierten
+# Maintenance-Fenstern erfolgen, wenn keine anderen Writer aktiv sind.
