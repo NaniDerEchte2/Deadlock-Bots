@@ -418,7 +418,7 @@ class StartOnboardingView(discord.ui.View):
             return
 
         if self.message_id:
-            self.cog._clear_persisted_view(self.message_id)
+            await self.cog._clear_persisted_view(self.message_id)
 
         modal = OnboardingQuestionsModal(
             self.cog,
@@ -435,11 +435,11 @@ class AIOnboarding(commands.Cog):
         self.bot = bot
 
     async def cog_load(self):
-        self._restore_persistent_views()
+        await self._restore_persistent_views()
         log.info("AI Onboarding geladen (persistente Start-Buttons aktiv).")
 
     # ---------- Persistence ----------
-    def _persist_view(self, message_id: int, user_id: int | None, thread_id: int | None) -> None:
+    async def _persist_view(self, message_id: int, user_id: int | None, thread_id: int | None) -> None:
         payload = {"user_id": user_id, "thread_id": thread_id}
         try:
             encoded = json.dumps(payload)
@@ -447,21 +447,19 @@ class AIOnboarding(commands.Cog):
             log.debug("Konnte View-Payload nicht serialisieren", exc_info=True)
             return
         try:
-            with service_db.get_conn() as conn:
-                conn.execute(
-                    "INSERT OR REPLACE INTO kv_store (ns, k, v) VALUES (?, ?, ?)",
-                    (NS_PERSIST_VIEWS, str(message_id), encoded),
-                )
+            await service_db.execute_async(
+                "INSERT OR REPLACE INTO kv_store (ns, k, v) VALUES (?, ?, ?)",
+                (NS_PERSIST_VIEWS, str(message_id), encoded),
+            )
         except Exception:
             log.exception("Konnte persistente View nicht speichern (message_id=%s)", message_id)
 
-    def _clear_persisted_view(self, message_id: int) -> None:
+    async def _clear_persisted_view(self, message_id: int) -> None:
         try:
-            with service_db.get_conn() as conn:
-                conn.execute(
-                    "DELETE FROM kv_store WHERE ns = ? AND k = ?",
-                    (NS_PERSIST_VIEWS, str(message_id)),
-                )
+            await service_db.execute_async(
+                "DELETE FROM kv_store WHERE ns = ? AND k = ?",
+                (NS_PERSIST_VIEWS, str(message_id)),
+            )
         except Exception:
             log.debug(
                 "Persistente View konnte nicht entfernt werden (message_id=%s)",
@@ -469,13 +467,13 @@ class AIOnboarding(commands.Cog):
                 exc_info=True,
             )
 
-    def _restore_persistent_views(self) -> None:
+    async def _restore_persistent_views(self) -> None:
         try:
-            with service_db.get_conn() as conn:
-                rows = conn.execute(
-                    "SELECT k, v FROM kv_store WHERE ns = ?",
-                    (NS_PERSIST_VIEWS,),
-                ).fetchall()
+            # query_all_async is preferred to avoid blocking the event loop
+            rows = await service_db.query_all_async(
+                "SELECT k, v FROM kv_store WHERE ns = ?",
+                (NS_PERSIST_VIEWS,),
+            )
         except Exception:
             log.exception("Persistente AI-Onboarding-Views konnten nicht geladen werden")
             return
@@ -487,7 +485,7 @@ class AIOnboarding(commands.Cog):
                 data_raw = row["v"] if isinstance(row, dict) else row[1]
                 data = json.loads(data_raw)
             except Exception:
-                self._clear_persisted_view(int(row[0]) if row else 0)
+                await service_db.execute_async("DELETE FROM kv_store WHERE ns = ? AND k = ?", (NS_PERSIST_VIEWS, str(row[0]) if row else "0"))
                 continue
 
             view = StartOnboardingView(
@@ -504,7 +502,7 @@ class AIOnboarding(commands.Cog):
                     "Persistente AI-Onboarding-View konnte nicht registriert werden (message_id=%s)",
                     msg_id,
                 )
-                self._clear_persisted_view(msg_id)
+                await service_db.execute_async("DELETE FROM kv_store WHERE ns = ? AND k = ?", (NS_PERSIST_VIEWS, str(msg_id)))
         if restored:
             log.info("%s AI-Onboarding-Views nach Neustart reaktiviert", restored)
 
@@ -602,7 +600,7 @@ class AIOnboarding(commands.Cog):
             # Persistenz für Reboots
             self.bot.add_view(view, message_id=msg.id)
             if not privacy.is_opted_out(member.id):
-                self._persist_view(msg.id, member.id, getattr(channel, "id", None))
+                await self._persist_view(msg.id, member.id, getattr(channel, "id", None))
             return True
         except Exception:
             log.exception("AI Onboarding konnte nicht gestartet werden")
@@ -630,11 +628,10 @@ class AIOnboarding(commands.Cog):
                 "llm": llm_meta,
             }
             encoded = json.dumps(payload)
-            with service_db.get_conn() as conn:
-                conn.execute(
-                    "INSERT OR REPLACE INTO kv_store (ns, k, v) VALUES (?, ?, ?)",
-                    (NS_SESSION_LOG, str(user_id), encoded),
-                )
+            await service_db.execute_async(
+                "INSERT OR REPLACE INTO kv_store (ns, k, v) VALUES (?, ?, ?)",
+                (NS_SESSION_LOG, str(user_id), encoded),
+            )
         except Exception:
             log.debug(
                 "Session-Log konnte nicht gespeichert werden (user=%s)",

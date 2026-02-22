@@ -39,18 +39,18 @@ def _save_steam_friend_to_db(steam_id64: str, discord_id: int | None = None) -> 
 
         if existing:
             # Already linked to a Discord account, just update verified + friend status
+            # We update all rows with this steam_id to ensure consistency
             conn.execute(
                 """
                 UPDATE steam_links
                 SET verified = 1, is_steam_friend = 1, updated_at = CURRENT_TIMESTAMP
-                WHERE steam_id = ? AND user_id = ?
+                WHERE steam_id = ?
                 """,
-                (steam_id64, existing["user_id"]),
+                (steam_id64,),
             )
             log.info(
-                "Updated existing steam_link: steam=%s, discord=%s",
+                "Updated existing steam_link(s): steam=%s",
                 steam_id64,
-                existing["user_id"],
             )
         else:
             # New friend or unlinked friend
