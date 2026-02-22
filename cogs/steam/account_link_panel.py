@@ -10,7 +10,6 @@ Admin-Command: /publish_steam_panel  →  postet/editiert das Panel
 from __future__ import annotations
 
 import logging
-import os
 
 import discord
 from discord import app_commands

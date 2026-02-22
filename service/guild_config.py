@@ -23,7 +23,7 @@ class GuildIDs:
 
     # TempVoice Kategorien
     TEMPVOICE_CATEGORY_CHILL: int = 1289721245281292290
-    TEMPVOICE_CATEGORY_COMP: int = 1412804540994162789   # Comp/Ranked (war: Grind)
+    TEMPVOICE_CATEGORY_COMP: int = 1412804540994162789  # Comp/Ranked (war: Grind)
     TEMPVOICE_CATEGORY_STREET_BRAWL: int = 1357422957017698478
 
     # Legacy-Aliases (Altcode-Kompatibilität)

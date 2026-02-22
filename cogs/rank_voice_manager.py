@@ -20,9 +20,9 @@ DB_PATH = Path(db_path())  # alias, damit alter Code weiterläuft
 
 # Sub-Rang Score-System: score = tier * 6 + subrank (1-6)
 # Initiate 1 = 7, Eternus 6 = 72
-RANKED_SUBRANK_TOLERANCE = 9   # ±9 Sub-Rang-Punkte = ±1.5 Hauptränge
-SCORE_MIN_ABSOLUTE = 7         # Initiate 1
-SCORE_MAX_ABSOLUTE = 72        # Eternus 6
+RANKED_SUBRANK_TOLERANCE = 9  # ±9 Sub-Rang-Punkte = ±1.5 Hauptränge
+SCORE_MIN_ABSOLUTE = 7  # Initiate 1
+SCORE_MAX_ABSOLUTE = 72  # Eternus 6
 
 # Sub-Rang Rollen-Erkennung (unterstützt "Ascendant 3" und "Asc 3")
 RANK_SHORT_NAMES = {
@@ -151,9 +151,13 @@ class RolePermissionVoiceManager(commands.Cog):
         # Erkennt "lane 1" ODER "ascendant 3" etc.
         is_basic_lane = name.startswith("lane ")
         is_rank_lane = any(name.startswith(f"{rn.lower()} ") for rn in RANK_NAME_TO_VALUE.keys())
-        is_short_rank_lane = any(name.startswith(f"{sn.lower()} ") for sn in RANK_SHORT_NAMES.values())
-        
-        return channel.category_id in MINRANK_CATEGORY_IDS and (is_basic_lane or is_rank_lane or is_short_rank_lane)
+        is_short_rank_lane = any(
+            name.startswith(f"{sn.lower()} ") for sn in RANK_SHORT_NAMES.values()
+        )
+
+        return channel.category_id in MINRANK_CATEGORY_IDS and (
+            is_basic_lane or is_rank_lane or is_short_rank_lane
+        )
 
     # -------------------- DB Layer --------------------
 
@@ -194,7 +198,10 @@ class RolePermissionVoiceManager(commands.Cog):
             existing_cols = {row["name"] for row in info_rows} if info_rows else set()
 
             migrations = [
-                ("anchor_subrank", "ALTER TABLE voice_channel_anchors ADD COLUMN anchor_subrank INTEGER DEFAULT 3"),
+                (
+                    "anchor_subrank",
+                    "ALTER TABLE voice_channel_anchors ADD COLUMN anchor_subrank INTEGER DEFAULT 3",
+                ),
                 ("score_min", "ALTER TABLE voice_channel_anchors ADD COLUMN score_min INTEGER"),
                 ("score_max", "ALTER TABLE voice_channel_anchors ADD COLUMN score_max INTEGER"),
             ]
@@ -592,11 +599,13 @@ class RolePermissionVoiceManager(commands.Cog):
 
             # Score-Bereich abrufen (±9 Punkte = ±1.5 Tiers)
             _uid, _rn, _rv, _amin, _amax, _asub, score_min, score_max = anchor
-            logger.info(f"Update Permissions (Batch) für {channel.name}: Score {score_min}-{score_max}")
+            logger.info(
+                f"Update Permissions (Batch) für {channel.name}: Score {score_min}-{score_max}"
+            )
 
             # 1. Aktuelle Overwrites kopieren
             new_overwrites = dict(channel.overwrites)
-            
+
             # 2. @everyone Deny setzen
             everyone_role = channel.guild.default_role
             everyone_ow = new_overwrites.get(everyone_role, discord.PermissionOverwrite())
@@ -607,7 +616,7 @@ class RolePermissionVoiceManager(commands.Cog):
             # 3. Alle Rollen der Gilde prüfen, welche in den Score-Bereich fallen
             allowed_role_ids = set()
             major_role_ids = set(self.discord_rank_roles.keys())
-            
+
             # Wir iterieren über alle Rollen der Gilde, um Sub-Ränge zu finden
             for role in channel.guild.roles:
                 parsed = self._parse_subrank_role_name(role.name)
@@ -627,19 +636,23 @@ class RolePermissionVoiceManager(commands.Cog):
                 if isinstance(target, discord.Role) and target.id != everyone_role.id:
                     is_major = target.id in major_role_ids
                     is_subrank = self._parse_subrank_role_name(target.name) is not None
-                    
+
                     if (is_major or is_subrank) and target.id not in allowed_role_ids:
                         # Aus den Overwrites entfernen
                         new_overwrites.pop(target)
 
             # 5. Alles in EINEM Call an Discord senden
             try:
-                await channel.edit(overwrites=new_overwrites, reason="Rank System: Batch Permission Update")
+                await channel.edit(
+                    overwrites=new_overwrites, reason="Rank System: Batch Permission Update"
+                )
                 self._mark_permission_write(channel.id)
             except discord.HTTPException as e:
                 logger.error(f"Batch Permission Update fehlgeschlagen für {channel.name}: {e}")
                 # Fallback: Falls Batch fehlschlägt (selten), versuchen wir es einzeln
-                await self._fallback_individual_permissions(channel, allowed_role_ids, major_role_ids)
+                await self._fallback_individual_permissions(
+                    channel, allowed_role_ids, major_role_ids
+                )
 
             self.channel_permissions_initialized.add(channel.id)
 
@@ -651,18 +664,20 @@ class RolePermissionVoiceManager(commands.Cog):
         logger.info(f"Starte Fallback-Einzel-Update für {channel.name}")
         # everyone deny
         await self.set_everyone_deny_connect(channel)
-        
+
         # Erlaubte einzeln setzen
         for rid in allowed_role_ids:
             role = channel.guild.get_role(rid)
             if role:
                 await channel.set_permissions(role, connect=True, speak=True, view_channel=True)
                 await asyncio.sleep(0.2)
-                
+
         # Nicht erlaubte einzeln entfernen
         for target, ow in list(channel.overwrites.items()):
             if isinstance(target, discord.Role) and target.id != channel.guild.default_role.id:
-                if (target.id in major_role_ids or self._parse_subrank_role_name(target.name)) and target.id not in allowed_role_ids:
+                if (
+                    target.id in major_role_ids or self._parse_subrank_role_name(target.name)
+                ) and target.id not in allowed_role_ids:
                     await channel.set_permissions(target, overwrite=None)
                     await asyncio.sleep(0.2)
 
@@ -687,13 +702,10 @@ class RolePermissionVoiceManager(commands.Cog):
         try:
             major_role_ids = set(self.discord_rank_roles.keys())
             for target, _ow in list(channel.overwrites.items()):
-                if (
-                    isinstance(target, discord.Role)
-                    and target.id != channel.guild.default_role.id
-                ):
+                if isinstance(target, discord.Role) and target.id != channel.guild.default_role.id:
                     is_major = target.id in major_role_ids
                     is_subrank = self._parse_subrank_role_name(target.name) is not None
-                    
+
                     if is_major or is_subrank:
                         await channel.set_permissions(target, overwrite=None)
                         self._mark_permission_write(channel.id)
@@ -887,8 +899,15 @@ class RolePermissionVoiceManager(commands.Cog):
             score_max,
         )
         await self._db_upsert_anchor(
-            channel, user.id, rank_name, rank_value, allowed_min, allowed_max,
-            anchor_subrank, score_min, score_max,
+            channel,
+            user.id,
+            rank_name,
+            rank_value,
+            allowed_min,
+            allowed_max,
+            anchor_subrank,
+            score_min,
+            score_max,
         )
         logger.info(
             f"🔗 Anker gesetzt für {channel.name}: {user.display_name} ({rank_name} {anchor_subrank}) "
@@ -1026,18 +1045,20 @@ class RolePermissionVoiceManager(commands.Cog):
             if not members_ranks:
                 return
             anchor_changed = await self._ensure_valid_anchor(channel, members_ranks)
-            
+
             # Rank-Info für den beitretenden Member (3er-Tupel)
             member_info = members_ranks.get(member)
             if not member_info:
                 rn, rv, rs = self.get_user_rank_from_roles(member)
                 member_info = (rn, rv, rs or 3)
-            
+
             rank_name, rank_value, _subrank = member_info
             anchor = self.get_channel_anchor(channel)
 
             if anchor:
-                _uid, _arname, _arval, allowed_min, allowed_max, _asubrank, score_min, score_max = anchor
+                _uid, _arname, _arval, allowed_min, allowed_max, _asubrank, score_min, score_max = (
+                    anchor
+                )
                 # Nur logs – niemals kicken
                 if not (allowed_min <= rank_value <= allowed_max):
                     logger.info(
@@ -1296,7 +1317,9 @@ class RolePermissionVoiceManager(commands.Cog):
                 value=f"ID: {member.id}\nRollen: {len(member.roles)}",
                 inline=True,
             )
-            embed.add_field(name="🎯 Erkannter Rang", value=f"**{rn}{sub_txt}** ({rv})", inline=True)
+            embed.add_field(
+                name="🎯 Erkannter Rang", value=f"**{rn}{sub_txt}** ({rv})", inline=True
+            )
             embed.add_field(
                 name="🎭 Gefundene Rang-Rollen",
                 value="\n".join(found) if found else "❌ Keine",

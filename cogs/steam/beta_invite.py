@@ -2654,7 +2654,10 @@ class BetaInviteFlow(commands.Cog):
                 steam_id64,
             )
         except Exception:
-            log.exception("Friend-Sync: Konnte verified=1/is_steam_friend=1 nicht setzen für discord=%s", discord_id)
+            log.exception(
+                "Friend-Sync: Konnte verified=1/is_steam_friend=1 nicht setzen für discord=%s",
+                discord_id,
+            )
 
         await self._trigger_immediate_role_assignment(discord_id)
         _trace("friend_sync_verified", discord_id=discord_id, steam_id64=steam_id64)

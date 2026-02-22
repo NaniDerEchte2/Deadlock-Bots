@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     steam_api_key: SecretStr | None = Field(None, alias="STEAM_API_KEY")
     steam_web_api_key: SecretStr | None = Field(None, alias="STEAM_WEB_API_KEY")
     public_base_url: str = Field("https://link.earlysalty.com", alias="PUBLIC_BASE_URL")
-    
+
     # --- Roles & Channels ---
     verified_role_id: int = Field(1419608095533043774, alias="VERIFIED_ROLE_ID")
     verified_log_channel_id: int = Field(1374364800817303632, alias="VERIFIED_LOG_CHANNEL_ID")
