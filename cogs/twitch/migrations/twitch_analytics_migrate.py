@@ -137,7 +137,8 @@ def migrate_table(
 
     inserted = 0
     with pg_conn.cursor() as cur:
-        copy_sql = f"COPY {table} ({', '.join(dst_cols)}) FROM STDIN WITH CSV"
+        # Use text format (tab-delimited) because psycopg's copy.write_row defaults to text.
+        copy_sql = f"COPY {table} ({', '.join(dst_cols)}) FROM STDIN"
         with cur.copy(copy_sql) as copy:
             for batch in iter_sqlite_rows(sqlite_conn, table, batch_size, src_cols_list):
                 for row in batch:
