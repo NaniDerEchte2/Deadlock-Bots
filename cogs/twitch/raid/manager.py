@@ -2275,7 +2275,7 @@ class RaidBot:
                 ).fetchone()
                 recent_raids = raid_check[0] if raid_check else 0
 
-            if recent_raids > 1:
+            if recent_raids > 2:
                 log.info(
                     "Skipping recruitment message to %s (Anti-Spam: %d raids in last 24 hours)",
                     to_broadcaster_login,
