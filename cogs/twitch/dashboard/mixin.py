@@ -406,7 +406,7 @@ class TwitchDashboardMixin:
             ad_agg = c.execute(
                 """
                 SELECT COUNT(*) AS total_ads,
-                       SUM(CASE WHEN is_automatic=1 THEN 1 ELSE 0 END) AS auto_ads,
+                       SUM(CASE WHEN is_automatic IS TRUE THEN 1 ELSE 0 END) AS auto_ads,
                        AVG(duration_seconds) AS avg_duration,
                        COUNT(DISTINCT session_id) AS sessions_with_ads
                   FROM twitch_ad_break_events

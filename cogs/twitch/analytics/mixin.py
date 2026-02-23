@@ -514,7 +514,9 @@ class TwitchAnalyticsMixin:
     async def _store_ad_break_event(self, broadcaster_user_id: str, event: dict) -> None:
         """Speichert ein channel.ad_break.begin Event."""
         duration_seconds = int(event.get("duration_seconds") or 0) or None
-        is_automatic = int(bool(event.get("is_automatic")))
+        is_automatic_raw = event.get("is_automatic")
+        # Use a real boolean so Postgres boolean columns accept the value.
+        is_automatic = bool(is_automatic_raw) if is_automatic_raw is not None else False
 
         session_id = self._get_active_session_id_by_user_id(broadcaster_user_id)
 
