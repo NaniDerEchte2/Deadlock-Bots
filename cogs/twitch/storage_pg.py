@@ -20,9 +20,6 @@ log = logging.getLogger("TwitchStreams.StoragePG")
 KEYRING_SERVICE = "DeadlockBot"
 ENV_DSN = "TWITCH_ANALYTICS_DSN"
 
-_COMPAT_INSTALLED = False
-
-
 class RowCompat:
     """Row that supports both numeric and name-based access."""
 
@@ -151,8 +148,7 @@ class _CompatConnection:
 
 def _ensure_compat_functions(conn: psycopg.Connection) -> None:
     """Install lightweight sqlite compatibility helpers (strftime, printf, julianday, datetime) once per process."""
-    global _COMPAT_INSTALLED
-    if _COMPAT_INSTALLED:
+    if getattr(_ensure_compat_functions, "_installed", False):
         return
     with conn.cursor() as _cur:
         cur = _CompatCursor(_cur)
@@ -235,7 +231,7 @@ def _ensure_compat_functions(conn: psycopg.Connection) -> None:
             """
         )
     conn.commit()
-    _COMPAT_INSTALLED = True
+    _ensure_compat_functions._installed = True
 
 
 @contextlib.contextmanager

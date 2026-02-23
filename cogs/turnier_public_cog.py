@@ -38,7 +38,7 @@ class TurnierPublicCog(commands.Cog):
             try:
                 await self._start_task
             except asyncio.CancelledError:
-                pass
+                log.debug("TurnierPublicServer start task cancelled during cog_unload")
 
         if self.server:
             try:

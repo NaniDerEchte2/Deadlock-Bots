@@ -238,7 +238,7 @@ class BugReporter(commands.Cog):
                 try:
                     await thread.add_user(interaction.user)
                 except Exception:
-                    pass
+                    log.debug("Konnte User nicht zum Ticket-Thread hinzufügen", exc_info=True)
                 await thread.send(
                     f"<@{interaction.user.id}> Ticket eröffnet.\n"
                     f"**Titel:** {title or 'Problem'}\n"
@@ -471,7 +471,6 @@ class BugReporter(commands.Cog):
         details: str,
         category: str,
     ) -> None:
-        ai = getattr(self.bot, "get_cog", lambda name: None)("AIConnector")
         prompt = self._compose_prompt(
             title=title,
             details=details,
@@ -508,8 +507,6 @@ class BugReporter(commands.Cog):
                 actions=[],
             )
             return
-
-        sys_prompt = self._system_prompt()
 
         # Automatische Admin-Aktionen (nur für Bot/Server-Themen)
         actions = self._detect_actions(details)

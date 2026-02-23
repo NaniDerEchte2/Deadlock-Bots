@@ -974,8 +974,8 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
                 "CREATE INDEX IF NOT EXISTS idx_hero_build_clones_status_hero ON hero_build_clones(status, hero_id, created_at)"
             )
             c.commit()
-        except Exception:
-            pass
+        except sqlite3.Error as e:
+            logger.debug("Index-Erstellung für hero_build_clones übersprungen: %s", e, exc_info=True)
         # Update query planner statistics after index creation
         try:
             c.execute("ANALYZE")

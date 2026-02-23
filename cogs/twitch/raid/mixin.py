@@ -215,15 +215,19 @@ class TwitchRaidMixin:
             live_state_by_login: dict[str, dict[str, object]] = {}
             if partner_logins_lower:
                 try:
-                    placeholders = ",".join("?" for _ in partner_logins_lower)
-                    query = (
-                        "SELECT streamer_login, had_deadlock_in_session, last_game, last_deadlock_seen_at "
-                        "FROM twitch_live_state WHERE streamer_login IN (" + placeholders + ")"
-                    )
+                    rows = []
                     with get_conn() as conn:
-                        rows = conn.execute(
-                            query, partner_logins_lower
-                        ).fetchall()  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+                        for login_lower in partner_logins_lower:
+                            row = conn.execute(
+                                """
+                                SELECT streamer_login, had_deadlock_in_session, last_game, last_deadlock_seen_at
+                                FROM twitch_live_state
+                                WHERE streamer_login = ?
+                                """,
+                                (login_lower,),
+                            ).fetchone()
+                            if row:
+                                rows.append(row)
                     for row in rows:
                         login_lower = (
                             str(row["streamer_login"] if hasattr(row, "keys") else row[0])

@@ -875,8 +875,6 @@ class RolePermissionVoiceManager(commands.Cog):
         rank_value: int,
         anchor_subrank: int = 3,
     ):
-        mode = self.get_channel_mode(channel)
-
         tolerance = RANKED_SUBRANK_TOLERANCE
 
         anchor_score = rank_value * 6 + anchor_subrank

@@ -419,7 +419,7 @@ class TurnierPublicServer:
             try:
                 signup = await tstore.get_signup_async(guild_id, user_id)
             except Exception:
-                pass
+                log.debug("Signup lookup failed for user_id=%s", user_id, exc_info=True)
 
         return web.json_response(
             {
@@ -492,7 +492,6 @@ class TurnierPublicServer:
                 status=400,
             )
 
-        rank_tier = int(steam_row.get("deadlock_rank") or 0)
         rank_sub = int(steam_row.get("deadlock_subrank") or 0)
         rank_name = str(steam_row.get("deadlock_rank_name") or "initiate")
 

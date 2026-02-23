@@ -997,7 +997,7 @@ class TurnierCog(commands.Cog, name="TurnierCog"):
             try:
                 await self._balance_task
             except asyncio.CancelledError:
-                pass
+                log.debug("Auto-balance task cancelled during cog_unload")
 
     # ── Auto-balance background task ──────────────────────────────────────────
 

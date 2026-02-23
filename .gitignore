@@ -14,6 +14,8 @@ tempvoice_interface.json
 *.json
 !cogs/twitch/dashboard_v2/package.json
 !cogs/twitch/dashboard_v2/package-lock.json
+!.github/eslint-security/package.json
+!.github/eslint-security/package-lock.json
 install_windows_service.py
 *.db
 *__pycache__
@@ -61,6 +63,8 @@ Gemini.ps1
 /service/pg_twitch/
 /.github/tmp
 /erinnerungen
+!.github/eslint-security/package.json
+!.github/eslint-security/package-lock.json
 
 # allow tracking of dashboard_v2 manifests despite global *.json ignore
 !cogs/twitch/dashboard_v2/package.json

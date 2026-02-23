@@ -287,6 +287,11 @@ export interface AudienceDemographicsResponse {
   peakActivityHours: number[];
   interactiveRate: number;
   loyaltyScore: number;
+  dataQuality?: {
+    confidence: 'very_low' | 'low' | 'medium' | 'high';
+    sessions?: number;
+    method?: string;
+  };
 }
 
 export async function fetchAudienceDemographics(

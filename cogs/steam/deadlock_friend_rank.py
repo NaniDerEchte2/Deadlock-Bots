@@ -856,7 +856,7 @@ class DeadlockFriendRank(commands.Cog):
             if not interaction.response.is_done():
                 await interaction.response.defer(ephemeral=ephemeral)
         except discord.HTTPException:
-            pass
+            log.debug("Interaction defer failed (already responded?)", exc_info=True)
 
     @staticmethod
     async def _send_ctx_response(
@@ -876,7 +876,7 @@ class DeadlockFriendRank(commands.Cog):
             except discord.HTTPException:
                 # Interaction token kann ablaufen (z. B. 404 Unknown interaction).
                 # Dann direkt in den Channel senden statt erneut über interaction-basiertes ctx.reply.
-                pass
+                log.debug("Fallback to channel send after interaction failure", exc_info=True)
 
             channel = getattr(ctx, "channel", None)
             if channel is not None:
@@ -1149,7 +1149,7 @@ class DeadlockFriendRank(commands.Cog):
             else:
                 await interaction.response.send_message(message, ephemeral=True)
         except discord.HTTPException:
-            pass
+            log.debug("Unable to send app command error response", exc_info=True)
 
 
 async def setup(bot: commands.Bot) -> None:

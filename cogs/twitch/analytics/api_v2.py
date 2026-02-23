@@ -2154,6 +2154,7 @@ class AnalyticsV2Mixin:
             }
 
         total_sessions = len(sessions)
+        total_viewers_in_sessions = sum(int(s[4] or 0) for s in sessions)  # avg_viewers col
 
         # --- Attempt: real watch-time from chatters-API snapshots ---
         real_minutes: list[float] = []
@@ -2164,9 +2165,10 @@ class AnalyticsV2Mixin:
                     """
                     SELECT
                         ROUND(
-                            (
+                            GREATEST(
                                 EXTRACT(EPOCH FROM COALESCE(last_seen_at, first_message_at))
-                                - EXTRACT(EPOCH FROM first_message_at)
+                                - EXTRACT(EPOCH FROM COALESCE(first_message_at, last_seen_at)),
+                                0
                             ) / 60.0
                         ) as watch_minutes
                     FROM twitch_session_chatters
@@ -2180,8 +2182,13 @@ class AnalyticsV2Mixin:
                 ).fetchall()
                 real_minutes = [float(r[0]) for r in rows if r[0] is not None and r[0] >= 0]
 
-        # Decide whether real data is sufficient (≥30% coverage vs session count)
-        use_real = len(real_minutes) >= total_sessions * 0.3 and len(real_minutes) >= 3
+        if total_viewers_in_sessions > 0:
+            coverage_real = len(real_minutes) / max(1, total_viewers_in_sessions)
+        else:
+            coverage_real = len(real_minutes) / max(1, total_sessions)
+
+        # Decide whether real data is sufficient (≥30% coverage vs viewer count)
+        use_real = coverage_real >= 0.3 and len(real_minutes) >= 3
 
         if use_real:
             total_viewers = len(real_minutes)
@@ -2198,12 +2205,7 @@ class AnalyticsV2Mixin:
                 sorted_m[mid] if len(sorted_m) % 2 == 1 else (sorted_m[mid - 1] + sorted_m[mid]) / 2
             )
             # Approximate total-session coverage ratio
-            total_viewers_in_sessions = sum(int(s[4] or 0) for s in sessions)  # avg_viewers col
-            coverage = (
-                min(1.0, total_viewers / max(1, total_viewers_in_sessions))
-                if total_viewers_in_sessions > 0
-                else 0.0
-            )
+            coverage = min(1.0, coverage_real)
             data_quality = {
                 "method": "chatters_api_snapshots",
                 "coverage": round(coverage, 2),
@@ -2240,7 +2242,7 @@ class AnalyticsV2Mixin:
             median_watch_time = avg_watch_time * 0.85
             data_quality = {
                 "method": "retention_curve_proxy",
-                "coverage": round(len(real_minutes) / max(1, total_sessions), 2),
+                "coverage": round(min(1.0, coverage_real), 2),
             }
 
         return {
@@ -2436,7 +2438,7 @@ class AnalyticsV2Mixin:
                                 THEN COALESCE(NULLIF(sc.chatter_login, ''), sc.chatter_id)
                             END
                         ) as returning_chatters,
-                        COUNT(*) as total_viewers_tracked
+                        COUNT(DISTINCT COALESCE(NULLIF(sc.chatter_login, ''), sc.chatter_id)) as tracked_viewers
                     FROM twitch_session_chatters sc
                     JOIN twitch_stream_sessions s ON s.id = sc.session_id
                     WHERE s.started_at >= ?
@@ -2456,7 +2458,7 @@ class AnalyticsV2Mixin:
                 # Real follow events during streams (primary source)
                 follow_events_row = conn.execute(
                     """
-                    SELECT COUNT(*) as follows_during_stream
+                    SELECT COUNT(DISTINCT fe.id) as follows_during_stream
                     FROM twitch_follow_events fe
                     JOIN twitch_stream_sessions ss
                         ON ss.streamer_login = fe.streamer_login
@@ -2472,9 +2474,9 @@ class AnalyticsV2Mixin:
                     int(follow_events_row[0]) if follow_events_row and follow_events_row[0] else 0
                 )
 
-                # Use chatters-API total_viewers_tracked as unique viewer count when available
-                unique_viewers = max(total_viewers_tracked, unique_chatters, 1)
-                if total_viewers_tracked == 0:
+                # Use distinct chatters as primary unique viewer source; fall back to estimates only if unavailable
+                unique_viewers = total_viewers_tracked or unique_chatters
+                if unique_viewers == 0:
                     # Fallback: estimate unique viewers
                     avg_watch_minutes_proxy = max(
                         8.0, min(75.0, 8.0 + (avg_retention_10m * 100.0 * 0.55))
@@ -2560,9 +2562,9 @@ class AnalyticsV2Mixin:
                             "sessions": session_count,
                             "followerValidSamples": follower_valid_samples,
                             "raidEvents": raid_count,
-                            "uniqueViewersMethod": "chatters_api_snapshots"
-                            if total_viewers_tracked > 0
-                            else "estimated_from_viewer_hours_and_chatters",
+                             "uniqueViewersMethod": "distinct_chatters"
+                             if total_viewers_tracked > 0
+                             else "estimated_from_viewer_hours_and_chatters",
                         },
                     }
                 )
@@ -2881,6 +2883,56 @@ class AnalyticsV2Mixin:
             with storage.get_conn() as conn:
                 since_date = (datetime.now(UTC) - timedelta(days=days)).isoformat()
 
+                # Language mix (avoid hard-coded German defaults)
+                language_rows = conn.execute(
+                    """
+                    SELECT
+                        LOWER(COALESCE(NULLIF(s.language, ''), 'unknown')) as lang,
+                        COUNT(*) as sessions,
+                        AVG(s.avg_viewers) as avg_viewers
+                    FROM twitch_stream_sessions s
+                    WHERE s.started_at >= ? AND LOWER(s.streamer_login) = ? AND s.ended_at IS NOT NULL
+                    GROUP BY lang
+                    ORDER BY sessions DESC
+                """,
+                    [since_date, streamer.lower()],
+                ).fetchall()
+
+                language_session_total = int(sum(r[1] or 0 for r in language_rows))
+                primary_lang_row = language_rows[0] if language_rows else None
+                primary_lang_code = (primary_lang_row[0] or "unknown") if primary_lang_row else "unknown"
+                language_confidence = (
+                    round(((primary_lang_row[1] or 0) / max(1, language_session_total)) * 100, 1)
+                    if primary_lang_row
+                    else 0.0
+                )
+
+                def _lang_label(code: str) -> str:
+                    c = (code or "unknown").lower()
+                    if c.startswith("de"):
+                        return "German"
+                    if c.startswith("en"):
+                        return "English"
+                    if c.startswith("fr"):
+                        return "French"
+                    if c.startswith("es"):
+                        return "Spanish"
+                    if c.startswith("pt"):
+                        return "Portuguese"
+                    if c.startswith("tr"):
+                        return "Turkish"
+                    if c.startswith("pl"):
+                        return "Polish"
+                    if c.startswith("ru"):
+                        return "Russian"
+                    if c.startswith("it"):
+                        return "Italian"
+                    if c == "unknown":
+                        return "Unbekannt"
+                    return c
+
+                primary_language_label = _lang_label(primary_lang_code)
+
                 # Analyze stream times to estimate audience timezone/region
                 time_stats = conn.execute(
                     """
@@ -2891,52 +2943,103 @@ class AnalyticsV2Mixin:
                     FROM twitch_stream_sessions s
                     WHERE s.started_at >= ? AND LOWER(s.streamer_login) = ? AND s.ended_at IS NOT NULL
                     GROUP BY hour
-                    ORDER BY avg_viewers DESC
                 """,
                     [since_date, streamer.lower()],
                 ).fetchall()
 
-                # Peak hours analysis for region estimation
-                peak_hours = [r[0] for r in time_stats[:3]] if time_stats else [20, 21, 19]
+                def _hour_weight(row) -> float:
+                    avg_v = float(row[1] or 0.0)
+                    stream_count = float(row[2] or 0.0)
+                    return max(1.0, avg_v) * max(1.0, stream_count)
 
-                # German stream = DACH region primarily (UTC+1/+2)
-                # If peak is 18-23 UTC, likely European audience
-                europe_score = sum(1 for h in peak_hours if 17 <= h <= 23)
-                us_score = sum(1 for h in peak_hours if 0 <= h <= 6 or 23 <= h <= 24)
-                asia_score = sum(1 for h in peak_hours if 8 <= h <= 16)
+                peak_hours = (
+                    [r[0] for r in sorted(time_stats, key=_hour_weight, reverse=True)[:3]]
+                    if time_stats
+                    else [20, 21, 22]
+                )
 
-                total = europe_score + us_score + asia_score or 1
+                # Region estimation combines language hint + schedule
+                region_scores = {"DACH": 0.0, "Rest EU": 0.0, "NA": 0.0, "Other": 0.0}
+                lang_hint = primary_lang_code.lower()
+                dach_langs = {"de", "de-de", "de-at", "de-ch", "ger", "german"}
+                eu_langs = {
+                    "fr",
+                    "fr-fr",
+                    "es",
+                    "es-es",
+                    "it",
+                    "pl",
+                    "ru",
+                    "nl",
+                    "sv",
+                    "da",
+                    "fi",
+                    "tr",
+                }
+
+                if lang_hint in dach_langs:
+                    region_scores["DACH"] += 3.5
+                    region_scores["Rest EU"] += 2.0
+                elif lang_hint in eu_langs:
+                    region_scores["Rest EU"] += 3.0
+                    region_scores["Other"] += 0.8
+                elif lang_hint.startswith("en"):
+                    region_scores["NA"] += 2.5
+                    region_scores["Rest EU"] += 2.0
+                elif lang_hint.startswith("pt") or lang_hint.startswith("es"):
+                    region_scores["Other"] += 2.5  # LATAM/BR bucket → Other bucket
+                    region_scores["Rest EU"] += 1.0
+                else:
+                    region_scores["Other"] += 2.0
+
+                for hour, avg_viewers, stream_count in time_stats:
+                    score = _hour_weight((hour, avg_viewers, stream_count))
+                    if 17 <= hour <= 23:
+                        region_scores["Rest EU"] += score
+                        if lang_hint in dach_langs:
+                            region_scores["DACH"] += score * 0.7
+                    if 0 <= hour <= 5:
+                        region_scores["NA"] += score
+                    if 6 <= hour <= 12:
+                        region_scores["Other"] += score
+                    if 12 < hour < 17:
+                        region_scores["Rest EU"] += score * 0.5
+
+                total_region_score = sum(region_scores.values()) or 1.0
                 regions = [
-                    {
-                        "region": "DACH",
-                        "percentage": round(europe_score / total * 70, 1),
-                    },  # Primary
-                    {
-                        "region": "Rest EU",
-                        "percentage": round(europe_score / total * 15, 1),
-                    },
-                    {"region": "NA", "percentage": round(us_score / total * 10, 1)},
-                    {"region": "Other", "percentage": round(asia_score / total * 5, 1)},
+                    {"region": name, "percentage": round(score / total_region_score * 100, 1)}
+                    for name, score in region_scores.items()
                 ]
 
-                # Chat activity analysis for engagement type
+                # Chat activity analysis for engagement type (weight by samples/duration to avoid short-session bias)
                 chat_stats = conn.execute(
                     """
+                    WITH weighted AS (
+                        SELECT
+                            COALESCE(NULLIF(s.samples, 0), NULLIF(s.duration_seconds, 0), 1) AS weight,
+                            s.unique_chatters,
+                            s.returning_chatters,
+                            s.avg_viewers
+                        FROM twitch_stream_sessions s
+                        WHERE s.started_at >= ? AND LOWER(s.streamer_login) = ? AND s.ended_at IS NOT NULL
+                    )
                     SELECT
-                        AVG(s.unique_chatters) as avg_chatters,
-                        AVG(s.avg_viewers) as avg_viewers,
-                        AVG(s.returning_chatters * 1.0 / NULLIF(s.unique_chatters, 0)) as return_rate
-                    FROM twitch_stream_sessions s
-                    WHERE s.started_at >= ? AND LOWER(s.streamer_login) = ? AND s.ended_at IS NOT NULL
+                        SUM(CASE WHEN avg_viewers > 0 THEN (unique_chatters * weight * 1.0) / avg_viewers ELSE 0 END) AS weighted_chat_rate_sum,
+                        SUM(weight) AS total_weight,
+                        SUM(unique_chatters) AS total_chatters,
+                        SUM(returning_chatters) AS total_returning
+                    FROM weighted
                 """,
                     [since_date, streamer.lower()],
                 ).fetchone()
 
-                chatters = float(chat_stats[0]) if chat_stats and chat_stats[0] else 0
-                viewers = float(chat_stats[1]) if chat_stats and chat_stats[1] else 1
-                return_rate = float(chat_stats[2]) if chat_stats and chat_stats[2] else 0
+                total_weight = float(chat_stats[1]) if chat_stats and chat_stats[1] else 0
+                weighted_chat_rate_sum = float(chat_stats[0]) if chat_stats and chat_stats[0] else 0
+                total_chatters = float(chat_stats[2]) if chat_stats and chat_stats[2] else 0
+                total_returning = float(chat_stats[3]) if chat_stats and chat_stats[3] else 0
 
-                chat_rate = chatters / viewers if viewers > 0 else 0
+                chat_rate = weighted_chat_rate_sum / total_weight if total_weight > 0 else 0
+                return_rate = total_returning / total_chatters if total_chatters > 0 else 0
 
                 # Estimate viewer types
                 # High chat rate + high return = dedicated community
@@ -2987,10 +3090,13 @@ class AnalyticsV2Mixin:
                 else:
                     activity_pattern = "balanced"
 
-                total_sessions = int(sum(weekday_counts.values()))
-                if total_sessions >= 20:
+                schedule_session_total = int(sum(weekday_counts.values()))
+                session_samples = max(language_session_total, schedule_session_total)
+                if session_samples >= 25:
+                    confidence = "high"
+                elif session_samples >= 12:
                     confidence = "medium"
-                elif total_sessions >= 8:
+                elif session_samples >= 6:
                     confidence = "low"
                 else:
                     confidence = "very_low"
@@ -3000,15 +3106,15 @@ class AnalyticsV2Mixin:
                         "estimatedRegions": regions,
                         "viewerTypes": viewer_type,
                         "activityPattern": activity_pattern,
-                        "primaryLanguage": "German",
-                        "languageConfidence": 85,  # Based on being tracked as German streamer
+                        "primaryLanguage": primary_language_label,
+                        "languageConfidence": language_confidence,
                         "peakActivityHours": peak_hours,
                         "interactiveRate": round(chat_rate * 100, 1),
                         "loyaltyScore": round(return_rate * 100, 1),
                         "dataQuality": {
                             "confidence": confidence,
-                            "sessions": total_sessions,
-                            "method": "heuristic_from_stream_times_and_chat_behavior",
+                            "sessions": session_samples,
+                            "method": "heuristic_from_language_and_schedule",
                         },
                     }
                 )

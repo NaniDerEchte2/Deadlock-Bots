@@ -13,13 +13,52 @@ interface AudienceProps {
 }
 
 export function Audience({ streamer, days }: AudienceProps) {
-  const { data: watchTime, isLoading: loadingWatchTime } = useWatchTimeDistribution(streamer, days);
-  const { data: funnel, isLoading: loadingFunnel } = useFollowerFunnel(streamer, days);
-  const { data: tags, isLoading: loadingTags } = useTagAnalysisExtended(streamer, days);
-  const { data: titles, isLoading: loadingTitles } = useTitlePerformance(streamer, days);
-  const { data: demographics, isLoading: loadingDemographics } = useAudienceDemographics(streamer, days);
+  const {
+    data: watchTime,
+    isLoading: loadingWatchTime,
+    isError: watchTimeError,
+    error: watchTimeErrorDetail,
+    refetch: refetchWatchTime,
+  } = useWatchTimeDistribution(streamer, days);
+  const {
+    data: funnel,
+    isLoading: loadingFunnel,
+    isError: funnelError,
+    error: funnelErrorDetail,
+    refetch: refetchFunnel,
+  } = useFollowerFunnel(streamer, days);
+  const {
+    data: tags,
+    isLoading: loadingTags,
+    isError: tagsError,
+    error: tagsErrorDetail,
+    refetch: refetchTags,
+  } = useTagAnalysisExtended(streamer, days);
+  const {
+    data: titles,
+    isLoading: loadingTitles,
+    isError: titlesError,
+    error: titlesErrorDetail,
+    refetch: refetchTitles,
+  } = useTitlePerformance(streamer, days);
+  const {
+    data: demographics,
+    isLoading: loadingDemographics,
+    isError: demographicsError,
+    error: demographicsErrorDetail,
+    refetch: refetchDemographics,
+  } = useAudienceDemographics(streamer, days);
 
   const isLoading = loadingWatchTime || loadingFunnel || loadingTags || loadingTitles || loadingDemographics;
+  const failedQueries = [
+    { label: 'Watch Time', isError: watchTimeError, error: watchTimeErrorDetail, retry: refetchWatchTime },
+    { label: 'Follower-Funnel', isError: funnelError, error: funnelErrorDetail, retry: refetchFunnel },
+    { label: 'Tags', isError: tagsError, error: tagsErrorDetail, retry: refetchTags },
+    { label: 'Titel', isError: titlesError, error: titlesErrorDetail, retry: refetchTitles },
+    { label: 'Demographics', isError: demographicsError, error: demographicsErrorDetail, retry: refetchDemographics },
+  ].filter(q => q.isError);
+  const formatError = (err: unknown) => (err instanceof Error ? err.message : 'Unbekannter Fehler');
+  const retryFailed = () => failedQueries.forEach(q => q.retry());
 
   if (!streamer) {
     return (
@@ -38,69 +77,44 @@ export function Audience({ streamer, days }: AudienceProps) {
     );
   }
 
-  // Generate mock data if API endpoints don't exist yet
-  const mockWatchTime = watchTime || {
-    under5min: 25,
-    min5to15: 20,
-    min15to30: 18,
-    min30to60: 22,
-    over60min: 15,
-    avgWatchTime: 28.5,
-    medianWatchTime: 22,
-  };
-
-  const mockFunnel = funnel || {
-    uniqueViewers: 1250,
-    returningViewers: 480,
-    newFollowers: 85,
-    netFollowerDelta: 85,
-    conversionRate: 6.8,
-    avgTimeToFollow: 45,
-    followersBySource: {
-      organic: 52,
-      raids: 18,
-      hosts: 8,
-      other: 7,
-    },
-  };
-
-  const mockTags = tags || [
-    { tagName: 'Deadlock', usageCount: 15, avgViewers: 145, avgRetention10m: 58, avgFollowerGain: 12, trend: 'up' as const, trendValue: 15, bestTimeSlot: '18:00-22:00', avgStreamDuration: 14400, categoryRank: 5 },
-    { tagName: 'German', usageCount: 15, avgViewers: 142, avgRetention10m: 55, avgFollowerGain: 10, trend: 'stable' as const, trendValue: 2, bestTimeSlot: '19:00-23:00', avgStreamDuration: 14000, categoryRank: 8 },
-    { tagName: 'Competitive', usageCount: 8, avgViewers: 165, avgRetention10m: 62, avgFollowerGain: 15, trend: 'up' as const, trendValue: 22, bestTimeSlot: '20:00-24:00', avgStreamDuration: 12000, categoryRank: 3 },
-    { tagName: 'Ranked', usageCount: 6, avgViewers: 158, avgRetention10m: 60, avgFollowerGain: 14, trend: 'down' as const, trendValue: -5, bestTimeSlot: '18:00-22:00', avgStreamDuration: 10800, categoryRank: 6 },
-    { tagName: 'Chill', usageCount: 4, avgViewers: 95, avgRetention10m: 48, avgFollowerGain: 6, trend: 'stable' as const, trendValue: 0, bestTimeSlot: '14:00-18:00', avgStreamDuration: 18000, categoryRank: 15 },
-  ];
-
-  const mockTitles = titles || [
-    { title: 'Ranked Grind bis Phantom! !discord', usageCount: 5, avgViewers: 168, avgRetention10m: 62, avgFollowerGain: 18, peakViewers: 245, keywords: ['Ranked', 'Grind', 'Phantom'] },
-    { title: 'Chill Deadlock mit Zuschauern', usageCount: 4, avgViewers: 125, avgRetention10m: 55, avgFollowerGain: 8, peakViewers: 180, keywords: ['Chill', 'Zuschauer'] },
-    { title: 'Road to Top 500 | Tag 42', usageCount: 3, avgViewers: 195, avgRetention10m: 68, avgFollowerGain: 22, peakViewers: 312, keywords: ['Road', 'Top 500', 'Tag'] },
-  ];
-
-  const mockDemographics = demographics || {
-    estimatedRegions: [
-      { region: 'DACH', percentage: 65 },
-      { region: 'Rest EU', percentage: 20 },
-      { region: 'NA', percentage: 10 },
-      { region: 'Other', percentage: 5 },
-    ],
-    viewerTypes: [
-      { label: 'Dedicated Fans', percentage: 30 },
-      { label: 'Regular Viewers', percentage: 35 },
-      { label: 'Casual Viewers', percentage: 25 },
-      { label: 'New Visitors', percentage: 10 },
-    ],
-    activityPattern: 'weekday-focused' as const,
-    primaryLanguage: 'German',
-    languageConfidence: 85,
-    peakActivityHours: [19, 20, 21],
-    interactiveRate: 12.5,
-    loyaltyScore: 42,
-  };
+  const watchTimeData = watchTime ?? null;
+  const funnelData = funnel ?? null;
+  const tagData = tags ?? null;
+  const titleData = titles ?? null;
+  const demographicsData = demographics ?? null;
+  const noData =
+    !watchTimeData && !funnelData && !tagData && !titleData && !demographicsData && failedQueries.length === 0;
 
   return (
     <div className="space-y-6">
+      {failedQueries.length > 0 && (
+        <div className="bg-error/10 border border-error/30 rounded-lg p-4 text-error space-y-2">
+          <div className="flex items-center gap-2 font-semibold">
+            <AlertCircle className="w-5 h-5" />
+            <span>Daten konnten nicht vollständig geladen werden.</span>
+          </div>
+          <ul className="text-sm text-error/80 list-disc pl-5 space-y-1">
+            {failedQueries.map(q => (
+              <li key={q.label}>{q.label}: {formatError(q.error)}</li>
+            ))}
+          </ul>
+          <button
+            onClick={retryFailed}
+            className="px-3 py-1.5 rounded-md bg-error/20 text-error text-sm font-semibold hover:bg-error/30 transition"
+          >
+            Erneut laden
+          </button>
+        </div>
+      )}
+
+      {noData && (
+        <div className="flex flex-col items-center justify-center h-48 text-center space-y-2 border border-border rounded-lg">
+          <AlertCircle className="w-8 h-8 text-text-secondary" />
+          <p className="text-white font-medium">Keine Daten für diesen Zeitraum.</p>
+          <p className="text-sm text-text-secondary">Bitte Zeitraum oder Streamer anpassen und erneut versuchen.</p>
+        </div>
+      )}
+
       {/* Header Stats */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
@@ -110,40 +124,56 @@ export function Audience({ streamer, days }: AudienceProps) {
         <QuickStatCard
           icon={<Clock className="w-5 h-5" />}
           label="Ø Watch Time"
-          value={`${mockWatchTime.avgWatchTime.toFixed(0)} Min`}
+          value={watchTimeData ? `${watchTimeData.avgWatchTime.toFixed(0)} Min` : '—'}
           color="primary"
         />
         <QuickStatCard
           icon={<Target className="w-5 h-5" />}
           label="Conversion Rate"
-          value={`${mockFunnel.conversionRate.toFixed(2)}%`}
+          value={funnelData ? `${funnelData.conversionRate.toFixed(2)}%` : '—'}
           color="success"
         />
         <QuickStatCard
           icon={<Users className="w-5 h-5" />}
           label="Unique Viewer"
-          value={mockFunnel.uniqueViewers.toLocaleString('de-DE')}
+          value={funnelData ? funnelData.uniqueViewers.toLocaleString('de-DE') : '—'}
           color="accent"
         />
         <QuickStatCard
           icon={<UserPlus className="w-5 h-5" />}
           label="Neue Follower"
-          value={`+${mockFunnel.newFollowers}`}
+          value={funnelData ? `+${funnelData.newFollowers}` : '—'}
           color="warning"
         />
       </motion.div>
 
       {/* Watch Time & Funnel Side by Side */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <WatchTimeDistribution data={mockWatchTime} />
-        <FollowerFunnel data={mockFunnel} />
+        {watchTimeData ? (
+          <WatchTimeDistribution data={watchTimeData} />
+        ) : (
+          <ErrorPlaceholder label="Watch Time" onRetry={refetchWatchTime} />
+        )}
+        {funnelData ? (
+          <FollowerFunnel data={funnelData} />
+        ) : (
+          <ErrorPlaceholder label="Follower-Funnel" onRetry={refetchFunnel} />
+        )}
       </div>
 
       {/* Tag & Title Performance */}
-      <TagPerformanceChart tagData={mockTags} titleData={mockTitles} />
+      {tagData ? (
+        <TagPerformanceChart tagData={tagData} titleData={titleData || undefined} />
+      ) : (
+        <ErrorPlaceholder label="Tag & Title Performance" onRetry={refetchTags} />
+      )}
 
       {/* Audience Demographics */}
-      <AudienceDemographics data={mockDemographics} />
+      {demographicsData ? (
+        <AudienceDemographics data={demographicsData} />
+      ) : (
+        <ErrorPlaceholder label="Audience Demographics" onRetry={refetchDemographics} />
+      )}
 
       {/* Audience Insights Summary */}
       <motion.div
@@ -162,29 +192,33 @@ export function Audience({ streamer, days }: AudienceProps) {
           <InsightCard
             title="Viewer Engagement"
             description={
-              mockWatchTime.avgWatchTime > 25
-                ? `Starkes Engagement! Deine Viewer bleiben im Schnitt ${mockWatchTime.avgWatchTime.toFixed(0)} Minuten.`
-                : `Verbesserungspotential: Viewer bleiben nur ${mockWatchTime.avgWatchTime.toFixed(0)} Min - teste interaktive Segmente.`
+              watchTimeData && watchTimeData.avgWatchTime > 0
+                ? watchTimeData.avgWatchTime > 25
+                  ? `Starkes Engagement! Deine Viewer bleiben im Schnitt ${watchTimeData.avgWatchTime.toFixed(0)} Minuten.`
+                  : `Verbesserungspotential: Viewer bleiben nur ${watchTimeData.avgWatchTime.toFixed(0)} Min - teste interaktive Segmente.`
+                : 'Keine Watch-Time-Daten verfügbar.'
             }
-            type={mockWatchTime.avgWatchTime > 25 ? 'success' : 'warning'}
+            type={watchTimeData && watchTimeData.avgWatchTime > 25 ? 'success' : 'warning'}
           />
 
           {/* Conversion Insight */}
           <InsightCard
             title="Follower Conversion"
             description={
-              mockFunnel.conversionRate > 5
-                ? `Exzellente Conversion von ${mockFunnel.conversionRate.toFixed(2)}%! Dein Content überzeugt.`
-                : `Conversion bei ${mockFunnel.conversionRate.toFixed(2)}% - nutze mehr Call-to-Actions.`
+              funnelData && funnelData.conversionRate > 0
+                ? funnelData.conversionRate > 5
+                  ? `Exzellente Conversion von ${funnelData.conversionRate.toFixed(2)}%! Dein Content überzeugt.`
+                  : `Conversion bei ${funnelData.conversionRate.toFixed(2)}% - nutze mehr Call-to-Actions.`
+                : 'Keine Conversion-Daten verfügbar.'
             }
-            type={mockFunnel.conversionRate > 5 ? 'success' : 'info'}
+            type={funnelData && funnelData.conversionRate > 5 ? 'success' : 'info'}
           />
 
           {/* Tag Insight */}
-          {mockTags.length > 0 && (
+          {tagData && tagData.length > 0 && (
             <InsightCard
               title="Content Strategie"
-              description={`"${mockTags[0].tagName}" performt am besten. Fokussiere dich auf diesen Content-Typ für maximale Reichweite.`}
+              description={`"${tagData[0].tagName}" performt am besten. Fokussiere dich auf diesen Content-Typ für maximale Reichweite.`}
               type="info"
             />
           )}
@@ -264,6 +298,23 @@ function InsightCard({ title, description, type }: InsightCardProps) {
         <span className="font-medium text-white text-sm">{title}</span>
       </div>
       <p className="text-sm text-text-secondary">{description}</p>
+    </div>
+  );
+}
+
+function ErrorPlaceholder({ label, onRetry }: { label: string; onRetry: () => void }) {
+  return (
+    <div className="flex items-center justify-between h-full bg-card border border-border rounded-xl p-4 text-text-secondary">
+      <div className="flex items-center gap-2">
+        <AlertCircle className="w-5 h-5" />
+        <span>{label} konnten nicht geladen werden.</span>
+      </div>
+      <button
+        onClick={onRetry}
+        className="px-3 py-1 rounded-md bg-primary/10 text-primary text-sm font-semibold hover:bg-primary/20 transition"
+      >
+        Retry
+      </button>
     </div>
   );
 }

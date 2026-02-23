@@ -298,7 +298,6 @@ async function loadData() {
 
 function populateGuildSelect(guilds, currentId) {
   const sel = document.getElementById('guildSelect');
-  const prev = sel.value;
   sel.innerHTML = '';
   (guilds || []).forEach(g => {
     const o = document.createElement('option');

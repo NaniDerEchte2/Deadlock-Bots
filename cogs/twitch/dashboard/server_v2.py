@@ -1549,8 +1549,6 @@ class DashboardV2Server(
         sent_map: dict = {r[0].lower(): {"cnt": r[1], "viewers": r[2] or 0} for r in sent_rows}
         recv_map: dict = {r[0].lower(): {"cnt": r[1], "viewers": r[2] or 0} for r in recv_rows}
 
-        all_logins = sorted(partners | sent_map.keys() | recv_map.keys())
-
         # Per-partner balance (only active partners for main table)
         partner_stats = []
         for login in sorted(partners):

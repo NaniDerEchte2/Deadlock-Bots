@@ -664,7 +664,7 @@ async def create_auth_token_async(user_id: int, display_name: str, ttl: float = 
             (time.time(),),
         )
     except Exception:
-        pass
+        log.debug("Cleanup of stale turnier auth tokens failed", exc_info=True)
     await db.execute_async(
         "INSERT INTO turnier_auth_tokens(token, user_id, display_name, expires_at) VALUES(?, ?, ?, ?)",
         (token, int(user_id), str(display_name), expires_at),

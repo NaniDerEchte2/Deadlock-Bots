@@ -1,0 +1,11 @@
+{
+  "name": "eslint-security-runner",
+  "version": "1.0.0",
+  "private": true,
+  "license": "MIT",
+  "dependencies": {
+    "eslint": "10.0.0",
+    "eslint-plugin-security": "3.0.1",
+    "eslint-plugin-no-secrets": "2.2.2"
+  }
+}

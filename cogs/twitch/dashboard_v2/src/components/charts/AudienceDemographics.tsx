@@ -11,6 +11,11 @@ export interface AudienceDemographicsData {
   peakActivityHours: number[];
   interactiveRate: number;
   loyaltyScore: number;
+  dataQuality?: {
+    confidence: 'very_low' | 'low' | 'medium' | 'high';
+    method?: string;
+    sessions?: number;
+  };
 }
 
 interface AudienceDemographicsProps {
@@ -26,6 +31,18 @@ export function AudienceDemographics({ data }: AudienceDemographicsProps) {
     'weekday-focused': 'Wochentags-fokussiert',
     'balanced': 'Ausgewogen',
   };
+
+  const confidenceLabel =
+    data.dataQuality?.confidence === 'very_low'
+      ? 'sehr niedrig'
+      : data.dataQuality?.confidence === 'low'
+        ? 'niedrig'
+        : data.dataQuality?.confidence === 'medium'
+          ? 'mittel'
+          : data.dataQuality?.confidence === 'high'
+            ? 'hoch'
+            : null;
+  const isHeuristic = data.dataQuality?.method?.toLowerCase().includes('heuristic');
 
   return (
     <motion.div
@@ -43,6 +60,11 @@ export function AudienceDemographics({ data }: AudienceDemographicsProps) {
             <p className="text-sm text-text-secondary">Geschätzte Zusammensetzung deiner Zuschauer</p>
           </div>
         </div>
+        {data.dataQuality && confidenceLabel && (
+          <span className="text-xs px-3 py-1 rounded-full border border-border text-text-secondary">
+            {isHeuristic ? 'Heuristik' : 'Datenbasiert'} · Vertrauen: {confidenceLabel}
+          </span>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
