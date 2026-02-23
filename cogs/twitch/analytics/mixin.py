@@ -22,6 +22,8 @@ class TwitchAnalyticsMixin:
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # Warn about missing chatters scope only once per live session to avoid log spam
+        self._chatters_scope_warned: set[tuple[str, int]] = set()
         self._analytics_task = self.collect_analytics_data.start()
         self._chatters_task = self.collect_chatters_data.start()
 
@@ -257,11 +259,14 @@ class TwitchAnalyticsMixin:
                         exc_info=True,
                     )
             else:
-                log.warning(
-                    "Chatters-Poller: %s missing required 'moderator:read:chatters' scope. "
-                    "Streamer must re-authorize.",
-                    login,
-                )
+                key = (user_id, session_id)
+                if key not in self._chatters_scope_warned:
+                    self._chatters_scope_warned.add(key)
+                    log.warning(
+                        "Chatters-Poller: %s missing required 'moderator:read:chatters' scope. "
+                        "Streamer must re-authorize.",
+                        login,
+                    )
         if not chatters:
             return None
 
@@ -304,6 +309,15 @@ class TwitchAnalyticsMixin:
                 ).fetchall()
                 auth_ids = {
                     (r["twitch_user_id"] if hasattr(r, "keys") else r[0]) for r in auth_rows
+                }
+
+            # Track active sessions to reset per-session warning cache
+            active_sessions = {
+                (r[2] if not hasattr(r, "keys") else r["active_session_id"]) for r in rows
+            }
+            if self._chatters_scope_warned:
+                self._chatters_scope_warned = {
+                    key for key in self._chatters_scope_warned if key[1] in active_sessions
                 }
 
             if rows:
