@@ -307,15 +307,16 @@ class SteamVerifiedRole(commands.Cog):
         Versucht die Rollenvergabe mit schnellen Retries (z.B. direkt nach Freundschaft).
         Standard: 3 Versuche im Abstand von 30s (per env konfigurierbar).
         """
-        attempts = max(1, self._immediate_retry_attempts)
-        interval = max(0.0, self._immediate_retry_interval)
-        for i in range(attempts):
-            ok = await self.assign_verified_role(user_id)
-            if ok:
-                return True
-            if i < attempts - 1 and interval > 0:
-                await asyncio.sleep(interval)
-        return False
+        try:
+            attempts = max(1, self._immediate_retry_attempts)
+            interval = max(0.0, self._immediate_retry_interval)
+            for i in range(attempts):
+                ok = await self.assign_verified_role(user_id)
+                if ok:
+                    return True
+                if i < attempts - 1 and interval > 0:
+                    await asyncio.sleep(interval)
+            return False
         except Exception as e:
             self._mark_member_transient_error(user_id)
             log.error("Fehler bei Sofort-Zuweisung der Verified-Rolle an %s: %s", user_id, e)

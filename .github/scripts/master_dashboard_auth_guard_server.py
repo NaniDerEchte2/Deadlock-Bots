@@ -78,8 +78,14 @@ async def _run() -> None:
     except ValueError:
         port = 8790
 
-    session_id = (os.getenv("MASTER_GUARD_SESSION_ID") or "guard-session").strip()
-    csrf_token = (os.getenv("MASTER_GUARD_CSRF_TOKEN") or "guard-csrf").strip()
+    session_id = os.getenv("MASTER_GUARD_SESSION_ID")
+    csrf_token = os.getenv("MASTER_GUARD_CSRF_TOKEN")
+    if not session_id or not csrf_token:
+        raise RuntimeError(
+            "MASTER_GUARD_SESSION_ID and MASTER_GUARD_CSRF_TOKEN must be set via environment"
+        )
+    session_id = session_id.strip()
+    csrf_token = csrf_token.strip()
 
     bot = _DummyBot()
     dashboard = DashboardServer(bot, host=host, port=port)

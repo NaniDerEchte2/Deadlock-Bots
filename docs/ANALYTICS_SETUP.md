@@ -210,13 +210,13 @@ http://localhost:8765/twitch/analytics
 
 **Mit Token (Header):**
 ```bash
-curl -H "X-Partner-Token: your_partner_token" \
+curl -H "X-Partner-Token: $PARTNER_TOKEN" \
      http://localhost:8765/twitch/analytics
 ```
 
 **Mit Token (Query):**
 ```
-http://localhost:8765/twitch/analytics?partner_token=your_partner_token
+http://localhost:8765/twitch/analytics?partner_token=$PARTNER_TOKEN
 ```
 
 ### Navigation

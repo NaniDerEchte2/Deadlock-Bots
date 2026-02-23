@@ -595,6 +595,10 @@ class ModerationMixin:
                             await self._token_manager.get_valid_token(force_refresh=True)
                             continue
                         txt = await r.text()
+                        if r.status == 401 and "missing scope" in txt.lower():
+                            log.error(
+                                "_send_announcement: Bot-Token fehlt 'moderator:manage:announcements' – bitte Bot-Account mit diesem Scope neu autorisieren."
+                            )
                         if self._should_blacklist_for_source(source) and self._looks_like_ban_error(
                             r.status, txt
                         ):

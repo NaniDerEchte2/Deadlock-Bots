@@ -32,10 +32,13 @@ jobs:
           MASTER_DASHBOARD_ALLOW_QUERY_TOKEN: "0"
           MASTER_GUARD_HOST: "127.0.0.1"
           MASTER_GUARD_PORT: "8790"
-          MASTER_GUARD_TOKEN: "guard-token"
-          MASTER_GUARD_SESSION_ID: "guard-session"
-          MASTER_GUARD_CSRF_TOKEN: "guard-csrf"
+          MASTER_GUARD_TOKEN: ${{ secrets.MASTER_GUARD_TOKEN }}
+          MASTER_GUARD_SESSION_ID: ${{ secrets.MASTER_GUARD_SESSION_ID }}
+          MASTER_GUARD_CSRF_TOKEN: ${{ secrets.MASTER_GUARD_CSRF_TOKEN }}
         run: |
+          : "${MASTER_GUARD_TOKEN:?Set secret MASTER_GUARD_TOKEN}"
+          : "${MASTER_GUARD_SESSION_ID:?Set secret MASTER_GUARD_SESSION_ID}"
+          : "${MASTER_GUARD_CSRF_TOKEN:?Set secret MASTER_GUARD_CSRF_TOKEN}"
           mkdir -p .master-auth-guard
           python -m pip install --require-hashes -r requirements-locked.txt
           
@@ -44,9 +47,10 @@ jobs:
 
       - name: Wait for Master Dashboard Readiness
         run: |
+          COOKIE_HEADER="Cookie: master_dash_session=${MASTER_GUARD_SESSION_ID}"
           for i in $(seq 1 40); do
             code=$(curl -s -o /dev/null -w "%{http_code}" \
-              -H "Cookie: master_dash_session=guard-session" \
+              -H "$COOKIE_HEADER" \
               http://127.0.0.1:8790/api/auth/me || true)
             if [ "$code" = "200" ]; then
               echo "Master dashboard guard server is ready"
@@ -78,8 +82,10 @@ jobs:
           }
 
           BASE_URL="http://127.0.0.1:8790"
-          COOKIE_HEADER="Cookie: master_dash_session=guard-session"
+          COOKIE_HEADER="Cookie: master_dash_session=${MASTER_GUARD_SESSION_ID}"
           JSON_HEADER="Content-Type: application/json"
+          AUTH_HEADER="Authorization: Bearer ${MASTER_GUARD_TOKEN}"
+          CSRF_HEADER="X-CSRF-Token: ${MASTER_GUARD_CSRF_TOKEN}"
 
           # Unauthenticated write request must be blocked.
           request_json "unauthenticated-restart-blocked" 401 \
@@ -93,14 +99,14 @@ jobs:
             -X POST \
             -H "$JSON_HEADER" \
             --data '{}' \
-            "$BASE_URL/api/bot/restart?token=guard-token" > /dev/null
+            "$BASE_URL/api/bot/restart?token=${MASTER_GUARD_TOKEN}" > /dev/null
 
           # Session auth + CSRF but missing origin/referer must fail.
           request_json "session-without-origin-blocked" 403 \
             -X POST \
             -H "$JSON_HEADER" \
             -H "$COOKIE_HEADER" \
-            -H "X-CSRF-Token: guard-csrf" \
+            -H "$CSRF_HEADER" \
             --data '{}' \
             "$BASE_URL/api/bot/restart" > /dev/null
 
@@ -110,7 +116,7 @@ jobs:
             -H "$JSON_HEADER" \
             -H "$COOKIE_HEADER" \
             -H "Origin: https://evil.example" \
-            -H "X-CSRF-Token: guard-csrf" \
+            -H "$CSRF_HEADER" \
             --data '{}' \
             "$BASE_URL/api/bot/restart" > /dev/null
 
@@ -130,7 +136,7 @@ jobs:
             -H "$JSON_HEADER" \
             -H "$COOKIE_HEADER" \
             -H "Origin: https://admin.earlysalty.de" \
-            -H "X-CSRF-Token: guard-csrf" \
+            -H "$CSRF_HEADER" \
             --data '{}' \
             "$BASE_URL/api/bot/restart" > /dev/null
 
@@ -140,7 +146,7 @@ jobs:
             -H "$JSON_HEADER" \
             -H "$COOKIE_HEADER" \
             -H "Referer: https://admin.earlysalty.de/admin" \
-            -H "X-CSRF-Token: guard-csrf" \
+            -H "$CSRF_HEADER" \
             --data '{}' \
             "$BASE_URL/api/bot/restart" > /dev/null
 
@@ -154,7 +160,8 @@ jobs:
           data = json.loads(os.environ["RESP"])
           assert data.get("authenticated") is True, data
           assert data.get("mode") == "discord", data
-          assert data.get("csrf_token") == "guard-csrf", data
+          expected = os.environ["MASTER_GUARD_CSRF_TOKEN"]
+          assert data.get("csrf_token") == expected, data
           PY
 
       - name: Upload Master Guard Server Log

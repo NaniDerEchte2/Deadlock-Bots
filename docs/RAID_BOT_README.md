@@ -30,13 +30,17 @@ TWITCH_BOT_TOKEN=oauth:your_bot_account_token  # OAuth-Token für Bot-Account
 TWITCH_RAID_REDIRECT_URI=http://your-domain:8765/twitch/raid/callback  # Optional, Standard: http://127.0.0.1:8765/twitch/raid/callback
 ```
 
-#### Twitch Bot Token erstellen:
+#### Twitch Bot Token erstellen (mit Ankündigungs-Scope):
 
 1. Erstelle einen separaten Twitch-Account für den Bot (z.B. "YourBotName")
-2. Gehe zu: https://twitchtokengenerator.com/
-3. Wähle "Bot Chat Token" aus
-4. Autorisiere den Account
-5. Kopiere das Token und setze es als `TWITCH_BOT_TOKEN`
+2. Gehe zu: https://twitchtokengenerator.com/ (oder nutze dein eigenes OAuth-Setup)
+3. Wähle **Custom Scope Token** und aktiviere mindestens:
+   - `chat:read`, `chat:edit`, `channel:bot`
+   - `user:read:chat`, `user:write:chat`
+   - `moderator:manage:chat_messages`
+   - **`moderator:manage:announcements`** (wichtig für /helix/chat/announcements)
+4. Autorisiere den Account (der Bot muss Moderator im Ziel-Channel sein)
+5. Kopiere Access- **und Refresh-Token** und setze sie als `TWITCH_BOT_TOKEN` und optional `TWITCH_BOT_REFRESH_TOKEN`
 
 ### 2. Dependencies installieren
 

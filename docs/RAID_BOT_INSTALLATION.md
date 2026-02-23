@@ -16,14 +16,18 @@ export TWITCH_BOT_TOKEN="oauth:your_bot_account_token_here"
 export TWITCH_RAID_REDIRECT_URI="http://your-domain:8765/twitch/raid/callback"
 ```
 
-## 3. Twitch Bot Token erstellen
+## 3. Twitch Bot Token erstellen (inkl. Announcement-Scope)
 
 1. Erstelle einen separaten Twitch-Account für den Bot (z.B. "DeadlockRaidBot")
 2. Gehe zu: https://twitchtokengenerator.com/
-3. Wähle "Bot Chat Token"
-4. Autorisiere den Account
-5. Kopiere das Token (sollte mit `oauth:` beginnen)
-6. Setze es als `TWITCH_BOT_TOKEN`
+3. Wähle **Custom Scope Token** und aktiviere:
+   - `chat:read`, `chat:edit`, `channel:bot`
+   - `user:read:chat`, `user:write:chat`
+   - `moderator:manage:chat_messages`
+   - **`moderator:manage:announcements`** (erforderlich für hervorgehobene Ankündigungen)
+4. Autorisiere den Account (der Bot muss Moderator im Channel sein)
+5. Kopiere Access- **und Refresh-Token** (Refresh, falls angeboten)
+6. Setze sie als `TWITCH_BOT_TOKEN` und optional `TWITCH_BOT_REFRESH_TOKEN` (Token beginnt meist mit `oauth:`)
 
 ## 4. Twitch Application konfigurieren
 
