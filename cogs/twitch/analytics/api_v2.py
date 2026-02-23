@@ -743,9 +743,8 @@ class AnalyticsV2Mixin:
             time_str = time_val.isoformat() if hasattr(time_val, "isoformat") else (time_val or "")
             peak_viewers = int(r[5]) if r[5] else 0
             avg_viewers = float(r[7]) if r[7] else 0.0
-            retention_cap = (
-                min(1.0, max(0.0, (avg_viewers / peak_viewers))) if peak_viewers > 0 else 1.0
-            )
+            # Begrenze Retention nur hart auf 100%, nicht auf avg/peak (verzerrt wachsende Streams)
+            retention_cap = 1.0
 
             raw_ret_5m = float(r[8]) if r[8] else 0.0
             raw_ret_10m = float(r[9]) if r[9] else 0.0
@@ -900,8 +899,27 @@ class AnalyticsV2Mixin:
             int(active_chatters_row[0]) if active_chatters_row and active_chatters_row[0] else 0
         )
 
+        # Distinct Zuschauer (Chatters + Chatters-API ohne Nachrichten)
+        distinct_viewers_row = conn.execute(
+            """
+            SELECT COUNT(DISTINCT COALESCE(NULLIF(sc.chatter_login, ''), sc.chatter_id))
+            FROM twitch_session_chatters sc
+            JOIN twitch_stream_sessions s ON s.id = sc.session_id
+            WHERE s.started_at >= ?
+              AND s.ended_at IS NOT NULL
+              AND (COALESCE(?, '') = '' OR LOWER(s.streamer_login) = ?)
+              AND (sc.messages > 0 OR COALESCE(sc.seen_via_chatters_api, FALSE) IS TRUE)
+            """,
+            [since_date, streamer_login, streamer_login],
+        ).fetchone()
+        distinct_viewers = (
+            int(distinct_viewers_row[0]) if distinct_viewers_row and distinct_viewers_row[0] else 0
+        )
+
         avg_viewers = float(row[0]) if row[0] else 0
-        engagement_rate = (active_chatters / avg_viewers * 100) if avg_viewers > 0 else 0
+        engagement_rate = (
+            (active_chatters / distinct_viewers * 100) if distinct_viewers > 0 else 0
+        )
 
         return {
             "avg_avg_viewers": avg_viewers,
@@ -920,6 +938,7 @@ class AnalyticsV2Mixin:
             "avg_dropoff": float(row[8]) * 100 if row[8] else 0,
             "total_unique_chatters": unique_chatters,
             "active_chatters": active_chatters,
+            "unique_viewers": distinct_viewers,
             "engagement_rate": round(engagement_rate, 2),
             "chat_per_100": float(row[10]) if row[10] else 0,
             "retention_sample_count": retention_sample_count,
@@ -1669,7 +1688,7 @@ class AnalyticsV2Mixin:
 
         try:
             with storage.get_conn() as conn:
-                # Find shared chatters
+                base = streamer.lower()
                 rows = conn.execute(
                     """
                     SELECT
@@ -1683,33 +1702,53 @@ class AnalyticsV2Mixin:
                     ORDER BY shared_chatters DESC
                     LIMIT ?
                 """,
-                    [streamer.lower(), streamer.lower(), limit],
+                    [base, base, limit],
                 ).fetchall()
 
-                # Get total chatters for percentage
-                total = (
+                # Totals for A and B
+                total_a = (
                     conn.execute(
                         """
-                    SELECT COUNT(DISTINCT chatter_login)
-                    FROM twitch_chatter_rollup
-                    WHERE LOWER(streamer_login) = ?
-                """,
-                        [streamer.lower()],
+                        SELECT COUNT(DISTINCT chatter_login)
+                        FROM twitch_chatter_rollup
+                        WHERE LOWER(streamer_login) = ?
+                    """,
+                        [base],
                     ).fetchone()[0]
                     or 1
                 )
 
-                data = [
-                    {
-                        "streamerA": streamer,
-                        "streamerB": r[0],
-                        "sharedChatters": r[1],
-                        "totalChattersA": total,
-                        "totalChattersB": 0,  # Would need separate query
-                        "overlapPercentage": round(r[1] / total * 100, 1),
-                    }
+                totals_b = {
+                    r[0].lower(): (conn.execute(
+                        """
+                        SELECT COUNT(DISTINCT chatter_login)
+                        FROM twitch_chatter_rollup
+                        WHERE LOWER(streamer_login) = ?
+                        """,
+                        [r[0].lower()],
+                    ).fetchone()[0]
+                    or 1)
                     for r in rows
-                ]
+                }
+
+                data = []
+                for r in rows:
+                    other = r[0]
+                    shared = r[1]
+                    total_b = totals_b.get(other.lower(), 1)
+                    jaccard = shared / max(1, (total_a + total_b - shared))
+                    data.append(
+                        {
+                            "streamerA": streamer,
+                            "streamerB": other,
+                            "sharedChatters": shared,
+                            "totalChattersA": total_a,
+                            "totalChattersB": total_b,
+                            "overlapAtoB": round(shared / total_a * 100, 1),
+                            "overlapBtoA": round(shared / total_b * 100, 1),
+                            "jaccard": round(jaccard * 100, 1),
+                        }
+                    )
 
                 return web.json_response(data)
         except Exception as exc:
@@ -2457,27 +2496,12 @@ class AnalyticsV2Mixin:
                     int(follow_events_row[0]) if follow_events_row and follow_events_row[0] else 0
                 )
 
-                # Use distinct chatters as primary unique viewer source; fall back to estimates only if unavailable
+                # Primäre und einzige Quelle: distinct Session-Chatters (inkl. Chatters-API Lurker).
+                # Keine Schätzung, wenn keine Samples vorhanden.
                 unique_viewers = total_viewers_tracked or unique_chatters
-                if unique_viewers == 0:
-                    # Fallback: estimate unique viewers
-                    avg_watch_minutes_proxy = max(
-                        8.0, min(75.0, 8.0 + (avg_retention_10m * 100.0 * 0.55))
-                    )
-                    unique_from_hours = int(
-                        (total_hours_watched * 60.0) / max(1.0, avg_watch_minutes_proxy)
-                    )
-                    unique_from_chat = int(unique_chatters * 2.0)
-                    unique_from_concurrency = int(
-                        avg_viewers
-                        * max(
-                            1.5,
-                            min(4.0, (total_duration / 3600.0) / max(1.0, session_count)),
-                        )
-                    )
-                    unique_viewers = max(
-                        unique_from_hours, unique_from_chat, unique_from_concurrency, 1
-                    )
+                unique_viewers_method = (
+                    "distinct_session_chatters" if unique_viewers > 0 else "no_viewer_data"
+                )
 
                 # Follow conversion: prefer real events, fallback to session delta
                 if follows_during_stream > 0:
@@ -2517,7 +2541,9 @@ class AnalyticsV2Mixin:
                 raid_followers = min(int(raid_viewers * 0.05), gained_followers_for_conversion)
                 organic_followers = max(0, gained_followers_for_conversion - raid_followers)
 
-                if follower_valid_samples >= max(3, int(session_count * 0.6)):
+                if unique_viewers == 0:
+                    confidence = "low"
+                elif follower_valid_samples >= max(3, int(session_count * 0.6)):
                     confidence = "high"
                 elif follower_valid_samples >= 1:
                     confidence = "medium"
@@ -2545,9 +2571,7 @@ class AnalyticsV2Mixin:
                             "sessions": session_count,
                             "followerValidSamples": follower_valid_samples,
                             "raidEvents": raid_count,
-                             "uniqueViewersMethod": "distinct_chatters"
-                             if total_viewers_tracked > 0
-                             else "estimated_from_viewer_hours_and_chatters",
+                             "uniqueViewersMethod": unique_viewers_method,
                         },
                     }
                 )
@@ -2568,36 +2592,31 @@ class AnalyticsV2Mixin:
                 since_date = (datetime.now(UTC) - timedelta(days=days)).isoformat()
                 streamer_login = streamer.lower() if streamer else None
 
-                # Get tags from sessions (tags stored as JSON or comma-separated in tags column)
+                # Hole Sessions mit Tags
                 rows = conn.execute(
                     """
                     SELECT
+                        s.id,
                         s.tags,
-                        AVG(s.avg_viewers) as avg_viewers,
-                        AVG(s.retention_10m) as avg_retention,
-                        AVG(CASE WHEN s.follower_delta IS NOT NULL
+                        s.avg_viewers,
+                        s.retention_10m,
+                        CASE WHEN s.follower_delta IS NOT NULL
                              AND NOT (s.followers_end = 0 AND s.followers_start > 0)
-                             THEN s.follower_delta ELSE NULL END) as avg_followers,
-                        COUNT(*) as usage_count,
-                        AVG(s.duration_seconds) as avg_duration,
-                        MODE() WITHIN GROUP (ORDER BY EXTRACT(HOUR FROM s.started_at)) as start_hour
+                             THEN s.follower_delta ELSE NULL END as follower_delta,
+                        s.duration_seconds,
+                        EXTRACT(HOUR FROM s.started_at) as start_hour
                     FROM twitch_stream_sessions s
                     WHERE s.started_at >= ?
                       AND s.ended_at IS NOT NULL
                       AND s.tags IS NOT NULL
                       AND (COALESCE(?, '') = '' OR LOWER(s.streamer_login) = ?)
-                    GROUP BY s.tags
-                    ORDER BY avg_viewers DESC
-                    LIMIT ?
                 """,
-                    [since_date, streamer_login, streamer_login, limit],
+                    [since_date, streamer_login, streamer_login],
                 ).fetchall()
 
-                # Parse and aggregate tags
                 tag_stats: dict[str, dict[str, Any]] = {}
                 for row in rows:
-                    tags_str = row[0] or ""
-                    # Handle JSON array or comma-separated
+                    tags_str = row[1] or ""
                     if tags_str.startswith("["):
                         try:
                             tags = json.loads(tags_str)
@@ -2606,47 +2625,61 @@ class AnalyticsV2Mixin:
                     else:
                         tags = [t.strip() for t in tags_str.split(",") if t.strip()]
 
-                    for tag in tags[:5]:  # Max 5 tags per session
-                        if tag not in tag_stats:
-                            tag_stats[tag] = {
+                    # Jede Session zählt pro Tag höchstens einmal
+                    seen_tags: set[str] = set()
+                    for tag in tags[:5]:
+                        if tag in seen_tags:
+                            continue
+                        seen_tags.add(tag)
+                        bucket = tag_stats.setdefault(
+                            tag,
+                            {
                                 "viewers": [],
                                 "retention": [],
                                 "followers": [],
-                                "count": 0,
                                 "durations": [],
                                 "hours": [],
-                            }
-                        tag_stats[tag]["viewers"].append(float(row[1]) if row[1] else 0)
-                        tag_stats[tag]["retention"].append(float(row[2]) * 100 if row[2] else 0)
-                        tag_stats[tag]["followers"].append(float(row[3]) if row[3] else 0)
-                        tag_stats[tag]["count"] += row[4] or 1
-                        tag_stats[tag]["durations"].append(float(row[5]) if row[5] else 0)
-                        if row[6]:
-                            tag_stats[tag]["hours"].append(int(row[6]))
+                                "samples": 0,
+                            },
+                        )
+                        bucket["viewers"].append(float(row[2]) if row[2] else 0.0)
+                        if row[3] is not None:
+                            bucket["retention"].append(float(row[3]) * 100.0)
+                        if row[4] is not None:
+                            bucket["followers"].append(float(row[4]))
+                        bucket["durations"].append(float(row[5]) if row[5] else 0.0)
+                        if row[6] is not None:
+                            bucket["hours"].append(int(row[6]))
+                        bucket["samples"] += 1
 
-                # Build response
-                result = []
+                def _median(values: list[float]) -> float:
+                    if not values:
+                        return 0.0
+                    vals = sorted(values)
+                    n = len(vals)
+                    mid = n // 2
+                    if n % 2 == 1:
+                        return vals[mid]
+                    return (vals[mid - 1] + vals[mid]) / 2
+
+                # Filter: nur Tags mit ausreichend Samples
+                filtered = {
+                    tag: data for tag, data in tag_stats.items() if data["samples"] >= 3
+                }
+
                 sorted_tags = sorted(
-                    tag_stats.items(),
-                    key=lambda x: (
-                        sum(x[1]["viewers"]) / len(x[1]["viewers"]) if x[1]["viewers"] else 0
-                    ),
+                    filtered.items(),
+                    key=lambda x: (_median(x[1]["viewers"]), x[1]["samples"]),
                     reverse=True,
                 )
 
+                result = []
                 for rank, (tag, data) in enumerate(sorted_tags[:limit], 1):
-                    avg_v = sum(data["viewers"]) / len(data["viewers"]) if data["viewers"] else 0
-                    avg_r = (
-                        sum(data["retention"]) / len(data["retention"]) if data["retention"] else 0
-                    )
-                    avg_f = (
-                        sum(data["followers"]) / len(data["followers"]) if data["followers"] else 0
-                    )
-                    avg_d = (
-                        sum(data["durations"]) / len(data["durations"]) if data["durations"] else 0
-                    )
+                    avg_v = _median(data["viewers"])
+                    avg_r = _median(data["retention"])
+                    med_f = _median(data["followers"])
+                    avg_d = _median(data["durations"])
 
-                    # Best time slot
                     if data["hours"]:
                         hour_counts = collections.Counter(data["hours"])
                         best_hour = hour_counts.most_common(1)[0][0]
@@ -2657,11 +2690,11 @@ class AnalyticsV2Mixin:
                     result.append(
                         {
                             "tagName": tag,
-                            "usageCount": data["count"],
+                            "usageCount": data["samples"],
                             "avgViewers": round(avg_v, 1),
                             "avgRetention10m": round(avg_r, 1),
-                            "avgFollowerGain": round(avg_f, 1),
-                            "trend": "stable",  # Would need historical comparison
+                            "avgFollowerGain": round(med_f, 1),
+                            "trend": "stable",
                             "trendValue": 0,
                             "bestTimeSlot": best_slot,
                             "avgStreamDuration": round(avg_d, 0),

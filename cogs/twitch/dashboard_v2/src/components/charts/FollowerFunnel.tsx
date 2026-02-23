@@ -135,8 +135,8 @@ export function FollowerFunnel({ data, previousConversionRate }: FollowerFunnelP
               Sie berechnet sich aus: <span className="text-white font-mono">Neue Follower / Unique Viewer × 100</span>
             </p>
             <p>
-              Die Unique Viewer werden aus der Chatter-Zahl hochgerechnet (ca. 12.5% aller Viewer chatten).
-              Das ist eine Schätzung - Twitch gibt keine exakten Unique-Viewer-Zahlen.
+              Unique Viewer basieren jetzt auf den echten Chatters: alle Nutzer, die im Zeitraum im Chat
+              aufgetaucht sind (mit oder ohne Nachricht) laut Chatters-API. Keine Schätzungen mehr.
             </p>
             <div className="grid grid-cols-4 gap-2 pt-2 border-t border-border">
               <div className="text-center">
