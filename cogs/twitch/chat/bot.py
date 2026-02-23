@@ -257,7 +257,7 @@ if TWITCHIO_AVAILABLE:
                 if self._cooldown_ok(self._bot_promo_cd, channel_login, 300.0):
                     await self._send_chat_message(
                         channel,
-                        "Gebaut von Nani; Beschwerden & Liebesbriefe an https://www.twitch.tv/deutschedeadlockcommunity – follow da!",
+                        "Gebaut von EarlySalty; Beschwerden & Liebesbriefe an https://twitch.tv/EarlySalty – follow da!",
                     )
 
         def _register_inline_commands(self) -> None:
