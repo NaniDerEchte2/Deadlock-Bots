@@ -426,6 +426,9 @@ class TempVoiceCore(commands.Cog):
             avg_prefix = self._average_rank_prefix_for_lane(lane)
             if avg_prefix:
                 return avg_prefix
+            stored_base = self.lane_base.get(lane.id) or _strip_suffixes(lane.name)
+            if stored_base:
+                return stored_base
             return CASUAL_RANK_FALLBACK
         return str(rules.get("prefix") or "Lane")
 
@@ -585,12 +588,27 @@ class TempVoiceCore(commands.Cog):
                 name        TEXT NOT NULL,
                 base_name   TEXT NOT NULL,
                 limit       INTEGER NOT NULL,
+                min_rank    TEXT NOT NULL DEFAULT 'unknown',
+                region      TEXT NOT NULL DEFAULT 'EU' CHECK(region IN ('DE','EU')),
                 created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (user_id, category_id, name)
             )
             """
         )
+        try:
+            cols = await db.query_all_async("PRAGMA table_info(tempvoice_presets)")
+            col_names = {str(c["name"]) for c in cols}
+            if "min_rank" not in col_names:
+                await db.execute_async(
+                    "ALTER TABLE tempvoice_presets ADD COLUMN min_rank TEXT NOT NULL DEFAULT 'unknown'"
+                )
+            if "region" not in col_names:
+                await db.execute_async(
+                    "ALTER TABLE tempvoice_presets ADD COLUMN region TEXT NOT NULL DEFAULT 'EU'"
+                )
+        except Exception as e:
+            log.debug("tempvoice_presets schema check failed: %r", e)
         try:
             cols = await db.query_all_async("PRAGMA table_info(tempvoice_lanes)")
             col_names = {str(c["name"]) for c in cols}
@@ -1226,14 +1244,18 @@ class TempVoiceCore(commands.Cog):
         base = self.lane_base.get(lane.id) or _strip_suffixes(lane.name)
         limit = lane.user_limit or self._default_limit_for_lane(lane)
         enforced_limit = self._enforce_limit(lane.id, limit)
+        min_rank = self.lane_min_rank.get(lane.id, "unknown")
+        region = await self.get_region_pref(owner_id)
         try:
             await db.execute_async(
                 """
-                INSERT INTO tempvoice_presets(user_id, category_id, name, base_name, limit)
-                VALUES(?,?,?,?,?)
+                INSERT INTO tempvoice_presets(user_id, category_id, name, base_name, limit, min_rank, region)
+                VALUES(?,?,?,?,?,?,?)
                 ON CONFLICT(user_id, category_id, name) DO UPDATE SET
                     base_name=excluded.base_name,
                     limit=excluded.limit,
+                    min_rank=excluded.min_rank,
+                    region=excluded.region,
                     updated_at=CURRENT_TIMESTAMP
                 """,
                 (
@@ -1242,6 +1264,8 @@ class TempVoiceCore(commands.Cog):
                     preset_name[:64],
                     base,
                     int(enforced_limit),
+                    str(min_rank),
+                    "DE" if region == "DE" else "EU",
                 ),
             )
         except Exception as e:
@@ -1254,7 +1278,7 @@ class TempVoiceCore(commands.Cog):
         try:
             rows = await db.query_all_async(
                 """
-                SELECT name, base_name, limit
+                SELECT name, base_name, limit, min_rank, region
                 FROM tempvoice_presets
                 WHERE user_id=? AND category_id=?
                 ORDER BY updated_at DESC
@@ -1271,7 +1295,7 @@ class TempVoiceCore(commands.Cog):
         try:
             row = await db.query_one_async(
                 """
-                SELECT base_name, limit FROM tempvoice_presets
+                SELECT base_name, limit, min_rank, region FROM tempvoice_presets
                 WHERE user_id=? AND category_id=? AND name=?
                 """,
                 (int(owner_id), int(lane.category_id or 0), name),
@@ -1283,7 +1307,21 @@ class TempVoiceCore(commands.Cog):
             return False
         base = row["base_name"]
         limit = int(row["limit"])
+        min_rank = str(row.get("min_rank") or "unknown")
+        region = "DE" if str(row.get("region")) == "DE" else "EU"
         await self.set_lane_template(lane, base_name=base, limit=limit)
+        self.lane_min_rank[lane.id] = min_rank
+
+        try:
+            if lane.category_id in MINRANK_CATEGORY_IDS and not self.is_min_rank_blocked(lane):
+                await self._apply_min_rank(lane, min_rank)
+        except Exception as e:
+            log.debug("apply_preset: min_rank apply failed for lane %s: %r", lane.id, e)
+
+        try:
+            await self.apply_region(lane, region)
+        except Exception as e:
+            log.debug("apply_preset: apply_region failed for lane %s: %r", lane.id, e)
         return True
 
     async def apply_preset_batch(
@@ -1616,13 +1654,23 @@ class TempVoiceCore(commands.Cog):
                     # Versuche den Rang-Manager zu nutzen
                     if mgr:
                         rn, rv, rs = mgr.get_user_rank_from_roles(member)
+                        if rv is None or rv <= 0:
+                            rn = None
                         if rs is None:
                             rs = await mgr.get_user_subrank_from_db(member)
-                        base = f"{rn} {rs}"
+                        if rn and rs:
+                            base = f"{rn} {rs}"
+                        elif rn:
+                            base = rn
+                        else:
+                            base = None
                     else:
-                        prefix = RANK_ORDER[max(1, _member_rank_index(member))].capitalize()
-                        base = prefix
+                        idx = _member_rank_index(member)
+                        base = RANK_ORDER[idx].capitalize() if idx > 0 else None
                 else:
+                    base = None
+
+                if not base:
                     prefix = str(rules.get("prefix") or "Lane")
                     base = await self._next_name(cat, prefix)
 

@@ -72,8 +72,14 @@ class TempVoiceInterface(commands.Cog):
         self.core = core  # TempVoiceCore
         self.util = util  # TempVoiceUtil
 
+    def _view_for_category(self, category_id: int | None) -> discord.ui.View:
+        is_ranked = category_id == RANKED_CATEGORY_ID
+        return MainView(self.core, self.util, include_minrank=is_ranked, include_presets=is_ranked)
+
     async def cog_load(self):
-        self.bot.add_view(MainView(self.core, self.util))  # persistente View
+        # Persistente Views registrieren (superset, damit alle Custom IDs bekannt sind)
+        self.bot.add_view(MainView(self.core, self.util, include_minrank=True, include_presets=True))
+        self.bot.add_view(MainView(self.core, self.util, include_minrank=False, include_presets=False))
         asyncio.create_task(self._startup())
 
     async def _startup(self):
@@ -81,7 +87,12 @@ class TempVoiceInterface(commands.Cog):
         await self.ensure_interface_message()
         await self.refresh_all_interfaces()
 
-    async def ensure_interface_message(self, channel_hint: discord.TextChannel | None = None):
+    async def ensure_interface_message(
+        self,
+        channel_hint: discord.TextChannel | None = None,
+        *,
+        category_id: int | None = None,
+    ):
         """
         Stellt sicher, dass die Interface-Nachricht existiert – exakt in dem Textkanal,
         in dem der Command ausgeführt wurde (channel_hint).
@@ -115,10 +126,14 @@ class TempVoiceInterface(commands.Cog):
         )
         embed.set_footer(text="Deutsche Deadlock Community • TempVoice")
 
+        view = self._view_for_category(category_id)
+
         # Immer in diesem Channel senden (kein Fallback/Fetch anderer Messages)
         try:
-            msg = await ch.send(embed=embed, view=MainView(self.core, self.util))
-            await self._record_interface_message(int(guild.id), int(ch.id), int(msg.id), None, None)
+            msg = await ch.send(embed=embed, view=view)
+            await self._record_interface_message(
+                int(guild.id), int(ch.id), int(msg.id), category_id, None
+            )
         except discord.Forbidden:
             logger.warning(
                 "ensure_interface_message: Keine Berechtigung zum Senden in %s (%s)",
@@ -248,6 +263,7 @@ class TempVoiceInterface(commands.Cog):
     async def ensure_lane_interface(self, lane: discord.VoiceChannel, owner_id: int | None = None):
         owner_id = owner_id or self.core.lane_owner.get(lane.id)
         embed = self._lane_embed(lane, owner_id)
+        view = self._view_for_category(lane.category_id)
 
         row = None
         try:
@@ -266,7 +282,7 @@ class TempVoiceInterface(commands.Cog):
             target = self.bot.get_channel(int(row["channel_id"])) or lane
             try:
                 msg = await target.fetch_message(int(row["message_id"]))
-                await msg.edit(embed=embed, view=MainView(self.core, self.util))
+                await msg.edit(embed=embed, view=view)
                 await self._record_interface_message(
                     int(lane.guild.id),
                     int(target.id),
@@ -293,7 +309,7 @@ class TempVoiceInterface(commands.Cog):
                 return
 
         try:
-            msg = await lane.send(embed=embed, view=MainView(self.core, self.util))
+            msg = await lane.send(embed=embed, view=view)
         except discord.Forbidden:
             logger.warning(
                 "TempVoice Lane Interface: Keine Berechtigung zum Senden in VoiceChannel %s.",
@@ -424,7 +440,8 @@ class TempVoiceInterface(commands.Cog):
                 continue
 
             try:
-                await msg.edit(view=MainView(self.core, self.util))
+                view = self._view_for_category(int(row["category_id"]) if row["category_id"] else None)
+                await msg.edit(view=view)
                 await self._record_interface_message(
                     int(row["guild_id"]),
                     int(channel.id),
@@ -478,7 +495,7 @@ class TempVoiceInterface(commands.Cog):
 
 
 class MainView(discord.ui.View):
-    def __init__(self, core, util):
+    def __init__(self, core, util, *, include_minrank: bool, include_presets: bool):
         super().__init__(timeout=None)
         self.core = core
         self.util = util
@@ -491,13 +508,18 @@ class MainView(discord.ui.View):
         self.add_item(KickButton(util))
         self.add_item(BanButton(util))
         self.add_item(UnbanButton(util))
-        # Row 2: MinRank (eigene Reihe!)
-        self.add_item(MinRankSelect(core))
+        # Row 2: MinRank (nur bei Ranked)
+        if include_minrank:
+            self.add_item(MinRankSelect(core))
         # Row 3: Quick Templates
         self.add_item(ResetLaneButton(core))
         self.add_item(DuoCallButton(core))
         self.add_item(TrioCallButton(core))
         self.add_item(LurkerButton(util))
+        # Row 4: Presets (nur Ranked)
+        if include_presets:
+            self.add_item(SavePresetButton(core))
+            self.add_item(LoadPresetButton(core))
         # Row 4: Presets (nur Ranked)
         self.add_item(SavePresetButton(core))
         self.add_item(LoadPresetButton(core))
@@ -764,9 +786,6 @@ class SavePresetButton(discord.ui.Button):
         if not lane:
             await itx.response.send_message("Tritt zuerst deiner Lane bei.", ephemeral=True)
             return
-        if lane.category_id != RANKED_CATEGORY_ID:
-            await itx.response.send_message("Presets gibt es nur f\u00fcr Ranked Lanes.", ephemeral=True)
-            return
         owner_id = self.core.lane_owner.get(lane.id, m.id)
         perms = lane.permissions_for(m)
         if not (owner_id == m.id or perms.manage_channels or perms.administrator):
@@ -845,7 +864,12 @@ class LoadPresetButton(discord.ui.Button):
         options = []
         for row in presets[:25]:  # Discord Select max 25 Optionen
             label = f"{row['name']}"
-            desc = f"{row['base_name']} • Limit {row['limit']}"
+            min_rank = row.get("min_rank") if isinstance(row, dict) else None
+            min_rank = min_rank or "unknown"
+            min_part = "Kein Limit" if min_rank == "unknown" else f"Min {min_rank}"
+            region = row.get("region") if isinstance(row, dict) else None
+            region_part = "DE" if region == "DE" else "EU"
+            desc = f"{row['base_name']} • Limit {row['limit']} • {min_part} • {region_part}"
             options.append(
                 discord.SelectOption(
                     label=label[:100], value=row["name"], description=desc[:100]
@@ -894,16 +918,6 @@ class PresetSelectView(discord.ui.View):
         self.add_item(PresetSelect(options))
 
     async def apply(self, itx: discord.Interaction, preset_name: str):
-        if self.batch and self.category:
-            requester = self.requester or itx.user  # type: ignore
-            applied, skipped = await self.core.apply_preset_batch(
-                self.category, requester, preset_name
-            )
-            await itx.response.send_message(
-                f"Preset \"{preset_name}\" angewendet auf {applied} Lanes (übersprungen: {skipped}).",
-                ephemeral=True,
-            )
-            return
         ok = await self.core.apply_preset(self.lane, self.owner_id, preset_name)
         if not ok:
             await itx.response.send_message("Preset nicht gefunden oder Fehler beim Anwenden.", ephemeral=True)
@@ -912,59 +926,6 @@ class PresetSelectView(discord.ui.View):
         await itx.response.send_message(f"Preset \"{preset_name}\" angewendet.", ephemeral=True)
 
 
-class BatchPresetButton(discord.ui.Button):
-    def __init__(self, core):
-        super().__init__(
-            label="📦 Preset Batch",
-            style=discord.ButtonStyle.secondary,
-            row=4,
-            custom_id="tv_preset_batch",
-        )
-        self.core = core
-
-    async def callback(self, itx: discord.Interaction):
-        m: discord.Member = itx.user  # type: ignore
-        lane = MainView.lane_of(itx)
-        if not lane:
-            await itx.response.send_message("Tritt zuerst deiner Lane bei.", ephemeral=True)
-            return
-        if lane.category_id != RANKED_CATEGORY_ID:
-            await itx.response.send_message("Batch-Presets gibt es nur für Ranked Lanes.", ephemeral=True)
-            return
-        owner_id = self.core.lane_owner.get(lane.id, m.id)
-        perms = lane.permissions_for(m)
-        if not (owner_id == m.id or perms.manage_channels or perms.administrator):
-            await itx.response.send_message(
-                "Nur Owner/Mods dürfen Batch-Presets anwenden.", ephemeral=True
-            )
-            return
-        presets = await self.core.list_presets(owner_id, int(lane.category_id or 0))
-        if not presets:
-            await itx.response.send_message("Du hast noch keine Presets gespeichert.", ephemeral=True)
-            return
-        options = []
-        for row in presets[:25]:
-            label = f"{row['name']}"
-            desc = f"{row['base_name']} • Limit {row['limit']}"
-            options.append(
-                discord.SelectOption(
-                    label=label[:100], value=row["name"], description=desc[:100]
-                )
-            )
-        view = PresetSelectView(
-            self.core,
-            lane,
-            owner_id,
-            options,
-            batch=True,
-            category=lane.category,
-            requester=m,
-        )
-        await itx.response.send_message(
-            "Preset auswählen (wird auf alle Ranked-Lanes in dieser Kategorie angewendet):",
-            view=view,
-            ephemeral=True,
-        )
 
 
 class MinRankSelect(discord.ui.Select):
@@ -1055,6 +1016,15 @@ class MinRankSelect(discord.ui.Select):
             )
             return
 
+        if lane.category_id == RANKED_CATEGORY_ID and choice != "unknown":
+            view = SubRankSelectView(self.core, lane, base_rank=choice, requester=m)
+            await itx.response.send_message(
+                f"Basis-Rang {choice.capitalize()} gewählt. Sub-Rang auswählen:",
+                view=view,
+                ephemeral=True,
+            )
+            return
+
         try:
             await itx.response.defer(ephemeral=True, thinking=False)
         except discord.HTTPException as e:
@@ -1071,6 +1041,64 @@ class MinRankSelect(discord.ui.Select):
             await itx.followup.send(f"Mindest-Rang gesetzt auf: {label}.", ephemeral=True)
         except Exception as e:
             logger.debug("MinRankSelect followup fehlgeschlagen: %r", e)
+
+
+class SubRankSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="Kein Sub-Rang (nur Hauptrang)", value="0"),
+        ]
+        for n in range(1, 7):
+            options.append(discord.SelectOption(label=f"Sub-Rang {n}", value=str(n)))
+        super().__init__(
+            placeholder="Sub-Rang wählen (optional)",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0,
+            custom_id="tv_subrank",
+        )
+
+    async def callback(self, itx: discord.Interaction):
+        view: SubRankSelectView = self.view  # type: ignore
+        await view.apply(itx, int(self.values[0]))
+
+
+class SubRankSelectView(discord.ui.View):
+    def __init__(self, core, lane: discord.VoiceChannel, base_rank: str, requester: discord.Member):
+        super().__init__(timeout=60)
+        self.core = core
+        self.lane = lane
+        self.base_rank = base_rank
+        self.requester = requester
+        self.add_item(SubRankSelect())
+
+    async def apply(self, itx: discord.Interaction, subrank: int):
+        # Safety: only requester or mods/admins can finalize
+        m: discord.Member = itx.user  # type: ignore
+        owner_id = self.core.lane_owner.get(self.lane.id, m.id)
+        perms = self.lane.permissions_for(m)
+        if not (m.id == self.requester.id or perms.manage_channels or perms.administrator):
+            await itx.response.send_message("Nur der ursprüngliche Auslöser oder Mods dürfen bestätigen.", ephemeral=True)
+            return
+
+        rank_label = self.base_rank
+        if subrank > 0:
+            rank_label = f"{self.base_rank} {subrank}"
+
+        try:
+            await itx.response.defer(ephemeral=True, thinking=False)
+        except Exception:
+            pass
+
+        self.core.lane_min_rank[self.lane.id] = rank_label
+        await self.core._apply_min_rank(self.lane, rank_label)  # type: ignore[attr-defined]
+        await self.core.refresh_name(self.lane)
+        label = "Kein Limit" if rank_label == "unknown" else rank_label.capitalize()
+        try:
+            await itx.followup.send(f"Mindest-Rang gesetzt auf: {label}.", ephemeral=True)
+        except Exception as e:
+            logger.debug("SubRankSelect followup fehlgeschlagen: %r", e)
 
 
 class KickButton(discord.ui.Button):
