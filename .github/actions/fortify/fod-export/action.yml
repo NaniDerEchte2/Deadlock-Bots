@@ -1,0 +1,33 @@
+name: 'Export FoD vulnerability data to GitHub'
+description: 'Export FoD vulnerability data to GitHub'
+author: 'Fortify'
+runs:
+  using: composite
+  steps:
+    - uses: fortify/github-action/internal/set-fod-var-defaults@714fe84b03a813fe8124e5ef4ce22da010ab1839
+    - uses: fortify/github-action/setup@714fe84b03a813fe8124e5ef4ce22da010ab1839
+      with:
+        export-path: false
+        fcli: action-default
+    - uses: fortify/github-action/internal/fod-login@714fe84b03a813fe8124e5ef4ce22da010ab1839
+    - uses: fortify/github-action/internal/run-script@714fe84b03a813fe8124e5ef4ce22da010ab1839
+      with:
+        script: export.sh
+      env: 
+        PRODUCT: fod
+        DEFAULT_OPTS: --rel "${{env.FOD_RELEASE}}" --source-dir="${{github.workspace}}" -f ./gh-fortify-sast.sarif
+    - uses: github/codeql-action/upload-sarif@9e907b5e64f6b83e7804b09294d44122997950d6
+      with:
+        sarif_file: ./gh-fortify-sast.sarif
+
+    # Optionally store the generated file for troubleshooting purposes.
+    - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+      if: always()
+      with:
+        name: ${{ github.job }}-${{ strategy.job-index }}-sarif-files
+        path: ./gh-fortify-sast.sarif
+
+branding:
+  icon: 'shield'
+  color: 'blue'
+

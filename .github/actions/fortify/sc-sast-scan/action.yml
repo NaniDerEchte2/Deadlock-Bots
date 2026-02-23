@@ -1,0 +1,27 @@
+name: 'Perform SAST scan'
+description: 'Perform a SAST scan on ScanCentral SAST'
+author: 'Fortify'
+runs:
+  using: composite
+  steps:
+    - uses: fortify/github-action/internal/set-ssc-var-defaults@714fe84b03a813fe8124e5ef4ce22da010ab1839
+    - uses: fortify/github-action/setup@714fe84b03a813fe8124e5ef4ce22da010ab1839
+      with:
+        export-path: false
+        fcli: action-default
+        debricked-cli: ${{ env.DO_DEBRICKED_SCAN=='true' && 'action-default' || 'skip' }}
+    - uses: fortify/github-action/internal/ssc-login@714fe84b03a813fe8124e5ef4ce22da010ab1839
+    - uses: fortify/github-action/package@714fe84b03a813fe8124e5ef4ce22da010ab1839
+    - uses: fortify/github-action/internal/run-script@714fe84b03a813fe8124e5ef4ce22da010ab1839
+      with:
+        script: sc-sast-and-debricked-scan.sh
+      env: 
+        DO_SC_SAST_SCAN: true
+        GITHUB_TOKEN: ${{ github.token }}
+    - if: env.DO_EXPORT == 'true'
+      uses: fortify/github-action/ssc-export@714fe84b03a813fe8124e5ef4ce22da010ab1839
+        
+branding:
+  icon: 'shield'
+  color: 'blue'
+

@@ -47,10 +47,7 @@ jobs:
 
       - name: Run Fortify Scan
         if: steps.fortify-creds.outputs.run_scan == 'true'
-        uses: fortify/github-action/fod-sast-scan@714fe84b03a813fe8124e5ef4ce22da010ab1839 # v2.2.0
-        with:
-          # sast-scan input is not needed for the specific sub-action
-          debricked-sca-scan: true
+        uses: ./.github/actions/fortify/fod-sast-scan
         env:
           # Fortify on Demand (FoD)
           FOD_URL: https://ams.fortify.com
