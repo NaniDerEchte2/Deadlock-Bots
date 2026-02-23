@@ -10,13 +10,14 @@ Usage:
         --sqlite service/deadlock.sqlite3 \\
         --dsn "postgresql://user:pass@localhost:5432/twitch_analytics"
 """
+
 from __future__ import annotations
 
 import argparse
 import os
 import sqlite3
 import sys
-from typing import Iterable, Sequence
+from collections.abc import Iterable, Sequence
 
 import psycopg
 
@@ -65,7 +66,9 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("TWITCH_ANALYTICS_DSN"),
         help="Postgres DSN, z. B. postgresql://user:pass@host/db (Env: TWITCH_ANALYTICS_DSN)",
     )
-    parser.add_argument("--batch", type=int, default=5000, help="Batch-Größe für COPY (default 5000)")
+    parser.add_argument(
+        "--batch", type=int, default=5000, help="Batch-Größe für COPY (default 5000)"
+    )
     parser.add_argument(
         "--no-truncate",
         action="store_true",

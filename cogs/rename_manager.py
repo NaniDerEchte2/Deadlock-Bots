@@ -4,8 +4,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import time
 import sqlite3
+import time
 
 import discord
 from discord.ext import commands
@@ -146,7 +146,7 @@ class RenameManagerCog(commands.Cog):
                     raise
                 last_error = e
                 backoff = min(
-                    DB_LOCK_BACKOFF_BASE_SECONDS * (2**(attempt - 1)),
+                    DB_LOCK_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)),
                     DB_LOCK_BACKOFF_MAX_SECONDS,
                 )
                 logger.warning(

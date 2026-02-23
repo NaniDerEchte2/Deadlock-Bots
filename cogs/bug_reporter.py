@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import shlex
 import re
-from pathlib import Path
+import shlex
 from textwrap import dedent
 
 import discord
@@ -12,7 +11,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from cogs import privacy_core as privacy
-from service import issue_reports, db
+from service import db, issue_reports
 
 log = logging.getLogger(__name__)
 
@@ -85,7 +84,7 @@ CATEGORY_CHOICES: tuple[tuple[str, str], ...] = (
 
 
 class BugReportModal(discord.ui.Modal):
-    def __init__(self, cog: "BugReporter", *, category: str | None) -> None:
+    def __init__(self, cog: BugReporter, *, category: str | None) -> None:
         super().__init__(title="Bug oder Problem melden", timeout=None)
         self.cog = cog
         self.category = category
@@ -107,7 +106,9 @@ class BugReportModal(discord.ui.Modal):
         self.add_item(self.title_input)
         self.add_item(self.details_input)
 
-    async def on_submit(self, interaction: discord.Interaction) -> None:  # pragma: no cover - runtime
+    async def on_submit(
+        self, interaction: discord.Interaction
+    ) -> None:  # pragma: no cover - runtime
         title = str(self.title_input.value).strip()
         details = str(self.details_input.value).strip()
         await self.cog.handle_submission(
@@ -119,7 +120,7 @@ class BugReportModal(discord.ui.Modal):
 
 
 class TicketButtonView(discord.ui.View):
-    def __init__(self, cog: "BugReporter", *, persistent: bool = False):
+    def __init__(self, cog: BugReporter, *, persistent: bool = False):
         super().__init__(timeout=None if persistent else 900)
         self.cog = cog
 
@@ -155,7 +156,9 @@ class BugReporter(commands.Cog):
             app_commands.Choice(name=label, value=value) for label, value in CATEGORY_CHOICES
         ]
     )
-    async def ticket(self, interaction: discord.Interaction, kategorie: app_commands.Choice[str]) -> None:
+    async def ticket(
+        self, interaction: discord.Interaction, kategorie: app_commands.Choice[str]
+    ) -> None:
         """Öffnet das Meldeformular."""
         await interaction.response.send_modal(BugReportModal(self, category=kategorie.value))
 
@@ -219,12 +222,16 @@ class BugReporter(commands.Cog):
         # Thread im Ticket-Channel erstellen
         thread: discord.Thread | None = None
         try:
-            parent = self.bot.get_channel(TICKET_CHANNEL_ID) or await self.bot.fetch_channel(TICKET_CHANNEL_ID)
+            parent = self.bot.get_channel(TICKET_CHANNEL_ID) or await self.bot.fetch_channel(
+                TICKET_CHANNEL_ID
+            )
             if isinstance(parent, (discord.TextChannel, discord.ForumChannel)):
                 name = f"ticket-{report_id}-{interaction.user.display_name[:12]}"
                 thread = await parent.create_thread(
                     name=name,
-                    type=discord.ChannelType.private_thread if hasattr(discord.ChannelType, "private_thread") else discord.ChannelType.public_thread,
+                    type=discord.ChannelType.private_thread
+                    if hasattr(discord.ChannelType, "private_thread")
+                    else discord.ChannelType.public_thread,
                     invitable=False,
                     reason=f"Ticket #{report_id} von {interaction.user}",
                 )
@@ -365,7 +372,11 @@ class BugReporter(commands.Cog):
                 lifecycle = getattr(self.bot, "lifecycle", None)
                 if lifecycle:
                     scheduled = await lifecycle.request_restart(reason="bug_reporter:auto")
-                    results.append("Bot-Reboot angefordert" if scheduled else "Reboot bereits geplant/fehlgeschlagen")
+                    results.append(
+                        "Bot-Reboot angefordert"
+                        if scheduled
+                        else "Reboot bereits geplant/fehlgeschlagen"
+                    )
                 else:
                     results.append("Reboot nicht verfügbar (kein Lifecycle)")
             elif t == "reload_all":
@@ -382,7 +393,9 @@ class BugReporter(commands.Cog):
                 resolved, suggestions = self.bot.resolve_cog_identifier(target)
                 if not resolved:
                     if suggestions:
-                        results.append(f"Reload {target} unklar (Vorschläge: {', '.join(suggestions)})")
+                        results.append(
+                            f"Reload {target} unklar (Vorschläge: {', '.join(suggestions)})"
+                        )
                     else:
                         results.append(f"Reload {target} nicht gefunden")
                     continue
@@ -406,7 +419,7 @@ class BugReporter(commands.Cog):
                 log.warning("Codex Healthcheck unerwartete Antwort: %r", text)
             else:
                 log.info("Codex Healthcheck erfolgreich.")
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.warning("Codex Healthcheck Timeout (10s)")
         except Exception as exc:
             log.warning("Codex Healthcheck Fehler: %s", exc)
@@ -432,12 +445,12 @@ class BugReporter(commands.Cog):
             - Logs/Code: Bitte selbst im Ordner ./logs nach relevanten Einträgen schauen und bei Bedarf die Codebase durchsuchen.
 
             Meldung:
-            - Titel: {title or 'Problem'}
+            - Titel: {title or "Problem"}
             - Beschreibung: {details}
 
             Erstelle sofort eine hilfreiche Antwort und Schritte wie oben beschrieben.
             Verbotene Aktionen: {CODEX_BLOCKED_ACTIONS}
-            Nur bearbeiten, wenn Kategorie in {', '.join(sorted(CODEX_ALLOWED_CATEGORIES))}; sonst kurz melden, dass der Fall manuell geprüft wird.
+            Nur bearbeiten, wenn Kategorie in {", ".join(sorted(CODEX_ALLOWED_CATEGORIES))}; sonst kurz melden, dass der Fall manuell geprüft wird.
             """
         ).strip()
 

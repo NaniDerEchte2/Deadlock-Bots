@@ -8,8 +8,8 @@ from datetime import UTC, datetime
 
 from discord.ext import tasks
 
-from .. import storage_pg as storage
 from .. import storage as storage_sqlite
+from .. import storage_pg as storage
 
 log = logging.getLogger("TwitchStreams.Analytics")
 

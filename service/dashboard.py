@@ -4434,10 +4434,7 @@ class DashboardServer:
             service_pid = self._query_windows_service_pid(self._nssm_service_name)
             current_pid = os.getpid()
             parent_pid = os.getppid()
-            if (
-                service_pid is not None
-                and service_pid not in {current_pid, parent_pid}
-            ):
+            if service_pid is not None and service_pid not in {current_pid, parent_pid}:
                 logger.warning(
                     "Configured NSSM service '%s' PID (%s) does not match current process tree "
                     "(current=%s, parent=%s). Continuing with hard service restart.",
@@ -4474,7 +4471,9 @@ class DashboardServer:
                     }
                 )
 
-            scheduled = await lifecycle.request_restart(reason="dashboard_lifecycle_after_nssm_failure")
+            scheduled = await lifecycle.request_restart(
+                reason="dashboard_lifecycle_after_nssm_failure"
+            )
             if scheduled:
                 self._last_bot_restart_request_monotonic = now
                 return self._json(

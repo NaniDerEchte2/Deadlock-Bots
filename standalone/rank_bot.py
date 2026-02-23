@@ -137,6 +137,7 @@ NOTIFICATION_END_HOUR = 22
 
 # ============= ZENTRALE DB - immer ueber service.db =============
 
+
 def init_database():
     """
     Initialisiert/verwaltet Tabellen innerhalb der zentralen DB.

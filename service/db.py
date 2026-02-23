@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import asyncio
-import atexit
 import contextvars
 import logging
 import os
