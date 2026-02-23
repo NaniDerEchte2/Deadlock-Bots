@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from discord.ext import tasks
 
 from .. import storage_pg as storage
+from .. import storage as storage_sqlite
 
 log = logging.getLogger("TwitchStreams.Analytics")
 
@@ -49,7 +50,7 @@ class TwitchAnalyticsMixin:
         # Note: We should actually check if they have the specific scope,
         # but for now we assume the new scope set is used if they re-authed.
         try:
-            with storage.get_conn() as conn:
+            with storage_sqlite.get_conn() as conn:
                 rows = conn.execute(
                     """
                     SELECT twitch_user_id, twitch_login
@@ -139,7 +140,7 @@ class TwitchAnalyticsMixin:
                 """
                 INSERT INTO twitch_subscriptions_snapshot
                 (twitch_user_id, twitch_login, total, points, snapshot_at)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s)
                 """,
                 (user_id, login, total, points, now_iso),
             )
@@ -194,7 +195,7 @@ class TwitchAnalyticsMixin:
                     twitch_user_id, twitch_login, next_ad_at, last_ad_at,
                     duration, preroll_free_time, snooze_count, snooze_refresh_at, snapshot_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     user_id,
@@ -284,23 +285,32 @@ class TwitchAnalyticsMixin:
             return
 
         try:
+            # Live-Sessions kommen aus Postgres (Analytics-DB)
             with storage.get_conn() as conn:
-                # Hole ALLE aktiven Sessions (Partner + Monitored + Category)
                 rows = conn.execute(
                     """
-                    SELECT ls.twitch_user_id, ls.streamer_login, ls.active_session_id, ra.twitch_user_id as has_auth
-                    FROM twitch_live_state ls
-                    LEFT JOIN twitch_raid_auth ra ON ra.twitch_user_id = ls.twitch_user_id AND ra.raid_enabled = 1
-                    WHERE ls.is_live = 1
-                      AND ls.active_session_id IS NOT NULL
+                    SELECT twitch_user_id, streamer_login, active_session_id
+                    FROM twitch_live_state
+                    WHERE is_live = 1
+                      AND active_session_id IS NOT NULL
                     """
                 ).fetchall()
 
-                if rows:
-                    log.debug(
-                        "Chatters-Poller: Tracking %d live Streamer (alle für Analyse)",
-                        len(rows),
-                    )
+            # OAuth/Permissions bleiben in SQLite (canonical raid_auth)
+            auth_ids: set[str] = set()
+            with storage_sqlite.get_conn() as conn_sqlite:
+                auth_rows = conn_sqlite.execute(
+                    "SELECT twitch_user_id FROM twitch_raid_auth WHERE raid_enabled = 1"
+                ).fetchall()
+                auth_ids = {
+                    (r["twitch_user_id"] if hasattr(r, "keys") else r[0]) for r in auth_rows
+                }
+
+            if rows:
+                log.debug(
+                    "Chatters-Poller: Tracking %d live Streamer (alle für Analyse)",
+                    len(rows),
+                )
         except Exception:
             log.exception("Chatters-Poller: Fehler beim Laden der live Streamer")
             return
@@ -321,15 +331,15 @@ class TwitchAnalyticsMixin:
             user_id = row[0] if not hasattr(row, "keys") else row["twitch_user_id"]
             login = row[1] if not hasattr(row, "keys") else row["streamer_login"]
             sess_id = row[2] if not hasattr(row, "keys") else row["active_session_id"]
-            has_auth = row[3] if not hasattr(row, "keys") else row["has_auth"]
+            has_auth = user_id in auth_ids
 
-            async def _wrap_poll(u_id, lgn, s_id):
+            async def _wrap_poll(u_id, lgn, s_id, has_auth_flag):
                 tok = None
-                if has_auth and auth_mgr:
+                if has_auth_flag and auth_mgr:
                     tok = await auth_mgr.get_valid_token(u_id, session)
                 return await self._poll_chatters_single(u_id, lgn, s_id, now_iso, tok)
 
-            tasks_list.append(_wrap_poll(user_id, login, sess_id))
+            tasks_list.append(_wrap_poll(user_id, login, sess_id, has_auth))
 
         # Alle API-Calls parallel feuern
         results = await asyncio.gather(*tasks_list, return_exceptions=True)
@@ -351,10 +361,11 @@ class TwitchAnalyticsMixin:
                             to_update.append((now_iso, session_id, c_login))
 
                     if to_update:
-                        conn.executemany(
-                            "UPDATE twitch_session_chatters SET last_seen_at = ? WHERE session_id = ? AND chatter_login = ?",
-                            to_update,
-                        )
+                        with conn.cursor() as cur:
+                            cur.executemany(
+                                "UPDATE twitch_session_chatters SET last_seen_at = %s WHERE session_id = %s AND chatter_login = %s",
+                                to_update,
+                            )
         except Exception:
             log.exception("Chatters-Poller: Batch-DB-Fehler")
 
@@ -386,7 +397,7 @@ class TwitchAnalyticsMixin:
                 c.execute(
                     """
                     INSERT INTO twitch_channel_updates (twitch_user_id, title, game_name, language, recorded_at)
-                    VALUES (?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s)
                     """,
                     (
                         broadcaster_user_id,
@@ -400,9 +411,9 @@ class TwitchAnalyticsMixin:
                 c.execute(
                     """
                     UPDATE twitch_live_state
-                       SET last_title = COALESCE(?, last_title),
-                           last_game  = COALESCE(?, last_game)
-                     WHERE twitch_user_id = ? AND is_live = 1
+                       SET last_title = COALESCE(%s, last_title),
+                           last_game  = COALESCE(%s, last_game)
+                     WHERE twitch_user_id = %s AND is_live = 1
                     """,
                     (title, game_name, broadcaster_user_id),
                 )
@@ -440,7 +451,7 @@ class TwitchAnalyticsMixin:
                         (session_id, twitch_user_id, event_type, user_login, tier,
                          is_gift, gifter_login, cumulative_months, streak_months,
                          message, total_gifted, received_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         session_id,
@@ -473,7 +484,7 @@ class TwitchAnalyticsMixin:
         try:
             with storage.get_conn() as c:
                 row = c.execute(
-                    "SELECT active_session_id FROM twitch_live_state WHERE twitch_user_id = ?",
+                    "SELECT active_session_id FROM twitch_live_state WHERE twitch_user_id = %s",
                     (broadcaster_user_id,),
                 ).fetchone()
             if row and row[0] is not None:
@@ -499,7 +510,7 @@ class TwitchAnalyticsMixin:
                     """
                     INSERT INTO twitch_ad_break_events
                         (session_id, twitch_user_id, duration_seconds, is_automatic, started_at)
-                    VALUES (?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s)
                     """,
                     (
                         session_id,
@@ -537,7 +548,7 @@ class TwitchAnalyticsMixin:
                     """
                     INSERT INTO twitch_bits_events
                         (session_id, twitch_user_id, donor_login, amount, message, received_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s)
                     """,
                     (
                         session_id,
@@ -573,7 +584,7 @@ class TwitchAnalyticsMixin:
                     """
                     INSERT INTO twitch_channel_points_events
                         (session_id, twitch_user_id, user_login, reward_id, reward_title, reward_cost, user_input, redeemed_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         session_id,
@@ -629,12 +640,12 @@ class TwitchAnalyticsMixin:
                     updated = c.execute(
                         """
                         UPDATE twitch_hype_train_events
-                           SET ended_at = ?,
-                               duration_seconds = ?,
-                               level = COALESCE(?, level),
-                               total_progress = COALESCE(?, total_progress)
-                         WHERE twitch_user_id = ?
-                           AND started_at = ?
+                           SET ended_at = %s,
+                               duration_seconds = %s,
+                               level = COALESCE(%s, level),
+                               total_progress = COALESCE(%s, total_progress)
+                         WHERE twitch_user_id = %s
+                           AND started_at = %s
                            AND ended_at IS NULL
                         """,
                         (
@@ -654,7 +665,7 @@ class TwitchAnalyticsMixin:
                     INSERT INTO twitch_hype_train_events
                         (session_id, twitch_user_id, started_at, ended_at,
                          duration_seconds, level, total_progress, event_phase)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         session_id,
@@ -695,7 +706,7 @@ class TwitchAnalyticsMixin:
                     INSERT INTO twitch_ban_events
                         (session_id, twitch_user_id, event_type, target_login, target_id,
                          moderator_login, reason, ends_at, received_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         session_id,
@@ -736,7 +747,7 @@ class TwitchAnalyticsMixin:
                     INSERT INTO twitch_shoutout_events
                         (twitch_user_id, direction, other_broadcaster_id, other_broadcaster_login,
                          moderator_login, viewer_count, received_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         broadcaster_user_id,

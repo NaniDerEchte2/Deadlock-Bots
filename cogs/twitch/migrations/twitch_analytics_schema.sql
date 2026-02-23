@@ -16,6 +16,29 @@ CREATE TABLE IF NOT EXISTS streamer_dim (
     updated_at             TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- ========= Live State (mirrors legacy sqlite schema) =========
+CREATE TABLE IF NOT EXISTS twitch_live_state (
+    twitch_user_id            TEXT PRIMARY KEY,
+    streamer_login            TEXT NOT NULL,
+    last_stream_id            TEXT,
+    last_started_at           TEXT,
+    last_title                TEXT,
+    last_game_id              TEXT,
+    last_discord_message_id   TEXT,
+    last_notified_at          TEXT,
+    is_live                   INTEGER DEFAULT 0,
+    last_seen_at              TEXT,
+    last_game                 TEXT,
+    last_viewer_count         INTEGER DEFAULT 0,
+    last_tracking_token       TEXT,
+    active_session_id         BIGINT,
+    had_deadlock_in_session   INTEGER DEFAULT 0,
+    last_deadlock_seen_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_twitch_live_state_login ON twitch_live_state(streamer_login);
+CREATE INDEX IF NOT EXISTS idx_twitch_live_state_is_live ON twitch_live_state(is_live);
+CREATE INDEX IF NOT EXISTS idx_twitch_live_state_active_session ON twitch_live_state(active_session_id);
+
 -- ========= Sessions & Chat =========
 CREATE TABLE IF NOT EXISTS twitch_stream_sessions (
     id                  BIGSERIAL PRIMARY KEY,

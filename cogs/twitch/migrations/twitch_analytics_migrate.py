@@ -23,6 +23,7 @@ import psycopg
 # Reihenfolge respektiert FK-Abhängigkeiten (Sessions -> Child-Tabellen).
 TABLES: Sequence[str] = [
     "twitch_stream_sessions",
+    "twitch_live_state",
     "twitch_session_viewers",
     "twitch_session_chatters",
     "twitch_chat_messages",
