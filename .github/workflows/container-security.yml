@@ -68,7 +68,7 @@ jobs:
           output_file_path: checkov-docker.sarif
           soft_fail: false
       - name: Upload Checkov Dockerfile SARIF
-        uses: github/codeql-action/upload-sarif@9e907b5e64f6b83e7804b09294d44122997950d6 # v4
+        uses: github/codeql-action/upload-sarif@89a39a4e59826350b863aa6b6252a07ad50cf83e # v4
         if: always() && hashFiles('checkov-docker.sarif') != ''
         with:
           sarif_file: checkov-docker.sarif
@@ -83,7 +83,7 @@ jobs:
           output_file_path: checkov-compose.sarif
           soft_fail: false
       - name: Upload Checkov Compose SARIF
-        uses: github/codeql-action/upload-sarif@9e907b5e64f6b83e7804b09294d44122997950d6 # v4
+        uses: github/codeql-action/upload-sarif@89a39a4e59826350b863aa6b6252a07ad50cf83e # v4
         if: always() && hashFiles('checkov-compose.sarif') != ''
         with:
           sarif_file: checkov-compose.sarif
@@ -98,7 +98,7 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: 1
       - name: Upload Trivy Container SARIF
-        uses: github/codeql-action/upload-sarif@9e907b5e64f6b83e7804b09294d44122997950d6 # v4
+        uses: github/codeql-action/upload-sarif@89a39a4e59826350b863aa6b6252a07ad50cf83e # v4
         if: always() && hashFiles('trivy-docker.sarif') != ''
         with:
           sarif_file: trivy-docker.sarif
@@ -137,7 +137,7 @@ jobs:
           output-file: hadolint.sarif
           no-fail: false
       - name: Upload Hadolint SARIF
-        uses: github/codeql-action/upload-sarif@9e907b5e64f6b83e7804b09294d44122997950d6 # v4
+        uses: github/codeql-action/upload-sarif@89a39a4e59826350b863aa6b6252a07ad50cf83e # v4
         if: always() && hashFiles('hadolint.sarif') != ''
         with:
           sarif_file: hadolint.sarif
