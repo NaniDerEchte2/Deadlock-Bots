@@ -97,6 +97,33 @@ CREATE INDEX IF NOT EXISTS idx_twitch_live_state_login ON twitch_live_state(stre
 CREATE INDEX IF NOT EXISTS idx_twitch_live_state_is_live ON twitch_live_state(is_live);
 CREATE INDEX IF NOT EXISTS idx_twitch_live_state_active_session ON twitch_live_state(active_session_id);
 
+-- ========= OAuth Tokens (Raid Auth) =========
+CREATE TABLE IF NOT EXISTS twitch_raid_auth (
+    twitch_user_id        TEXT PRIMARY KEY,
+    twitch_login          TEXT NOT NULL,
+    access_token          TEXT DEFAULT 'ENC',
+    refresh_token         TEXT DEFAULT 'ENC',
+    token_expires_at      TIMESTAMPTZ NOT NULL,
+    scopes                TEXT NOT NULL,
+    authorized_at         TIMESTAMPTZ DEFAULT NOW(),
+    last_refreshed_at     TIMESTAMPTZ,
+    raid_enabled          BOOLEAN DEFAULT TRUE,
+    created_at            TIMESTAMPTZ DEFAULT NOW(),
+    legacy_access_token   TEXT,
+    legacy_refresh_token  TEXT,
+    legacy_scopes         TEXT,
+    legacy_saved_at       TIMESTAMPTZ,
+    needs_reauth          BOOLEAN DEFAULT FALSE,
+    reauth_notified_at    TIMESTAMPTZ,
+    access_token_enc      BYTEA,
+    refresh_token_enc     BYTEA,
+    enc_version           INTEGER DEFAULT 1,
+    enc_kid               TEXT DEFAULT 'v1',
+    enc_migrated_at       TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_twitch_raid_auth_login
+    ON twitch_raid_auth (LOWER(twitch_login));
+
 -- ========= Sessions & Chat =========
 CREATE TABLE IF NOT EXISTS twitch_stream_sessions (
     id                  BIGSERIAL PRIMARY KEY,

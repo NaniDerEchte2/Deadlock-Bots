@@ -90,13 +90,17 @@ class DashboardLiveMixin:
 
         now = datetime.now(UTC)
 
-        def _parse_dt(value: str | None) -> datetime | None:
-            if not value:
+        def _parse_dt(value: str | datetime | None) -> datetime | None:
+            """Best-effort parser supporting ISO strings and datetime objects."""
+            if value is None:
                 return None
-            try:
-                dt = datetime.fromisoformat(value)
-            except ValueError:
-                return None
+            if isinstance(value, datetime):
+                dt = value
+            else:
+                try:
+                    dt = datetime.fromisoformat(str(value))
+                except (ValueError, TypeError):
+                    return None
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=UTC)
             return dt.astimezone(UTC)

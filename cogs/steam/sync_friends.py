@@ -20,14 +20,18 @@ from service.config import settings
 log = logging.getLogger(__name__)
 
 
-def _save_steam_friend_to_db(steam_id64: str, discord_id: int | None = None) -> None:
+def _save_steam_friend_to_db(steam_id64: str, discord_id: int | None = None) -> set[int]:
     """
     Save a Steam friend to the database.
 
     Args:
         steam_id64: The Steam ID64 of the friend
         discord_id: Optional Discord ID if known (defaults to 0 for unknown)
+
+    Returns:
+        Set der betroffenen Discord-IDs (falls bekannt), um Sofort-Rollenvergabe anzustoßen.
     """
+    affected: set[int] = set()
     uid = int(discord_id) if discord_id else 0
 
     with db.get_conn() as conn:
@@ -39,7 +43,6 @@ def _save_steam_friend_to_db(steam_id64: str, discord_id: int | None = None) -> 
 
         if existing:
             # Already linked to a Discord account, just update verified + friend status
-            # We update all rows with this steam_id to ensure consistency
             conn.execute(
                 """
                 UPDATE steam_links
@@ -52,6 +55,15 @@ def _save_steam_friend_to_db(steam_id64: str, discord_id: int | None = None) -> 
                 "Updated existing steam_link(s): steam=%s",
                 steam_id64,
             )
+            rows = conn.execute(
+                "SELECT DISTINCT user_id FROM steam_links WHERE steam_id=? AND user_id != 0",
+                (steam_id64,),
+            ).fetchall()
+            for r in rows:
+                try:
+                    affected.add(int(r["user_id"]))
+                except Exception:
+                    continue
         else:
             # New friend or unlinked friend
             conn.execute(
@@ -66,6 +78,10 @@ def _save_steam_friend_to_db(steam_id64: str, discord_id: int | None = None) -> 
                 (uid, steam_id64, "", 1),
             )
             log.info("Saved new steam_link: steam=%s, discord=%s", steam_id64, uid)
+            if uid:
+                affected.add(uid)
+
+    return affected
 
 
 async def sync_all_friends(tasks: SteamTaskClient | None = None) -> dict:
@@ -114,13 +130,15 @@ async def sync_all_friends(tasks: SteamTaskClient | None = None) -> dict:
 
         # Sync each friend to database
         synced = 0
+        newly_verified_ids: set[int] = set()
         for friend in friends:
             steam_id64 = friend.get("steam_id64")
             if not steam_id64:
                 continue
 
             try:
-                _save_steam_friend_to_db(steam_id64)
+                ids = _save_steam_friend_to_db(steam_id64)
+                newly_verified_ids.update(ids)
                 synced += 1
             except Exception as e:
                 log.error("Failed to save friend %s: %s", steam_id64, e)
@@ -141,7 +159,13 @@ async def sync_all_friends(tasks: SteamTaskClient | None = None) -> dict:
             if cleared:
                 log.info("Cleared is_steam_friend for %d removed friends", cleared)
 
-        return {"success": True, "count": synced, "cleared_count": cleared, "error": None}
+        return {
+            "success": True,
+            "count": synced,
+            "cleared_count": cleared,
+            "newly_verified_ids": list(newly_verified_ids),
+            "error": None,
+        }
 
     except Exception as e:
         log.exception("Failed to sync friends")
@@ -178,10 +202,36 @@ class SteamFriendsSync(commands.Cog):
         """Synchronisiert alle 6h die Steam-Freundesliste mit der DB (is_steam_friend Pflege)."""
         log.info("Periodischer Steam-Freunde-Sync gestartet...")
         result = await sync_all_friends(self.tasks)
-        if result["success"]:
-            log.info("Periodischer Sync abgeschlossen: %d Freunde", result["count"])
-        else:
+        if not result["success"]:
             log.warning("Periodischer Sync fehlgeschlagen: %s", result.get("error"))
+            return
+
+        immediate = 0
+        try:
+            verified_cog = self.bot.get_cog("SteamVerifiedRole")
+            if verified_cog is not None:
+                tasks = []
+                for uid in result.get("newly_verified_ids", []):
+                    async def run(uid_local: int):
+                        nonlocal immediate
+                        try:
+                            ok = await verified_cog.assign_verified_role_with_retries(uid_local)
+                            if ok:
+                                immediate += 1
+                        except Exception as exc:  # noqa: PERF203
+                            log.warning("Assign verified (immediate) failed for %s: %s", uid_local, exc)
+                    tasks.append(asyncio.create_task(run(int(uid))))
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                await verified_cog._run_once()
+        except Exception as exc:
+            log.warning("Rolle-Update nach periodischem Sync fehlgeschlagen: %s", exc)
+
+        log.info(
+            "Periodischer Sync abgeschlossen: %d Freunde, Sofort-Rollen=%d",
+            result["count"],
+            immediate,
+        )
 
     @periodic_sync.before_loop
     async def before_periodic_sync(self) -> None:
@@ -210,14 +260,33 @@ class SteamFriendsSync(commands.Cog):
 
         # 2. Verified-Rollen sofort aktualisieren (add + remove)
         role_changes = 0
+        immediate = 0
         try:
             verified_cog = self.bot.get_cog("SteamVerifiedRole")
             if verified_cog is not None:
+                # direkte Vergabe mit schnellen Retries
+                tasks = []
+                for uid in result.get("newly_verified_ids", []):
+                    async def run(uid_local: int):
+                        nonlocal immediate
+                        try:
+                            ok = await verified_cog.assign_verified_role_with_retries(uid_local)
+                            if ok:
+                                immediate += 1
+                        except Exception as exc:  # noqa: PERF203
+                            log.warning("Assign verified (immediate) failed for %s: %s", uid_local, exc)
+                    tasks.append(asyncio.create_task(run(int(uid))))
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                # Fallback: regulärer Lauf (entfernen + evtl. restliche)
                 role_changes = await verified_cog._run_once()
         except Exception as exc:
             log.warning("Rolle-Update nach Sync fehlgeschlagen: %s", exc)
 
-        lines = [f"**Steam-Freunde synchronisiert:** {synced}"]
+        lines = [
+            f"**Steam-Freunde synchronisiert:** {synced}",
+            f"**Sofort verifizierte Rollen vergeben:** {immediate}",
+        ]
         if cleared:
             lines.append(f"**Freundschaften beendet (is_steam_friend=0):** {cleared}")
         lines.append(f"**Rollen-Updates:** {role_changes}")

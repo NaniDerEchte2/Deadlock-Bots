@@ -108,7 +108,7 @@ class TwitchDashboardMixin:
                           LEFT JOIN (
                                SELECT LOWER(streamer_login) AS streamer_login,
                                       MAX(CASE
-                                            WHEN had_deadlock_in_session = 1
+                                            WHEN had_deadlock_in_session
                                                  OR LOWER(COALESCE(game_name,'')) = LOWER(?)
                                             THEN COALESCE(ended_at, started_at)
                                           END) AS last_deadlock_stream_at

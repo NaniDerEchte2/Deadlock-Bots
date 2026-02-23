@@ -22,21 +22,26 @@ class SteamVerifiedRole(commands.Cog):
         self.log_channel_id = settings.verified_log_channel_id
         self.db_path = central_db.db_path()
         self.dry_run = os.getenv("DRY_RUN", "0") == "1"
-        self._interval_seconds = 900  # Default 15 min
-        self._member_fetch_min_interval = max(
-            0.0, float(os.getenv("VERIFIED_MEMBER_FETCH_DELAY_SECONDS", "1.0"))
-        )
+        # Fester Intervall: 1h für den regulären Lauf
+        self._interval_seconds = 3600
+        # Fetch-Rate-Limit: kurz halten, um zeitnah zuzuweisen
+        self._member_fetch_min_interval = 0.6
+        # Sofort-Retry-Einstellungen für frische Verifizierungen (fest verdrahtet)
+        self._immediate_retry_attempts = 3
+        self._immediate_retry_interval = 30.0
+        # Fast-Lane: prüft frisch aktualisierte steam_links zeitnah
+        self._fast_lane_window_seconds = 180  # 3 Minuten
         self._member_fetch_lock = asyncio.Lock()
         self._last_member_fetch_started_at = 0.0
-        self._missing_member_retry_seconds = max(
-            60.0, float(os.getenv("VERIFIED_MEMBER_MISSING_RETRY_SECONDS", "21600"))
-        )
+        # Nach einem NotFound 5 min pausieren
+        self._missing_member_retry_seconds = 300
         self._transient_member_retry_seconds = max(
             5.0, float(os.getenv("VERIFIED_MEMBER_TRANSIENT_RETRY_SECONDS", "300"))
         )
         self._missing_member_retry_until: dict[int, float] = {}
         self._transient_member_retry_until: dict[int, float] = {}
         self._task = None
+        self._fast_lane_task = None
         log.info(
             "SteamVerifiedRole init: guild=%s role=%s db=%s every=%ss dry_run=%s log_ch=%s fetch_delay=%ss missing_retry=%ss transient_retry=%ss",
             self.guild_id,
@@ -73,6 +78,37 @@ class SteamVerifiedRole(commands.Cog):
                     ids.add(val)
             except (TypeError, ValueError) as exc:
                 log.debug("Kann user_id nicht in int wandeln: %r (%s)", r.get("user_id"), exc)
+                continue
+        return ids
+
+    def _fetch_recent_verified_ids(self, window_seconds: int) -> set[int]:
+        """
+        Liefert verified+friend Discord-IDs, deren steam_links.updated_at innerhalb des Fensters liegt.
+        """
+        try:
+            with central_db.get_conn() as con:
+                cur = con.execute(
+                    """
+                    SELECT user_id FROM steam_links
+                    WHERE verified=1 AND is_steam_friend=1
+                      AND user_id IS NOT NULL
+                      AND updated_at >= datetime('now', ?)
+                    GROUP BY user_id
+                    """,
+                    (f"-{int(window_seconds)} seconds",),
+                )
+                rows = cur.fetchall()
+        except Exception as e:
+            log.exception("DB-Fehler beim Lesen frischer verifizierter IDs: %s", e)
+            return set()
+
+        ids: set[int] = set()
+        for r in rows:
+            try:
+                val = int(r["user_id"])
+                if val >= 10_000_000_000_000_000:
+                    ids.add(val)
+            except Exception:
                 continue
         return ids
 
@@ -265,6 +301,21 @@ class SteamVerifiedRole(commands.Cog):
                 exc,
             )
             return False
+
+    async def assign_verified_role_with_retries(self, user_id: int) -> bool:
+        """
+        Versucht die Rollenvergabe mit schnellen Retries (z.B. direkt nach Freundschaft).
+        Standard: 3 Versuche im Abstand von 30s (per env konfigurierbar).
+        """
+        attempts = max(1, self._immediate_retry_attempts)
+        interval = max(0.0, self._immediate_retry_interval)
+        for i in range(attempts):
+            ok = await self.assign_verified_role(user_id)
+            if ok:
+                return True
+            if i < attempts - 1 and interval > 0:
+                await asyncio.sleep(interval)
+        return False
         except Exception as e:
             self._mark_member_transient_error(user_id)
             log.error("Fehler bei Sofort-Zuweisung der Verified-Rolle an %s: %s", user_id, e)
@@ -441,6 +492,37 @@ class SteamVerifiedRole(commands.Cog):
         )
         return changes
 
+    # ---------- Fast-Lane für frische Verifizierungen ----------
+    @tasks.loop(seconds=30.0)
+    async def _fast_lane_assign(self):
+        if self.bot.is_closed() or self._http_session_closed():
+            return
+
+        guild, role = await self._resolve_guild_and_role()
+        if not guild or not role:
+            return
+
+        ids = self._fetch_recent_verified_ids(self._fast_lane_window_seconds)
+        if not ids:
+            return
+
+        async def handle(uid: int):
+            member = guild.get_member(uid)
+            if member and role in member.roles:
+                return False
+            try:
+                ok = await self.assign_verified_role_with_retries(uid)
+                if ok:
+                    log.info("Fast-Lane: Verified-Rolle vergeben für %s", uid)
+                return ok
+            except Exception as exc:  # noqa: PERF203
+                log.warning("Fast-Lane: Fehler bei Rolle für %s: %s", uid, exc)
+                return False
+
+        tasks_local = [asyncio.create_task(handle(uid)) for uid in ids]
+        if tasks_local:
+            await asyncio.gather(*tasks_local, return_exceptions=True)
+
     # ---------- Loop ----------
     @tasks.loop(seconds=5.0, count=1)
     async def _start_loop_once_ready(self):
@@ -489,11 +571,15 @@ class SteamVerifiedRole(commands.Cog):
         # Bei Reloads startet on_ready nicht erneut; daher hier sicherstellen, dass die Loop loslaeuft.
         if not self._start_loop_once_ready.is_running():
             self._start_loop_once_ready.start()
+        if not self._fast_lane_assign.is_running():
+            self._fast_lane_assign.start()
 
     @commands.Cog.listener()
     async def on_ready(self):
         if self._task is None and not self._start_loop_once_ready.is_running():
             self._start_loop_once_ready.start()
+        if not self._fast_lane_assign.is_running():
+            self._fast_lane_assign.start()
 
     # ---------- Commands ----------
     @commands.command(name="verifyrole_run", help="Manueller Lauf (loggt nur Zuweisungen).")
@@ -564,6 +650,10 @@ class SteamVerifiedRole(commands.Cog):
             self._start_loop_once_ready.cancel()
         except Exception as exc:
             log.debug("Konnte start_loop_once_ready nicht abbrechen: %s", exc)
+        try:
+            self._fast_lane_assign.cancel()
+        except Exception as exc:
+            log.debug("Konnte fast_lane_assign nicht abbrechen: %s", exc)
 
 
 async def setup(bot: commands.Bot):

@@ -2666,8 +2666,8 @@ class BetaInviteFlow(commands.Cog):
         """Versucht, dem Nutzer sofort die Steam-Verified Rolle zu geben."""
         try:
             verified_cog = self.bot.get_cog("SteamVerifiedRole")
-            if verified_cog and hasattr(verified_cog, "assign_verified_role"):
-                result = await verified_cog.assign_verified_role(user_id)
+            if verified_cog and hasattr(verified_cog, "assign_verified_role_with_retries"):
+                result = await verified_cog.assign_verified_role_with_retries(user_id)
                 if result:
                     log.info("Sofort-Rollen-Zuweisung erfolgreich für User %s", user_id)
                 else:
