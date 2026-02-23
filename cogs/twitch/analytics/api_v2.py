@@ -2211,38 +2211,21 @@ class AnalyticsV2Mixin:
                 "coverage": round(coverage, 2),
             }
         else:
-            # Retention-curve proxy (original method)
-            ret_5m_avg = sum((s[1] or 0) * 100 for s in sessions) / total_sessions
-            ret_10m_avg = sum((s[2] or 0) * 100 for s in sessions) / total_sessions
-            ret_20m_avg = sum((s[3] or 0) * 100 for s in sessions) / total_sessions
-
-            under_5min = max(0, 100 - ret_5m_avg)
-            min_5_to_15 = max(0, ret_5m_avg - ret_10m_avg)
-            min_15_to_30 = max(0, ret_10m_avg - ret_20m_avg)
-            min_30_to_60 = max(0, ret_20m_avg * 0.4)
-            over_60min = max(0, ret_20m_avg * 0.6)
-
-            total = under_5min + min_5_to_15 + min_15_to_30 + min_30_to_60 + over_60min
-            if total > 0:
-                under_5min = (under_5min / total) * 100
-                min_5_to_15 = (min_5_to_15 / total) * 100
-                min_15_to_30 = (min_15_to_30 / total) * 100
-                min_30_to_60 = (min_30_to_60 / total) * 100
-                over_60min = (over_60min / total) * 100
-
-            avg_durations = [s[0] or 0 for s in sessions]
-            avg_duration_mins = sum(avg_durations) / len(avg_durations) / 60 if avg_durations else 0
-            avg_watch_time = (
-                (under_5min / 100) * 2.5
-                + (min_5_to_15 / 100) * 10
-                + (min_15_to_30 / 100) * 22.5
-                + (min_30_to_60 / 100) * 45
-                + (over_60min / 100) * min(90, avg_duration_mins)
-            )
-            median_watch_time = avg_watch_time * 0.85
+            # Not enough real data: surface that explicitly instead of proxying.
             data_quality = {
-                "method": "retention_curve_proxy",
+                "method": "insufficient_real_data",
                 "coverage": round(min(1.0, coverage_real), 2),
+            }
+            return {
+                "under5min": 0,
+                "min5to15": 0,
+                "min15to30": 0,
+                "min30to60": 0,
+                "over60min": 0,
+                "avgWatchTime": 0,
+                "medianWatchTime": 0,
+                "sessionCount": total_sessions,
+                "dataQuality": data_quality,
             }
 
         return {
