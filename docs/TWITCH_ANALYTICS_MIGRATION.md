@@ -8,7 +8,7 @@
 ## Vorbereitung
 1. Postgres 16 + TimescaleDB installieren (oder Docker `timescale/timescaledb:pg16`).
 2. Leere DB anlegen, z. B. `twitch_analytics`.
-3. DSN setzen: `export TWITCH_ANALYTICS_DSN=postgresql://user:pass@localhost:5432/twitch_analytics`
+3. DSN setzen: `export TWITCH_ANALYTICS_DSN="postgresql://<username>:<password>@localhost:5432/twitch_analytics"`
 4. (Optional) SQLite-Pfad überschreiben: `export SQLITE_PATH=service/deadlock.sqlite3`
 
 ## Schema anlegen
