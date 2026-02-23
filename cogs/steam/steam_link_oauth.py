@@ -462,12 +462,22 @@ class SteamLink(commands.Cog):
             )
 
     async def _notify_user_linked(self, user_id: int, steam_ids: list[str]) -> None:
+        valid_ids = [
+            str(sid).strip()
+            for sid in (steam_ids or [])
+            if re.fullmatch(r"\d{17,20}", str(sid).strip())
+        ]
+        if not valid_ids:
+            log.debug(
+                "Skipping link notification – no valid SteamIDs",
+                extra={"user_id": user_id, "steam_id_count": len(steam_ids or [])},
+            )
+            return
         try:
-            queue_friend_requests(steam_ids)
+            queue_friend_requests(valid_ids)
         except Exception:
-            ids_for_log = steam_ids or []
+            ids_for_log = valid_ids
             steam_id_count = len(ids_for_log)
-            invalid_ids = any(not re.fullmatch(r"\d{17,20}", str(sid)) for sid in ids_for_log)
             try:
                 safe_user = int(user_id)
             except Exception:
@@ -478,9 +488,15 @@ class SteamLink(commands.Cog):
                 extra={
                     "user_id": safe_user,
                     "steam_id_count": steam_id_count,
-                    "steam_ids_invalid": invalid_ids,
+                    "steam_ids_invalid": False,
                 },
             )
+        if not user_id:
+            log.debug(
+                "Skipping link notification – missing user id",
+                extra={"steam_id_count": len(valid_ids)},
+            )
+            return
         try:
             user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
             if not user:
@@ -489,6 +505,8 @@ class SteamLink(commands.Cog):
             shine = (
                 "✨ **Connection complete.**\n"
                 "🤝 Unser Steam-Bot schickt dir gleich eine Freundschaftsanfrage. "
+                "Falls in den nächsten Minuten nichts ankommt, kannst du den Bot mit dem Freundescode **820142646** manuell hinzufügen – "
+                "sobald die Freundschaft steht, erkennt er deine Verknüpfung automatisch."
             )
             await user.send(shine)
         except Exception as e:
