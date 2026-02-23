@@ -62,6 +62,7 @@ jobs:
             --with aiohttp-session==2.12.1 \
             --with aiohttp-basicauth==1.1.0 \
             --with "discord.py==2.6.3" \
+            --with "psycopg[binary]==3.3.3" \
             --with jinja2==3.1.6 \
             --with pydantic==2.11.9 \
             --with pydantic-settings==2.10.1 \
