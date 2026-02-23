@@ -115,115 +115,130 @@ export function Audience({ streamer, days }: AudienceProps) {
         </div>
       )}
 
-      {/* Header Stats */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="grid grid-cols-2 md:grid-cols-4 gap-4"
-      >
-        <QuickStatCard
-          icon={<Clock className="w-5 h-5" />}
-          label="Ø Watch Time"
-          value={watchTimeData ? `${watchTimeData.avgWatchTime.toFixed(0)} Min` : '—'}
-          color="primary"
-        />
-        <QuickStatCard
-          icon={<Target className="w-5 h-5" />}
-          label="Conversion Rate"
-          value={funnelData ? `${funnelData.conversionRate.toFixed(2)}%` : '—'}
-          color="success"
-        />
-        <QuickStatCard
-          icon={<Users className="w-5 h-5" />}
-          label="Unique Viewer"
-          value={funnelData ? funnelData.uniqueViewers.toLocaleString('de-DE') : '—'}
-          color="accent"
-        />
-        <QuickStatCard
-          icon={<UserPlus className="w-5 h-5" />}
-          label="Neue Follower"
-          value={funnelData ? `+${funnelData.newFollowers}` : '—'}
-          color="warning"
-        />
-      </motion.div>
-
-      {/* Watch Time & Funnel Side by Side */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {watchTimeData ? (
-          <WatchTimeDistribution data={watchTimeData} />
-        ) : (
-          <ErrorPlaceholder label="Watch Time" onRetry={refetchWatchTime} />
-        )}
-        {funnelData ? (
-          <FollowerFunnel data={funnelData} />
-        ) : (
-          <ErrorPlaceholder label="Follower-Funnel" onRetry={refetchFunnel} />
-        )}
-      </div>
-
-      {/* Tag & Title Performance */}
-      {tagData ? (
-        <TagPerformanceChart tagData={tagData} titleData={titleData || undefined} />
-      ) : (
-        <ErrorPlaceholder label="Tag & Title Performance" onRetry={refetchTags} />
-      )}
-
-      {/* Audience Demographics */}
-      {demographicsData ? (
-        <AudienceDemographics data={demographicsData} />
-      ) : (
-        <ErrorPlaceholder label="Audience Demographics" onRetry={refetchDemographics} />
-      )}
-
-      {/* Audience Insights Summary */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.3 }}
-        className="bg-gradient-to-r from-primary/10 to-accent/10 rounded-xl border border-primary/20 p-6"
-      >
-        <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
-          <Target className="w-5 h-5 text-primary" />
-          Audience Insights Zusammenfassung
-        </h3>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {/* Watch Time Insight */}
-          <InsightCard
-            title="Viewer Engagement"
-            description={
-              watchTimeData && watchTimeData.avgWatchTime > 0
-                ? watchTimeData.avgWatchTime > 25
-                  ? `Starkes Engagement! Deine Viewer bleiben im Schnitt ${watchTimeData.avgWatchTime.toFixed(0)} Minuten.`
-                  : `Verbesserungspotential: Viewer bleiben nur ${watchTimeData.avgWatchTime.toFixed(0)} Min - teste interaktive Segmente.`
-                : 'Keine Watch-Time-Daten verfügbar.'
+      {noData && <></>}
+      {!noData && (
+        <>
+          {/* Header Stats */}
+          {(() => {
+            const cards = [];
+            if (watchTimeData) {
+              cards.push(
+                <QuickStatCard
+                  key="watch"
+                  icon={<Clock className="w-5 h-5" />}
+                  label="Ø Watch Time"
+                  value={`${watchTimeData.avgWatchTime.toFixed(0)} Min`}
+                  color="primary"
+                />
+              );
             }
-            type={watchTimeData && watchTimeData.avgWatchTime > 25 ? 'success' : 'warning'}
-          />
-
-          {/* Conversion Insight */}
-          <InsightCard
-            title="Follower Conversion"
-            description={
-              funnelData && funnelData.conversionRate > 0
-                ? funnelData.conversionRate > 5
-                  ? `Exzellente Conversion von ${funnelData.conversionRate.toFixed(2)}%! Dein Content überzeugt.`
-                  : `Conversion bei ${funnelData.conversionRate.toFixed(2)}% - nutze mehr Call-to-Actions.`
-                : 'Keine Conversion-Daten verfügbar.'
+            if (funnelData) {
+              cards.push(
+                <QuickStatCard
+                  key="conv"
+                  icon={<Target className="w-5 h-5" />}
+                  label="Conversion Rate"
+                  value={`${funnelData.conversionRate.toFixed(2)}%`}
+                  color="success"
+                />
+              );
+              cards.push(
+                <QuickStatCard
+                  key="unique"
+                  icon={<Users className="w-5 h-5" />}
+                  label="Unique Viewer"
+                  value={funnelData.uniqueViewers.toLocaleString('de-DE')}
+                  color="accent"
+                />
+              );
+              cards.push(
+                <QuickStatCard
+                  key="newf"
+                  icon={<UserPlus className="w-5 h-5" />}
+                  label="Neue Follower"
+                  value={`+${funnelData.newFollowers}`}
+                  color="warning"
+                />
+              );
             }
-            type={funnelData && funnelData.conversionRate > 5 ? 'success' : 'info'}
-          />
+            return cards.length > 0 ? (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="grid grid-cols-2 md:grid-cols-4 gap-4"
+              >
+                {cards}
+              </motion.div>
+            ) : null;
+          })()}
 
-          {/* Tag Insight */}
-          {tagData && tagData.length > 0 && (
-            <InsightCard
-              title="Content Strategie"
-              description={`"${tagData[0].tagName}" performt am besten. Fokussiere dich auf diesen Content-Typ für maximale Reichweite.`}
-              type="info"
-            />
+          {/* Watch Time & Funnel Side by Side */}
+          {(watchTimeData || funnelData) && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {watchTimeData && <WatchTimeDistribution data={watchTimeData} />}
+              {funnelData && <FollowerFunnel data={funnelData} />}
+            </div>
           )}
-        </div>
-      </motion.div>
+
+          {/* Tag & Title Performance */}
+          {tagData && <TagPerformanceChart tagData={tagData} titleData={titleData || undefined} />}
+
+          {/* Audience Demographics */}
+          {demographicsData && <AudienceDemographics data={demographicsData} />}
+
+          {/* Audience Insights Summary */}
+          {(watchTimeData || funnelData || (tagData && tagData.length > 0)) && (
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.3 }}
+              className="bg-gradient-to-r from-primary/10 to-accent/10 rounded-xl border border-primary/20 p-6"
+            >
+              <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
+                <Target className="w-5 h-5 text-primary" />
+                Audience Insights Zusammenfassung
+              </h3>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {/* Watch Time Insight */}
+                {watchTimeData && (
+                  <InsightCard
+                    title="Viewer Engagement"
+                    description={
+                      watchTimeData.avgWatchTime > 25
+                        ? `Starkes Engagement! Deine Viewer bleiben im Schnitt ${watchTimeData.avgWatchTime.toFixed(0)} Minuten.`
+                        : `Verbesserungspotential: Viewer bleiben nur ${watchTimeData.avgWatchTime.toFixed(0)} Min - teste interaktive Segmente.`
+                    }
+                    type={watchTimeData.avgWatchTime > 25 ? 'success' : 'warning'}
+                  />
+                )}
+
+                {/* Conversion Insight */}
+                {funnelData && (
+                  <InsightCard
+                    title="Follower Conversion"
+                    description={
+                      funnelData.conversionRate > 5
+                        ? `Exzellente Conversion von ${funnelData.conversionRate.toFixed(2)}%! Dein Content überzeugt.`
+                        : `Conversion bei ${funnelData.conversionRate.toFixed(2)}% - nutze mehr Call-to-Actions.`
+                    }
+                    type={funnelData.conversionRate > 5 ? 'success' : 'info'}
+                  />
+                )}
+
+                {/* Tag Insight */}
+                {tagData && tagData.length > 0 && (
+                  <InsightCard
+                    title="Content Strategie"
+                    description={`"${tagData[0].tagName}" performt am besten. Fokussiere dich auf diesen Content-Typ für maximale Reichweite.`}
+                    type="info"
+                  />
+                )}
+              </div>
+            </motion.div>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -298,23 +313,6 @@ function InsightCard({ title, description, type }: InsightCardProps) {
         <span className="font-medium text-white text-sm">{title}</span>
       </div>
       <p className="text-sm text-text-secondary">{description}</p>
-    </div>
-  );
-}
-
-function ErrorPlaceholder({ label, onRetry }: { label: string; onRetry: () => void }) {
-  return (
-    <div className="flex items-center justify-between h-full bg-card border border-border rounded-xl p-4 text-text-secondary">
-      <div className="flex items-center gap-2">
-        <AlertCircle className="w-5 h-5" />
-        <span>{label} konnten nicht geladen werden.</span>
-      </div>
-      <button
-        onClick={onRetry}
-        className="px-3 py-1 rounded-md bg-primary/10 text-primary text-sm font-semibold hover:bg-primary/20 transition"
-      >
-        Retry
-      </button>
     </div>
   );
 }
