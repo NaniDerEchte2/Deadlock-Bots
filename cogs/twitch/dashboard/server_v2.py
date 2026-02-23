@@ -1517,7 +1517,7 @@ class DashboardV2Server(
             sent_rows = conn.execute(
                 """
                 SELECT from_broadcaster_login, COUNT(*) as cnt, SUM(viewer_count) as viewers
-                FROM twitch_raid_history WHERE success = 1
+                FROM twitch_raid_history WHERE COALESCE(success, FALSE) IS TRUE
                 GROUP BY from_broadcaster_login ORDER BY cnt DESC
                 """
             ).fetchall()
@@ -1526,7 +1526,7 @@ class DashboardV2Server(
             recv_rows = conn.execute(
                 """
                 SELECT to_broadcaster_login, COUNT(*) as cnt, SUM(viewer_count) as viewers
-                FROM twitch_raid_history WHERE success = 1
+                FROM twitch_raid_history WHERE COALESCE(success, FALSE) IS TRUE
                 GROUP BY to_broadcaster_login ORDER BY cnt DESC
                 """
             ).fetchall()
@@ -1543,7 +1543,7 @@ class DashboardV2Server(
 
             # Date range
             date_row = conn.execute(
-                "SELECT MIN(executed_at), MAX(executed_at), COUNT(*) FROM twitch_raid_history WHERE success = 1"
+                "SELECT MIN(executed_at), MAX(executed_at), COUNT(*) FROM twitch_raid_history WHERE COALESCE(success, FALSE) IS TRUE"
             ).fetchone()
 
         sent_map: dict = {r[0].lower(): {"cnt": r[1], "viewers": r[2] or 0} for r in sent_rows}

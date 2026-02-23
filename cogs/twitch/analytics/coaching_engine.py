@@ -931,7 +931,7 @@ def _raid_network(conn: sqlite3.Connection, streamer: str, since: str) -> dict[s
         """
         SELECT LOWER(to_broadcaster_login), COUNT(*), AVG(viewer_count), SUM(viewer_count)
         FROM twitch_raid_history
-        WHERE LOWER(from_broadcaster_login) = ? AND executed_at >= ? AND success = 1
+        WHERE LOWER(from_broadcaster_login) = ? AND executed_at >= ? AND COALESCE(success, FALSE) IS TRUE
         GROUP BY LOWER(to_broadcaster_login)
         ORDER BY COUNT(*) DESC
         """,
@@ -942,7 +942,7 @@ def _raid_network(conn: sqlite3.Connection, streamer: str, since: str) -> dict[s
         """
         SELECT LOWER(from_broadcaster_login), COUNT(*), AVG(viewer_count), SUM(viewer_count)
         FROM twitch_raid_history
-        WHERE LOWER(to_broadcaster_login) = ? AND executed_at >= ? AND success = 1
+        WHERE LOWER(to_broadcaster_login) = ? AND executed_at >= ? AND COALESCE(success, FALSE) IS TRUE
         GROUP BY LOWER(from_broadcaster_login)
         ORDER BY COUNT(*) DESC
         """,

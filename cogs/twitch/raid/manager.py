@@ -2139,7 +2139,7 @@ class RaidBot:
                     SELECT COUNT(*)
                     FROM twitch_raid_history
                     WHERE to_broadcaster_id = ?
-                      AND success = 1
+                      AND COALESCE(success, FALSE) IS TRUE
                     """,
                     (target_id,),
                 ).fetchone()
@@ -2268,7 +2268,7 @@ class RaidBot:
                     """
                     SELECT COUNT(*) FROM twitch_raid_history
                     WHERE to_broadcaster_id = ?
-                      AND success = 1
+                      AND COALESCE(success, FALSE) IS TRUE
                       AND executed_at > datetime('now', '-1 day')
                     """,
                     (target_id,),
@@ -2413,7 +2413,7 @@ class RaidBot:
                     SELECT DISTINCT to_broadcaster_id
                     FROM twitch_raid_history
                     WHERE from_broadcaster_id = ?
-                      AND success = 1
+                      AND COALESCE(success, FALSE) IS TRUE
                       AND executed_at >= datetime('now', ?)
                     """,
                     (from_broadcaster_id, cutoff),

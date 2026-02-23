@@ -1159,7 +1159,7 @@ class AnalyticsV2Mixin:
             """
             SELECT COUNT(*), COALESCE(SUM(viewer_count), 0)
             FROM twitch_raid_history
-            WHERE LOWER(from_broadcaster_login) = ? AND executed_at >= ? AND success = 1
+            WHERE LOWER(from_broadcaster_login) = ? AND executed_at >= ? AND COALESCE(success, FALSE) IS TRUE
         """,
             [streamer.lower(), since_date],
         ).fetchone()
@@ -1168,7 +1168,7 @@ class AnalyticsV2Mixin:
             """
             SELECT COUNT(*)
             FROM twitch_raid_history
-            WHERE LOWER(to_broadcaster_login) = ? AND executed_at >= ? AND success = 1
+            WHERE LOWER(to_broadcaster_login) = ? AND executed_at >= ? AND COALESCE(success, FALSE) IS TRUE
         """,
             [streamer.lower(), since_date],
         ).fetchone()
@@ -1507,7 +1507,7 @@ class AnalyticsV2Mixin:
                         COUNT(DISTINCT COALESCE(NULLIF(sc.chatter_login, ''), sc.chatter_id)) as unique_chatters,
                         COUNT(
                             DISTINCT CASE
-                                WHEN sc.is_first_time_global = 1
+                                WHEN COALESCE(sc.is_first_time_global, FALSE) IS TRUE
                                 THEN COALESCE(NULLIF(sc.chatter_login, ''), sc.chatter_id)
                             END
                         ) as first_time_chatters,
@@ -1999,30 +1999,18 @@ class AnalyticsV2Mixin:
                         ORDER BY twitch_login
                     """).fetchall()
 
-                # Others with recent activity
+                # Only show our verified/partner streamers when the partner view exists.
                 if has_partner_table:
-                    others = conn.execute("""
-                        SELECT DISTINCT s.streamer_login
-                        FROM twitch_stream_sessions s
-                        WHERE s.started_at >= (NOW() - INTERVAL '30 days')
-                          AND LOWER(s.streamer_login) NOT IN (
-                              SELECT LOWER(twitch_login)
-                                FROM twitch_streamers_partner_state
-                               WHERE is_partner_active = 1
-                          )
-                        ORDER BY s.streamer_login
-                    """).fetchall()
+                    data = [{"login": r[0], "isPartner": True} for r in partners]
                 else:
+                    # Fallback (should not normally happen): recent streamers
                     others = conn.execute("""
                         SELECT DISTINCT s.streamer_login
                         FROM twitch_stream_sessions s
                         WHERE s.started_at >= (NOW() - INTERVAL '30 days')
                         ORDER BY s.streamer_login
                     """).fetchall()
-
-                data = [{"login": r[0], "isPartner": True} for r in partners] + [
-                    {"login": r[0], "isPartner": False} for r in others
-                ]
+                    data = [{"login": r[0], "isPartner": False} for r in others]
 
                 return web.json_response(data)
         except Exception as exc:
@@ -2168,11 +2156,16 @@ class AnalyticsV2Mixin:
                 rows = conn.execute(
                     """
                     SELECT
-                        ROUND((julianday(COALESCE(last_seen_at, first_message_at))
-                               - julianday(first_message_at)) * 24 * 60) as watch_minutes
+                        ROUND(
+                            (
+                                EXTRACT(EPOCH FROM COALESCE(last_seen_at, first_message_at))
+                                - EXTRACT(EPOCH FROM first_message_at)
+                            ) / 60.0
+                        ) as watch_minutes
                     FROM twitch_session_chatters
                     WHERE session_id IN (
-                        SELECT CAST(value AS INTEGER) FROM json_each(?)
+                        SELECT CAST(value AS BIGINT)
+                        FROM json_array_elements_text(%s) AS t(value)
                     )
                       AND last_seen_at IS NOT NULL
                     """,
@@ -2432,7 +2425,7 @@ class AnalyticsV2Mixin:
                         COUNT(DISTINCT COALESCE(NULLIF(sc.chatter_login, ''), sc.chatter_id)) as unique_chatters,
                         COUNT(
                             DISTINCT CASE
-                                WHEN sc.is_first_time_global = 0
+                                WHEN COALESCE(sc.is_first_time_global, FALSE) IS FALSE
                                 THEN COALESCE(NULLIF(sc.chatter_login, ''), sc.chatter_id)
                             END
                         ) as returning_chatters,
@@ -2521,7 +2514,7 @@ class AnalyticsV2Mixin:
                     FROM twitch_raid_history
                     WHERE LOWER(to_broadcaster_login) = ?
                       AND executed_at >= ?
-                      AND success = 1
+                      AND COALESCE(success, FALSE) IS TRUE
                     """,
                     [streamer_login, since_date],
                 ).fetchone()

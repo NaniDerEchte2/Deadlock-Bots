@@ -16,6 +16,64 @@ CREATE TABLE IF NOT EXISTS streamer_dim (
     updated_at             TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- ========= Streamer Registry (parity with legacy SQLite twitch_streamers) =========
+CREATE TABLE IF NOT EXISTS twitch_streamers (
+    id                       BIGSERIAL PRIMARY KEY,
+    twitch_login             TEXT UNIQUE NOT NULL,
+    twitch_user_id           TEXT,
+    require_discord_link     INTEGER,
+    last_description         TEXT,
+    last_link_ok             INTEGER,
+    added_by                 TEXT,
+    created_at               TIMESTAMPTZ DEFAULT NOW(),
+    last_link_checked_at     TIMESTAMPTZ,
+    next_link_check_at       TIMESTAMPTZ,
+    manual_verified_permanent INTEGER DEFAULT 0,
+    manual_verified_until    TIMESTAMPTZ,
+    manual_verified_at       TIMESTAMPTZ,
+    discord_user_id          TEXT,
+    discord_display_name     TEXT,
+    is_on_discord            INTEGER DEFAULT 0,
+    manual_partner_opt_out   INTEGER DEFAULT 0,
+    raid_bot_enabled         INTEGER DEFAULT 0,
+    archived_at              TIMESTAMPTZ,
+    silent_ban               INTEGER DEFAULT 0,
+    silent_raid              INTEGER DEFAULT 0,
+    is_monitored_only        INTEGER DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_twitch_streamers_login_lower
+    ON twitch_streamers (LOWER(twitch_login));
+
+-- Companion view: calculated partner flags (mirrors SQLite view)
+CREATE OR REPLACE VIEW twitch_streamers_partner_state AS
+WITH base AS (
+    SELECT
+        s.*,
+        CASE
+            WHEN COALESCE(s.manual_verified_permanent, 0) = 1
+                 OR (s.manual_verified_until IS NOT NULL AND s.manual_verified_until >= NOW())
+                 OR s.manual_verified_at IS NOT NULL
+            THEN 1 ELSE 0
+        END AS is_verified
+    FROM twitch_streamers s
+)
+SELECT
+    base.*,
+    CASE
+        WHEN base.is_verified = 1
+             AND COALESCE(base.manual_partner_opt_out, 0) = 0
+             AND COALESCE(base.is_monitored_only, 0) = 0
+        THEN 1 ELSE 0
+    END AS is_partner,
+    CASE
+        WHEN base.is_verified = 1
+             AND COALESCE(base.manual_partner_opt_out, 0) = 0
+             AND COALESCE(base.is_monitored_only, 0) = 0
+             AND base.archived_at IS NULL
+        THEN 1 ELSE 0
+    END AS is_partner_active
+FROM base;
+
 -- ========= Live State (mirrors legacy sqlite schema) =========
 CREATE TABLE IF NOT EXISTS twitch_live_state (
     twitch_user_id            TEXT PRIMARY KEY,
@@ -105,6 +163,19 @@ SELECT create_hypertable('twitch_session_chatters', 'first_message_at', if_not_e
 ALTER TABLE twitch_session_chatters SET (timescaledb.compress, timescaledb.compress_segmentby = 'session_id,streamer_login', timescaledb.compress_orderby = 'first_message_at DESC');
 SELECT add_compression_policy('twitch_session_chatters', INTERVAL '7 days', if_not_exists => TRUE);
 CREATE INDEX IF NOT EXISTS idx_twitch_session_chatters_login ON twitch_session_chatters(streamer_login, session_id);
+
+-- Global chatter rollup per streamer (viewer overlap, uniques)
+CREATE TABLE IF NOT EXISTS twitch_chatter_rollup (
+    streamer_login   TEXT NOT NULL,
+    chatter_login    TEXT NOT NULL,
+    chatter_id       TEXT,
+    first_seen_at    TIMESTAMPTZ NOT NULL,
+    last_seen_at     TIMESTAMPTZ NOT NULL,
+    total_messages   INTEGER DEFAULT 0,
+    total_sessions   INTEGER DEFAULT 0,
+    PRIMARY KEY (streamer_login, chatter_login)
+);
+CREATE INDEX IF NOT EXISTS idx_twitch_chatter_rollup_chatter ON twitch_chatter_rollup(chatter_login);
 
 CREATE TABLE IF NOT EXISTS twitch_chat_messages (
     id               BIGSERIAL PRIMARY KEY,

@@ -20,12 +20,14 @@ from typing import Iterable, Sequence
 
 import psycopg
 
-# Reihenfolge respektiert FK-Abhängigkeiten (Sessions -> Child-Tabellen).
+# Reihenfolge respektiert FK-Abhängigkeiten (Streamers/Dim -> Sessions -> Child-Tabellen).
 TABLES: Sequence[str] = [
+    "twitch_streamers",
     "twitch_stream_sessions",
     "twitch_live_state",
     "twitch_session_viewers",
     "twitch_session_chatters",
+    "twitch_chatter_rollup",
     "twitch_chat_messages",
     "twitch_stats_tracked",
     "twitch_stats_category",
