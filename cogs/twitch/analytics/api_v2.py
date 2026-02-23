@@ -8,6 +8,7 @@ import collections
 import ipaddress
 import json
 import logging
+from decimal import Decimal
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode, urlsplit
@@ -1513,10 +1514,16 @@ class AnalyticsV2Mixin:
                         ) as first_time_chatters,
                         COUNT(DISTINCT sc.session_id) as sessions_with_chat,
                         COUNT(*) as total_unique_viewers,
-                        SUM(CASE WHEN sc.messages = 0 AND sc.seen_via_chatters_api = 1 THEN 1 ELSE 0 END) as lurkers,
+                        SUM(
+                            CASE
+                                WHEN sc.messages = 0 AND sc.seen_via_chatters_api IS TRUE
+                                THEN 1
+                                ELSE 0
+                            END
+                        ) as lurkers,
                         SUM(CASE WHEN sc.messages > 0 THEN 1 ELSE 0 END) as active_chatters_count,
                         ROUND(AVG(CASE WHEN sc.messages > 0 THEN sc.messages ELSE NULL END), 1) as avg_messages_per_chatter,
-                        SUM(CASE WHEN sc.seen_via_chatters_api = 1 THEN 1 ELSE 0 END) as chatters_api_seen
+                        SUM(CASE WHEN sc.seen_via_chatters_api IS TRUE THEN 1 ELSE 0 END) as chatters_api_seen
                     FROM twitch_session_chatters sc
                     JOIN twitch_stream_sessions s ON s.id = sc.session_id
                     WHERE s.started_at >= ?
@@ -1608,8 +1615,8 @@ class AnalyticsV2Mixin:
                                 "login": r[0],
                                 "totalMessages": int(r[1]) if r[1] else 0,
                                 "totalSessions": int(r[2]) if r[2] else 0,
-                                "firstSeen": r[3],
-                                "lastSeen": r[4],
+                                "firstSeen": r[3].isoformat() if hasattr(r[3], "isoformat") else r[3],
+                                "lastSeen": r[4].isoformat() if hasattr(r[4], "isoformat") else r[4],
                                 "loyaltyScore": round(
                                     min(
                                         100.0,
@@ -2074,8 +2081,8 @@ class AnalyticsV2Mixin:
                     {
                         "id": row[0],
                         "streamerLogin": row[1],
-                        "startedAt": row[2],
-                        "endedAt": row[3],
+                        "startedAt": row[2].isoformat() if hasattr(row[2], "isoformat") else row[2],
+                        "endedAt": row[3].isoformat() if hasattr(row[3], "isoformat") else row[3],
                         "duration": row[4] or 0,
                         "startViewers": row[5] or 0,
                         "peakViewers": row[6] or 0,
@@ -2588,7 +2595,7 @@ class AnalyticsV2Mixin:
                              THEN s.follower_delta ELSE NULL END) as avg_followers,
                         COUNT(*) as usage_count,
                         AVG(s.duration_seconds) as avg_duration,
-                        strftime('%H', s.started_at) as start_hour
+                        MODE() WITHIN GROUP (ORDER BY EXTRACT(HOUR FROM s.started_at)) as start_hour
                     FROM twitch_stream_sessions s
                     WHERE s.started_at >= ?
                       AND s.ended_at IS NOT NULL
@@ -3111,7 +3118,7 @@ class AnalyticsV2Mixin:
                         c.streamer,
                         AVG(c.viewer_count) as avg_vc,
                         MAX(c.viewer_count) as peak_vc,
-                        MAX(c.is_partner) as is_partner
+                        BOOL_OR(c.is_partner) as is_partner
                     FROM twitch_stats_category c
                     WHERE c.ts_utc >= ?
                     GROUP BY c.streamer
@@ -3123,7 +3130,7 @@ class AnalyticsV2Mixin:
                         c.streamer,
                         AVG(c.viewer_count) as avg_vc,
                         MAX(c.viewer_count) as peak_vc,
-                        MAX(c.is_partner) as is_partner
+                        BOOL_OR(c.is_partner) as is_partner
                     FROM twitch_stats_category c
                     WHERE c.ts_utc >= ?
                     GROUP BY c.streamer
@@ -3184,6 +3191,19 @@ class AnalyticsV2Mixin:
         try:
             with storage.get_conn() as conn:
                 data = CoachingEngine.get_coaching_data(conn, streamer, days)
+                # Normalize Decimal/Datetime values for JSON serialization
+                def _sanitize(obj):
+                    if isinstance(obj, Decimal):
+                        return float(obj)
+                    if isinstance(obj, datetime):
+                        return obj.isoformat()
+                    if isinstance(obj, dict):
+                        return {k: _sanitize(v) for k, v in obj.items()}
+                    if isinstance(obj, list):
+                        return [_sanitize(v) for v in obj]
+                    return obj
+
+                data = _sanitize(data)
                 return web.json_response(data)
         except Exception as exc:
             log.exception("Error in coaching API")
@@ -3516,7 +3536,7 @@ class AnalyticsV2Mixin:
                 ad_agg = c.execute(
                     """
                     SELECT COUNT(*) AS total_ads,
-                           SUM(CASE WHEN a.is_automatic=1 THEN 1 ELSE 0 END) AS auto_ads,
+                           SUM(CASE WHEN a.is_automatic IS TRUE THEN 1 ELSE 0 END) AS auto_ads,
                            AVG(a.duration_seconds) AS avg_duration,
                            COUNT(DISTINCT a.session_id) AS sessions_with_ads
                       FROM twitch_ad_break_events a

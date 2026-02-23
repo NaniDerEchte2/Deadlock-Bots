@@ -78,13 +78,15 @@ def _efficiency(conn: sqlite3.Connection, streamer: str, since: str) -> dict[str
         SELECT
             s.streamer_login,
             SUM(s.avg_viewers * s.duration_seconds / 3600.0) as viewer_hours,
-            SUM(s.duration_seconds / 3600.0) as stream_hours
+            SUM(s.duration_seconds / 3600.0) as stream_hours,
+            SUM(s.avg_viewers * s.duration_seconds / 3600.0)
+                / NULLIF(SUM(s.duration_seconds / 3600.0), 0) as efficiency_ratio
         FROM twitch_stream_sessions s
         WHERE s.started_at >= ?
           AND s.duration_seconds > 300
         GROUP BY s.streamer_login
-        HAVING stream_hours > 1
-        ORDER BY (viewer_hours / stream_hours) DESC
+        HAVING SUM(s.duration_seconds / 3600.0) > 1
+        ORDER BY efficiency_ratio DESC
         """,
         (since,),
     ).fetchall()
@@ -94,7 +96,7 @@ def _efficiency(conn: sqlite3.Connection, streamer: str, since: str) -> dict[str
     your_vh = 0.0
     your_sh = 0.0
     for r in rows:
-        ratio = r[1] / r[2] if r[2] > 0 else 0
+        ratio = r[3] if r[3] is not None else 0
         ratios.append((r[0], ratio))
         if r[0] == streamer:
             your_ratio = ratio
@@ -216,7 +218,7 @@ def _title_analysis(conn: sqlite3.Connection, streamer: str, since: str) -> dict
           AND s.streamer_login != ?
           AND s.stream_title IS NOT NULL AND s.stream_title != ''
         GROUP BY s.streamer_login
-        HAVING total_s >= 3
+        HAVING COUNT(*) >= 3
         ORDER BY variety DESC
         """,
         (since, streamer),
@@ -715,17 +717,15 @@ def _build_viewer_curve(
     if not normalized_session_ids:
         return []
 
-    # Keep SQL static and pass session ids as data to avoid dynamic query construction.
-    session_id_csv = ",".join(str(sid) for sid in normalized_session_ids)
     rows = conn.execute(
         """
         SELECT session_id, minutes_from_start, viewer_count
         FROM twitch_session_viewers
-        WHERE instr(',' || ? || ',', ',' || CAST(session_id AS TEXT) || ',') > 0
+        WHERE session_id = ANY(%s)
           AND minutes_from_start <= 60
         ORDER BY session_id, minutes_from_start
         """,
-        (session_id_csv,),
+        (normalized_session_ids,),
     ).fetchall()
 
     peak_map = {sid: peak for sid, peak in normalized_pairs}
@@ -761,7 +761,7 @@ def _double_stream_detection(conn: sqlite3.Connection, streamer: str, since: str
         WHERE streamer_login = ? AND started_at >= ?
           AND duration_seconds > 300
         GROUP BY stream_date
-        HAVING session_count > 1
+        HAVING COUNT(*) > 1
         ORDER BY stream_date DESC
         """,
         (streamer, since),
@@ -893,7 +893,7 @@ def _chat_concentration(conn: sqlite3.Connection, streamer: str, since: str) -> 
         FROM twitch_chatter_rollup
         WHERE last_seen_at >= ?
         GROUP BY streamer_login
-        HAVING total >= 5
+        HAVING COUNT(*) >= 5
         """,
         (since,),
     ).fetchall()
@@ -1029,7 +1029,7 @@ def _peer_comparison(conn: sqlite3.Connection, streamer: str, since: str) -> dic
         FROM twitch_stream_sessions s
         WHERE s.started_at >= ? AND s.duration_seconds > 300 AND s.ended_at IS NOT NULL
         GROUP BY s.streamer_login
-        HAVING sessions >= 3
+        HAVING COUNT(*) >= 3
         ORDER BY avg_v DESC
         """,
         (since,),
