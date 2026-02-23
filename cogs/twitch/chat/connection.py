@@ -457,7 +457,11 @@ class ConnectionMixin:
             # Datensammlung läuft für alle, Bot-Funktionen nur für Partner
             partners = conn.execute(
                 """
-                SELECT DISTINCT s.twitch_login, s.twitch_user_id, a.scopes, l.is_live
+                SELECT DISTINCT s.twitch_login,
+                                s.twitch_user_id,
+                                a.scopes,
+                                l.is_live,
+                                COALESCE(l.last_game, '')
                 FROM twitch_streamers_partner_state s
                 JOIN twitch_raid_auth a ON s.twitch_user_id = a.twitch_user_id
                 LEFT JOIN twitch_live_state l ON s.twitch_user_id = l.twitch_user_id
@@ -467,7 +471,7 @@ class ConnectionMixin:
             ).fetchall()
 
         channels_to_join = []
-        for login, uid, scopes_raw, is_live in partners:
+        for login, uid, scopes_raw, is_live, last_game in partners:
             login_norm = (login or "").strip()
             if not login_norm:
                 continue
@@ -481,6 +485,7 @@ class ConnectionMixin:
                 continue
             # Normalisieren und prüfen
             normalized_login = login_norm.lower().lstrip("#")
+
             if normalized_login in self._monitored_streamers:
                 continue
             channels_to_join.append((login_norm, uid))

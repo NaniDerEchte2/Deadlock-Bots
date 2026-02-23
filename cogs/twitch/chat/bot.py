@@ -15,6 +15,9 @@ import copy
 import logging
 import logging.handlers
 import os
+import random
+import re
+import time
 from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
@@ -170,6 +173,8 @@ if TWITCHIO_AVAILABLE:
             self._promo_task: asyncio.Task | None = None
             self._last_invite_reply: dict[str, float] = {}
             self._last_invite_reply_user: dict[tuple[str, str], float] = {}
+            self._fun_reply_cd: dict[str, float] = {}
+            self._bot_promo_cd: dict[str, float] = {}
             self._discord_bot: discord.Client | None = None
             self._discord_invite_channel_id: int | None = None
             self._promo_invite_cache: dict[str, str] = {}
@@ -196,6 +201,64 @@ if TWITCHIO_AVAILABLE:
             if self._is_monitored_only(login):
                 return True
             return super()._is_partner_channel_for_chat_tracking(login)
+
+        def _is_deadlock_live(self, login: str) -> bool:
+            """True, wenn Channel gerade Deadlock spielt (für Chat-Antworten/Logging)."""
+            try:
+                session_id = self._resolve_session_id(login)
+                return bool(self._is_target_game_live_for_chat(login, session_id))
+            except Exception:
+                return False
+
+        @staticmethod
+        def _cooldown_ok(store: dict[str, float], key: str, seconds: float) -> bool:
+            now = time.monotonic()
+            last = store.get(key, 0.0)
+            if now - last < seconds:
+                return False
+            store[key] = now
+            return True
+
+        @staticmethod
+        def _looks_like_bot_question(text: str) -> bool:
+            """Heuristik für 'was ist das für ein Bot / wer hat ihn gebaut'."""
+            if not text:
+                return False
+            t = text.lower()
+            return " bot" in t and any(word in t for word in ("wer", "was", "gebaut", "gemacht"))
+
+        async def _maybe_fun_responses(self, message, channel_login: str) -> None:
+            """Freche Kurz-Antworten (Danke/Bot-Fragen) – nur wenn Deadlock live."""
+            content = message.content or ""
+            raw = content.strip()
+            if not raw:
+                return
+            if raw.startswith(self.prefix or "!"):
+                return
+            low = raw.lower()
+            channel = getattr(message, "channel", None)
+            if channel is None:
+                return
+
+            # Danke-Trigger
+            thanks_hits = any(word in low for word in ("danke", "thanks", "thx", "merci", "ty"))
+            if thanks_hits and "http" not in low:
+                if self._cooldown_ok(self._fun_reply_cd, channel_login, 90.0):
+                    reply = random.choice(
+                        [
+                            "Danke, ich wusste ja, dass ich gut bin. WiltedRose",
+                            "Oh stop it, you :relaxed:",
+                        ]
+                    )
+                    await self._send_chat_message(channel, reply)
+
+            # Bot-Promo / Herkunft
+            if self._looks_like_bot_question(low):
+                if self._cooldown_ok(self._bot_promo_cd, channel_login, 300.0):
+                    await self._send_chat_message(
+                        channel,
+                        "Gebaut von Nani; Beschwerden & Liebesbriefe an https://www.twitch.tv/deutschedeadlockcommunity – follow da!",
+                    )
 
         def _register_inline_commands(self) -> None:
             """Register @command methods on the Bot class (TwitchIO 3.x does not auto-register)."""
@@ -717,6 +780,7 @@ if TWITCHIO_AVAILABLE:
                 return
 
             channel_login = self._normalize_channel_login_safe(getattr(message, "channel", None))
+            is_deadlock_live = bool(channel_login and self._is_deadlock_live(channel_login))
 
             # --- DATENSAMMLUNG FÜR ALLE, BOT-FUNKTIONEN NUR FÜR ECHTE PARTNER ---
             # WICHTIG: Monitored-Only Channels sind KEINE Partner!
@@ -840,6 +904,13 @@ if TWITCHIO_AVAILABLE:
                 except Exception:
                     log.debug("Auto-Ban Prüfung fehlgeschlagen", exc_info=True)
 
+            # Freche Auto-Replies nur, wenn Deadlock läuft
+            if is_deadlock_live:
+                try:
+                    await self._maybe_fun_responses(message, channel_login)
+                except Exception:
+                    log.debug("Fun-Response fehlgeschlagen", exc_info=True)
+
             try:
                 await self._track_chat_health(message)
             except Exception:
@@ -855,16 +926,17 @@ if TWITCHIO_AVAILABLE:
                 log.debug("Raw-Chat-Activity konnte nicht erfasst werden", exc_info=True)
 
             sent_invite = False
-            try:
-                sent_invite = await self._maybe_send_deadlock_access_hint(message)
-            except Exception:
-                log.debug("Deadlock-Invite-Check fehlgeschlagen", exc_info=True)
-
-            if _PROMO_ACTIVITY_ENABLED and not sent_invite:
+            if is_deadlock_live:
                 try:
-                    await self._maybe_send_activity_promo(message)
+                    sent_invite = await self._maybe_send_deadlock_access_hint(message)
                 except Exception:
-                    log.debug("Promo-Activity-Check fehlgeschlagen", exc_info=True)
+                    log.debug("Deadlock-Invite-Check fehlgeschlagen", exc_info=True)
+
+                if _PROMO_ACTIVITY_ENABLED and not sent_invite:
+                    try:
+                        await self._maybe_send_activity_promo(message)
+                    except Exception:
+                        log.debug("Promo-Activity-Check fehlgeschlagen", exc_info=True)
 
             # Verarbeite Commands
             await self.process_commands(message)
@@ -1004,7 +1076,11 @@ async def create_twitch_chat_bot(
     with get_conn() as conn:
         partners = conn.execute(
             """
-            SELECT DISTINCT s.twitch_login, s.twitch_user_id, a.scopes, l.is_live
+            SELECT DISTINCT s.twitch_login,
+                            s.twitch_user_id,
+                            a.scopes,
+                            l.is_live,
+                            COALESCE(l.last_game, '')
               FROM twitch_streamers_partner_state s
               JOIN twitch_raid_auth a ON s.twitch_user_id = a.twitch_user_id
               LEFT JOIN twitch_live_state l ON s.twitch_user_id = l.twitch_user_id
@@ -1025,7 +1101,7 @@ async def create_twitch_chat_bot(
     monitored_channels = []
 
     # 1. Partner adden
-    for login, user_id, scopes_raw, is_live in partners:
+    for login, user_id, scopes_raw, is_live, last_game in partners:
         login_norm = (login or "").strip()
         if not login_norm:
             continue
