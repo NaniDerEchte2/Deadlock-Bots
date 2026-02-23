@@ -13,30 +13,24 @@ import discord
 from discord.ext import commands
 
 from service import db
+from service.guild_config import get_guild_config
 
 log = logging.getLogger("TempVoiceCore")
 
+_cfg = get_guild_config()
+
 # --------- IDs / Konfiguration ---------
-# Neue Struktur (kein Ranked/Grind Split mehr):
-#   Chill Lanes    → Kategorie 1289721245281292290 | Staging 1330278323145801758
-#   Comp/Ranked    → Kategorie 1412804540994162789 | Staging 1412804671432818890
-#   Street Brawl   → Kategorie 1357422957017698478 | Staging 1357422958544420944
-CASUAL_STAGING_ID = 1330278323145801758  # Chill Staging
-STAGING_CHANNEL_IDS: set[int] = {
-    CASUAL_STAGING_ID,  # Chill Staging
-    1357422958544420944,  # Street Brawl Staging
-    1412804671432818890,  # Comp/Ranked Staging
-}
+# Werte kommen nun zentral aus service.guild_config, damit ID-Änderungen nur dort gepflegt werden müssen.
+CASUAL_STAGING_ID = _cfg.TEMPVOICE_STAGING_CASUAL
+STAGING_CHANNEL_IDS: set[int] = set(_cfg.tempvoice_staging_channels)
 FIXED_LANE_IDS: set[int] = {
     1411391356278018245,  # Dauerhafter Voice-Channel (nicht von TempVoice verwalten)
     1470126503252721845,  # Ausgenommen: nie von TempVoice verwalten/loeschen
 }
-MINRANK_CATEGORY_IDS: set[int] = {
-    1412804540994162789,  # Comp/Ranked Lanes
-}
+MINRANK_CATEGORY_IDS: set[int] = set(_cfg.tempvoice_minrank_categories)
 # Per-Staging-Speziallogik (nur Lanes die vom Standard abweichen)
 STAGING_RULES: dict[int, dict[str, Any]] = {
-    1357422958544420944: {  # Street Brawl
+    _cfg.TEMPVOICE_STAGING_STREET_BRAWL: {  # Street Brawl
         "prefix": "Street Brawl",
         "user_limit": 4,
         "max_limit": 4,
@@ -46,13 +40,13 @@ STAGING_RULES: dict[int, dict[str, Any]] = {
     CASUAL_STAGING_ID: {  # Chill Lanes: kein Rang-System, Name aus Owner-Rang
         "prefix_from_rank": True,
     },
-    # 1412804671432818890 (Comp/Ranked) hat keine Sonderregel → normales Rang-System
+    # COMP/Ranked Staging hat keine Sonderregel → normales Rang-System
 }
 CASUAL_RANK_FALLBACK = "Chill"
-MINRANK_CATEGORY_ID: int = 1412804540994162789  # Comp/Ranked Kategorie
-RANKED_CATEGORY_ID: int = 1412804540994162789  # Comp/Ranked Kategorie (war: Grind)
-INTERFACE_TEXT_CHANNEL_ID: int = 1371927143537315890  # exportiert (wird vom Interface genutzt)
-ENGLISH_ONLY_ROLE_ID: int = 1309741866098491479
+MINRANK_CATEGORY_ID: int = _cfg.TEMPVOICE_CATEGORY_COMP  # Comp/Ranked Kategorie
+RANKED_CATEGORY_ID: int = _cfg.TEMPVOICE_CATEGORY_COMP  # Comp/Ranked Kategorie (war: Grind)
+INTERFACE_TEXT_CHANNEL_ID: int = _cfg.TEMPVOICE_INTERFACE_CHANNEL  # exportiert (wird vom Interface genutzt)
+ENGLISH_ONLY_ROLE_ID: int = _cfg.ENGLISH_ONLY_ROLE
 
 DEFAULT_CASUAL_CAP = 8
 DEFAULT_RANKED_CAP = 6
@@ -587,7 +581,7 @@ class TempVoiceCore(commands.Cog):
                 category_id INTEGER NOT NULL,
                 name        TEXT NOT NULL,
                 base_name   TEXT NOT NULL,
-                limit       INTEGER NOT NULL,
+                "limit"     INTEGER NOT NULL,
                 min_rank    TEXT NOT NULL DEFAULT 'unknown',
                 region      TEXT NOT NULL DEFAULT 'EU' CHECK(region IN ('DE','EU')),
                 created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -1249,11 +1243,11 @@ class TempVoiceCore(commands.Cog):
         try:
             await db.execute_async(
                 """
-                INSERT INTO tempvoice_presets(user_id, category_id, name, base_name, limit, min_rank, region)
+                INSERT INTO tempvoice_presets(user_id, category_id, name, base_name, "limit", min_rank, region)
                 VALUES(?,?,?,?,?,?,?)
                 ON CONFLICT(user_id, category_id, name) DO UPDATE SET
                     base_name=excluded.base_name,
-                    limit=excluded.limit,
+                    "limit"=excluded."limit",
                     min_rank=excluded.min_rank,
                     region=excluded.region,
                     updated_at=CURRENT_TIMESTAMP
@@ -1278,7 +1272,7 @@ class TempVoiceCore(commands.Cog):
         try:
             rows = await db.query_all_async(
                 """
-                SELECT name, base_name, limit, min_rank, region
+                SELECT name, base_name, "limit", min_rank, region
                 FROM tempvoice_presets
                 WHERE user_id=? AND category_id=?
                 ORDER BY updated_at DESC
@@ -1295,7 +1289,7 @@ class TempVoiceCore(commands.Cog):
         try:
             row = await db.query_one_async(
                 """
-                SELECT base_name, limit, min_rank, region FROM tempvoice_presets
+                SELECT base_name, "limit", min_rank, region FROM tempvoice_presets
                 WHERE user_id=? AND category_id=? AND name=?
                 """,
                 (int(owner_id), int(lane.category_id or 0), name),
@@ -1628,7 +1622,7 @@ class TempVoiceCore(commands.Cog):
         lock = self._lane_creation_locks.setdefault(member_id, asyncio.Lock())
         if lock.locked():
             log.debug(
-                "create_lane: duplicate request for %s ignored (staging=%s)",
+                "TempVoice create_lane: duplicate request for %s ignored (staging=%s)",
                 member_id,
                 staging.id,
             )
@@ -1638,6 +1632,12 @@ class TempVoiceCore(commands.Cog):
             async with lock:
                 fresh_member, current_channel = self._current_member_and_channel(guild, member_id)
                 if not fresh_member or not current_channel or current_channel.id != staging.id:
+                    log.debug(
+                        "TempVoice create_lane aborted: member=%s not in staging anymore (expected %s, got %s)",
+                        member_id,
+                        staging.id,
+                        getattr(current_channel, "id", None),
+                    )
                     return
                 member = fresh_member
 
@@ -1688,11 +1688,28 @@ class TempVoiceCore(commands.Cog):
                         reason=f"Auto-Lane für {member.display_name}",
                         overwrites=cat.overwrites if cat else None,
                     )
+                    log.info(
+                        "TempVoice: Lane %s erstellt für %s (staging %s, base=%s, cap=%s)",
+                        lane.id,
+                        member_id,
+                        staging.id,
+                        base,
+                        cap,
+                    )
                 except discord.Forbidden:
-                    log.error("Fehlende Rechte: VoiceChannel erstellen.")
+                    log.error(
+                        "TempVoice: fehlende Rechte zum Erstellen von VoiceChannels in cat %s (staging=%s)",
+                        getattr(cat, "id", None),
+                        staging.id,
+                    )
                     return
                 except Exception as e:
-                    log.error(f"create_lane error: {e}")
+                    log.error(
+                        "TempVoice: create_lane error for member %s in staging %s: %r",
+                        member_id,
+                        staging.id,
+                        e,
+                    )
                     return
 
                 self.created_channels.add(lane.id)
@@ -1872,9 +1889,27 @@ class TempVoiceCore(commands.Cog):
             after_channel and (not before_channel or before_channel.id != after_channel.id)
         )
 
-        # Auto-Lane bei Join in Staging
+        # Auto-Lane bei Join in Staging (+ Fallback: Name beginnt mit '(+)' oder '+')
         try:
-            if joined_new_channel and after_channel and after_channel.id in STAGING_CHANNEL_IDS:
+            joined_staging = False
+            staging_reason = ""
+            if joined_new_channel and after_channel:
+                if after_channel.id in STAGING_CHANNEL_IDS:
+                    joined_staging = True
+                    staging_reason = "id-match"
+                else:
+                    nm = after_channel.name.strip().lower()
+                    if nm.startswith("(+)") or nm.startswith("+"):
+                        joined_staging = True
+                        staging_reason = "name-fallback"
+            if joined_staging:
+                log.info(
+                    "TempVoice: %s joined staging %s (%s, set=%s) -> create_lane",
+                    member.id,
+                    after_channel.id,
+                    staging_reason,
+                    ",".join(str(s) for s in STAGING_CHANNEL_IDS),
+                )
                 await self._create_lane(member, after_channel)
         except Exception as e:
             log.warning(f"Auto-lane create failed: {e}")

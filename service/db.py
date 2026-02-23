@@ -443,6 +443,19 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
               PRIMARY KEY(ns, k)
             );
 
+            -- Deadlock Heroes (Admin gepflegte Stammdaten für Builds)
+            CREATE TABLE IF NOT EXISTS deadlock_heroes(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              hero_id INTEGER NOT NULL,
+              name TEXT NOT NULL,
+              origin_build_id INTEGER,
+              is_active INTEGER NOT NULL DEFAULT 1,
+              created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+              updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+              UNIQUE(hero_id),
+              UNIQUE(name)
+            );
+
             -- Voice Stats (aggregiert)
             CREATE TABLE IF NOT EXISTS voice_stats(
               user_id       INTEGER PRIMARY KEY,
@@ -952,6 +965,12 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
             )
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_issue_reports_user ON issue_reports(user_id, created_at DESC)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_deadlock_heroes_hero ON deadlock_heroes(hero_id)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_deadlock_heroes_active ON deadlock_heroes(is_active, hero_id)"
             )
             # Performance Indexes (2026-02-20)
             c.execute(

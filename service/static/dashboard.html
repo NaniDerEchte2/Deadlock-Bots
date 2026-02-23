@@ -617,6 +617,103 @@
             color: #adb5bd;
             font-size: 0.9rem;
         }
+        /* ─── Deadlock Heroes ─── */
+        .dl-heroes-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 1rem;
+        }
+        .dl-hero-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            max-height: 440px;
+            overflow-y: auto;
+        }
+        .dl-hero-item {
+            padding: 0.9rem 1rem;
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 12px;
+            background: rgba(255,255,255,0.02);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            transition: border-color 0.15s ease, background 0.15s ease;
+        }
+        .dl-hero-item:hover {
+            border-color: rgba(255,255,255,0.2);
+        }
+        .dl-hero-item.active {
+            border-color: #7dd3fc;
+            background: rgba(125,211,252,0.08);
+        }
+        .dl-hero-meta {
+            display: flex;
+            flex-direction: column;
+            gap: 0.15rem;
+        }
+        .dl-hero-meta .name {
+            font-weight: 600;
+        }
+        .dl-hero-meta .sub {
+            color: #9aa0a6;
+            font-size: 12px;
+        }
+        .dl-hero-pill {
+            padding: 0.2rem 0.55rem;
+            border-radius: 999px;
+            font-size: 12px;
+            border: 1px solid rgba(125,211,252,0.3);
+            color: #7dd3fc;
+            background: rgba(125,211,252,0.1);
+        }
+        .dl-hero-pill.muted {
+            color: #9aa0a6;
+            border-color: rgba(255,255,255,0.15);
+            background: rgba(255,255,255,0.03);
+        }
+        .dl-hero-form label {
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+            color: #cbd5e1;
+            font-size: 14px;
+        }
+        .dl-hero-form input[type="text"],
+        .dl-hero-form input[type="number"] {
+            padding: 0.7rem 0.9rem;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.1);
+            background: rgba(255,255,255,0.03);
+            color: #fff;
+        }
+        .dl-hero-form .switch-row {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-top: 0.2rem;
+        }
+        .dl-hero-form .btn-row {
+            display: flex;
+            gap: 0.6rem;
+            flex-wrap: wrap;
+        }
+        .dl-hero-message {
+            padding: 0.6rem 0.75rem;
+            border-radius: 10px;
+            font-size: 13px;
+        }
+        .dl-hero-message.success {
+            background: rgba(74, 222, 128, 0.08);
+            border: 1px solid rgba(74, 222, 128, 0.3);
+            color: #86efac;
+        }
+        .dl-hero-message.error {
+            background: rgba(248, 113, 113, 0.08);
+            border: 1px solid rgba(248, 113, 113, 0.3);
+            color: #fca5a5;
+        }
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -1255,6 +1352,7 @@
         <button class="tab-btn active" data-tab="overview">Übersicht</button>
         <button class="tab-btn" data-tab="activity">Aktivität</button>
         <button class="tab-btn" data-tab="services">Dienste</button>
+        <button class="tab-btn" data-tab="deadlock">Deadlock Heroes</button>
         <button class="tab-btn" data-tab="cogs">Cogs</button>
         <button class="tab-btn" data-tab="logs">Logs</button>
         <a class="tab-btn" href="/turnier" style="margin-left:auto;text-decoration:none;">🏆 Turnier</a>
@@ -1488,6 +1586,65 @@
     </div><!-- end tab: services -->
 
     <!-- ════════════════════════════════════════════════
+         Tab: Deadlock Heroes – Stammdaten & Build-Quellen
+         ════════════════════════════════════════════════ -->
+    <div class="tab-panel" data-tab="deadlock">
+
+        <section>
+            <div class="section-header">
+                <div>
+                    <h2>Deadlock Heroes</h2>
+                    <small>Hero-ID (Game) + Original-Build-ID hinterlegen, damit der Build-Bot sie spiegeln kann.</small>
+                </div>
+                <div class="section-actions">
+                    <button id="deadlock-hero-refresh">Aktualisieren</button>
+                    <button id="deadlock-hero-new">Neu anlegen</button>
+                </div>
+            </div>
+
+            <div class="dl-heroes-grid">
+                <div>
+                    <div class="dl-hero-list" id="deadlock-hero-list"></div>
+                </div>
+                <div class="dl-hero-form card">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;">
+                        <h3 style="margin:0;">Hero bearbeiten</h3>
+                        <button id="deadlock-hero-delete" style="background:#b91c1c;color:#fff;">Löschen</button>
+                    </div>
+                    <div class="dl-hero-message" id="deadlock-hero-message" style="display:none;"></div>
+                    <div class="form-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;margin-top:0.5rem;">
+                        <label>
+                            Hero-ID (Game)
+                            <input type="number" id="deadlock-hero-id" placeholder="z.B. 12">
+                        </label>
+                        <label>
+                            Name
+                            <input type="text" id="deadlock-hero-name" placeholder="z.B. Lady Geist">
+                        </label>
+                        <label>
+                            Original Build-ID (Quelle)
+                            <input type="number" id="deadlock-hero-build" placeholder="z.B. 123456">
+                            <small>Wird als Quelle gespiegelt; bleibt mit dem Original-Build synchron.</small>
+                        </label>
+                        <label>
+                            Status
+                            <div class="switch-row">
+                                <input type="checkbox" id="deadlock-hero-active" checked>
+                                <span>Aktiv</span>
+                            </div>
+                        </label>
+                    </div>
+                    <div class="dl-hero-form btn-row" style="margin-top:0.6rem;">
+                        <button id="deadlock-hero-save" style="background:#1c7ed6;color:#fff;">Speichern</button>
+                        <button id="deadlock-hero-reset">Zurücksetzen</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </div><!-- end tab: deadlock -->
+
+    <!-- ════════════════════════════════════════════════
          Tab: Cogs  –  Cog Management Tree
          ════════════════════════════════════════════════ -->
     <div class="tab-panel" data-tab="cogs">
@@ -1579,6 +1736,17 @@
     let voiceHourlyChart = null;
     const voiceHistoryUpdated = document.getElementById('voice-history-updated');
     const voiceHistoryRefreshButton = document.getElementById('voice-history-refresh');
+    const heroList = document.getElementById('deadlock-hero-list');
+    const heroRefreshBtn = document.getElementById('deadlock-hero-refresh');
+    const heroNewBtn = document.getElementById('deadlock-hero-new');
+    const heroMsg = document.getElementById('deadlock-hero-message');
+    const heroIdInput = document.getElementById('deadlock-hero-id');
+    const heroNameInput = document.getElementById('deadlock-hero-name');
+    const heroBuildInput = document.getElementById('deadlock-hero-build');
+    const heroActiveInput = document.getElementById('deadlock-hero-active');
+    const heroSaveBtn = document.getElementById('deadlock-hero-save');
+    const heroDeleteBtn = document.getElementById('deadlock-hero-delete');
+    const heroResetBtn = document.getElementById('deadlock-hero-reset');
     const voiceHistoryUser = document.getElementById('voice-history-user');
     const voiceUserApply = document.getElementById('voice-user-apply');
     const voiceUserSummary = document.getElementById('voice-user-summary');
@@ -1672,6 +1840,9 @@
     let selectedNode = null;
     let showHiddenCogs = false;
     let lastTreeData = null;
+    let deadlockHeroes = [];
+    let selectedHeroId = null;
+    let heroesLoading = false;
     if (authLogoutLink) {
         authLogoutLink.style.display = 'none';
     }
@@ -1708,6 +1879,159 @@
             throw new Error(text || response.statusText);
         }
         return response.json();
+    }
+
+    // ─── Deadlock Heroes (Admin) ─────────────────────────────
+    function setHeroMessage(text, type='success') {
+        if (!heroMsg) return;
+        if (!text) {
+            heroMsg.style.display = 'none';
+            heroMsg.textContent = '';
+            heroMsg.className = 'dl-hero-message';
+            return;
+        }
+        heroMsg.style.display = 'block';
+        heroMsg.textContent = text;
+        heroMsg.className = 'dl-hero-message ' + (type === 'error' ? 'error' : 'success');
+    }
+
+    function clearHeroForm() {
+        if (!heroIdInput || !heroNameInput || !heroBuildInput || !heroActiveInput) return;
+        selectedHeroId = null;
+        heroIdInput.value = '';
+        heroNameInput.value = '';
+        heroBuildInput.value = '';
+        heroActiveInput.checked = true;
+        setHeroMessage('', 'success');
+        if (heroDeleteBtn) heroDeleteBtn.disabled = true;
+    }
+
+    function fillHeroForm(hero) {
+        if (!hero) {
+            clearHeroForm();
+            return;
+        }
+        selectedHeroId = hero.hero_id || hero.heroId || hero.id || null;
+        heroIdInput.value = hero.hero_id ?? hero.heroId ?? '';
+        heroNameInput.value = hero.name || '';
+        heroBuildInput.value = hero.origin_build_id ?? hero.originBuildId ?? '';
+        heroActiveInput.checked = Boolean(hero.is_active ?? hero.isActive ?? true);
+        if (heroDeleteBtn) heroDeleteBtn.disabled = false;
+    }
+
+    function renderHeroList() {
+        if (!heroList) return;
+        heroList.innerHTML = '';
+        if (!deadlockHeroes || deadlockHeroes.length === 0) {
+            const empty = document.createElement('div');
+            empty.textContent = 'Keine Heroes eingetragen.';
+            empty.style.color = '#9aa0a6';
+            heroList.appendChild(empty);
+            return;
+        }
+        deadlockHeroes.forEach((hero) => {
+            const item = document.createElement('div');
+            item.className = 'dl-hero-item' + (selectedHeroId === hero.hero_id ? ' active' : '');
+            const meta = document.createElement('div');
+            meta.className = 'dl-hero-meta';
+            const name = document.createElement('div');
+            name.className = 'name';
+            name.textContent = hero.name || 'Unbenannt';
+            const sub = document.createElement('div');
+            sub.className = 'sub';
+            sub.textContent = `Hero-ID: ${hero.hero_id}`;
+            meta.appendChild(name);
+            meta.appendChild(sub);
+            item.appendChild(meta);
+            const pill = document.createElement('div');
+            pill.className = 'dl-hero-pill' + (hero.origin_build_id ? '' : ' muted');
+            pill.textContent = hero.origin_build_id ? `Build ${hero.origin_build_id}` : 'Kein Build';
+            item.appendChild(pill);
+            item.addEventListener('click', () => {
+                selectedHeroId = hero.hero_id;
+                fillHeroForm(hero);
+                renderHeroList();
+            });
+            heroList.appendChild(item);
+        });
+    }
+
+    async function loadDeadlockHeroes() {
+        if (!heroList) return;
+        try {
+            heroesLoading = true;
+            const res = await fetchJSON('/api/deadlock/heroes');
+            deadlockHeroes = res.heroes || [];
+            if (selectedHeroId) {
+                const match = deadlockHeroes.find(h => h.hero_id === selectedHeroId);
+                if (match) {
+                    fillHeroForm(match);
+                } else {
+                    clearHeroForm();
+                }
+            } else if (deadlockHeroes.length > 0) {
+                fillHeroForm(deadlockHeroes[0]);
+            } else {
+                clearHeroForm();
+            }
+            renderHeroList();
+        } catch (err) {
+            setHeroMessage(err.message || 'Laden fehlgeschlagen', 'error');
+        } finally {
+            heroesLoading = false;
+        }
+    }
+
+    async function saveDeadlockHero(ev) {
+        if (ev) ev.preventDefault();
+        if (!heroIdInput || !heroNameInput) return;
+        const heroId = parseInt(heroIdInput.value, 10);
+        const name = (heroNameInput.value || '').trim();
+        const originRaw = heroBuildInput ? heroBuildInput.value : '';
+        const originBuildId = originRaw === '' ? null : parseInt(originRaw, 10);
+        const isActive = heroActiveInput ? !!heroActiveInput.checked : true;
+
+        if (!Number.isFinite(heroId)) {
+            setHeroMessage('Hero-ID ist erforderlich.', 'error');
+            return;
+        }
+        if (!name) {
+            setHeroMessage('Name ist erforderlich.', 'error');
+            return;
+        }
+        try {
+            const payload = {
+                hero_id: heroId,
+                name,
+                origin_build_id: Number.isFinite(originBuildId) ? originBuildId : null,
+                is_active: isActive,
+            };
+            const res = await fetchJSON('/api/deadlock/heroes', {
+                method: 'POST',
+                body: JSON.stringify(payload),
+            });
+            selectedHeroId = res.hero?.hero_id || heroId;
+            setHeroMessage('Gespeichert.', 'success');
+            await loadDeadlockHeroes();
+        } catch (err) {
+            setHeroMessage(err.message || 'Speichern fehlgeschlagen', 'error');
+        }
+    }
+
+    async function deleteDeadlockHero(ev) {
+        if (ev) ev.preventDefault();
+        if (!selectedHeroId) {
+            setHeroMessage('Kein Hero ausgewählt.', 'error');
+            return;
+        }
+        try {
+            await fetchJSON(`/api/deadlock/heroes/${selectedHeroId}`, { method: 'DELETE' });
+            setHeroMessage('Hero gelöscht.', 'success');
+            selectedHeroId = null;
+            await loadDeadlockHeroes();
+        } catch (err) {
+            setHeroMessage(err.message || 'Löschen fehlgeschlagen', 'error');
+        }
     }
 
     function formatBytes(value) {
@@ -1910,6 +2234,29 @@
                 currentVoiceMode = btn.dataset.mode || 'hour';
                 loadVoiceHistory();
             });
+        });
+    }
+    if (heroRefreshBtn) {
+        heroRefreshBtn.addEventListener('click', () => loadDeadlockHeroes());
+    }
+    if (heroNewBtn) {
+        heroNewBtn.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            clearHeroForm();
+            renderHeroList();
+        });
+    }
+    if (heroSaveBtn) {
+        heroSaveBtn.addEventListener('click', saveDeadlockHero);
+    }
+    if (heroDeleteBtn) {
+        heroDeleteBtn.addEventListener('click', deleteDeadlockHero);
+    }
+    if (heroResetBtn) {
+        heroResetBtn.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            clearHeroForm();
+            renderHeroList();
         });
     }
     if (logsRefreshButton) {
@@ -4921,6 +5268,9 @@ async function fetchStandaloneLogs(key, limit = 200) {
                     if (typeof loadTwitchMetrics === 'function') loadTwitchMetrics();
                     if (typeof loadTournamentOverview === 'function') loadTournamentOverview();
                 }
+                if (target === 'deadlock') {
+                    if (typeof loadDeadlockHeroes === 'function') loadDeadlockHeroes();
+                }
                 if (target === 'logs') {
                     ensureLogsLoaded();
                 }
@@ -4942,6 +5292,7 @@ async function fetchStandaloneLogs(key, limit = 200) {
     setInterval(loadTwitchMetrics, 60000);
     loadTournamentOverview();
     setInterval(loadTournamentOverview, 60000);
+    loadDeadlockHeroes();
 
     // Server Stats Initial Load
     loadServerStats();

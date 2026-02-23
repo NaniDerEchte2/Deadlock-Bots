@@ -330,6 +330,9 @@ class DashboardServer:
                     web.get("/api/co-player-network", self._handle_co_player_network),
                     web.get("/api/co-player-network/", self._handle_co_player_network),
                     web.get("/api/server-stats", self._handle_server_stats),
+                    web.get("/api/deadlock/heroes", self._handle_deadlock_heroes),
+                    web.post("/api/deadlock/heroes", self._handle_deadlock_upsert_hero),
+                    web.delete("/api/deadlock/heroes/{hero_id}", self._handle_deadlock_delete_hero),
                     web.get("/api/tournament/overview", self._handle_tournament_overview),
                     web.post("/api/tournament/team", self._handle_tournament_team_create),
                     web.post("/api/tournament/assign", self._handle_tournament_assign),
@@ -3778,6 +3781,124 @@ class DashboardServer:
         except Exception as exc:
             logging.exception("Failed to load server stats: %s", exc)
             raise web.HTTPInternalServerError(text="Server stats unavailable") from exc
+
+    @staticmethod
+    def _map_deadlock_hero_row(row: Any) -> dict[str, Any]:
+        """Normalize hero row to JSON-friendly dict."""
+        def _get(key: str, idx: int | None = None) -> Any:
+            try:
+                return row[key]  # type: ignore[index]
+            except Exception:
+                if idx is None:
+                    return None
+                try:
+                    return row[idx]  # type: ignore[index]
+                except Exception:
+                    return None
+
+        return {
+            "id": int(_get("id", 0) or 0),
+            "hero_id": int(_get("hero_id", 1) or 0),
+            "name": str(_get("name", 2) or ""),
+            "origin_build_id": _get("origin_build_id", 3),
+            "is_active": bool(int(_get("is_active", 4) or 0)),
+            "created_at": _get("created_at", 5),
+            "updated_at": _get("updated_at", 6),
+        }
+
+    async def _handle_deadlock_heroes(self, request: web.Request) -> web.Response:
+        """List all Deadlock heroes with mapped origin build IDs."""
+        self._check_auth(request, required=True)
+        try:
+            rows = db.query_all(
+                """
+                SELECT id, hero_id, name, origin_build_id, is_active, created_at, updated_at
+                  FROM deadlock_heroes
+                 ORDER BY hero_id
+                """
+            )
+            heroes = [self._map_deadlock_hero_row(row) for row in rows]
+            return self._json({"heroes": heroes})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Failed to load deadlock heroes: %s", exc)
+            raise web.HTTPInternalServerError(text="Deadlock heroes unavailable") from exc
+
+    async def _handle_deadlock_upsert_hero(self, request: web.Request) -> web.Response:
+        """Create or update a Deadlock hero entry (identified by hero_id)."""
+        self._check_auth(request, required=True)
+        try:
+            payload = await request.json()
+        except Exception:
+            raise web.HTTPBadRequest(text="Invalid JSON body")
+
+        try:
+            hero_id_raw = payload.get("hero_id", payload.get("heroId"))
+            hero_id = int(hero_id_raw)
+        except Exception:
+            raise web.HTTPBadRequest(text="hero_id must be an integer")
+
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise web.HTTPBadRequest(text="name is required")
+
+        origin_raw = payload.get("origin_build_id", payload.get("originBuildId"))
+        origin_build_id: int | None
+        if origin_raw in (None, "", False):
+            origin_build_id = None
+        else:
+            try:
+                origin_build_id = int(origin_raw)
+            except Exception:
+                raise web.HTTPBadRequest(text="origin_build_id must be integer or null")
+
+        is_active = bool(payload.get("is_active", payload.get("isActive", True)))
+        ts = int(time.time())
+
+        try:
+            db.execute(
+                """
+                INSERT INTO deadlock_heroes (hero_id, name, origin_build_id, is_active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(hero_id) DO UPDATE SET
+                    name = excluded.name,
+                    origin_build_id = excluded.origin_build_id,
+                    is_active = excluded.is_active,
+                    updated_at = excluded.updated_at
+                """,
+                (hero_id, name, origin_build_id, 1 if is_active else 0, ts, ts),
+            )
+            row = db.query_one(
+                """
+                SELECT id, hero_id, name, origin_build_id, is_active, created_at, updated_at
+                  FROM deadlock_heroes
+                 WHERE hero_id = ?
+                """,
+                (hero_id,),
+            )
+            return self._json({"hero": self._map_deadlock_hero_row(row) if row else None})
+        except sqlite3.IntegrityError as exc:  # noqa: BLE001
+            logger.warning("Deadlock hero upsert conflict: %s", exc)
+            raise web.HTTPConflict(text="Hero with same ID or name already exists") from exc
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Failed to upsert deadlock hero: %s", exc)
+            raise web.HTTPInternalServerError(text="Saving hero failed") from exc
+
+    async def _handle_deadlock_delete_hero(self, request: web.Request) -> web.Response:
+        """Delete a hero by hero_id."""
+        self._check_auth(request, required=True)
+        try:
+            hero_id = int(request.match_info.get("hero_id", "0"))
+        except ValueError:
+            raise web.HTTPBadRequest(text="hero_id must be integer")
+
+        try:
+            conn = db.connect_proxy()
+            cur = conn.execute("DELETE FROM deadlock_heroes WHERE hero_id = ?", (hero_id,))
+            deleted = int(cur.rowcount or 0)
+            return self._json({"deleted": bool(deleted)})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Failed to delete deadlock hero: %s", exc)
+            raise web.HTTPInternalServerError(text="Delete hero failed") from exc
 
     def _resolve_tournament_guild_id(self, raw_value: Any) -> int:
         parsed = self._coerce_int(raw_value, None)
