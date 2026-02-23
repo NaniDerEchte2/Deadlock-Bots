@@ -12,6 +12,8 @@ node_modules/
 
 tempvoice_interface.json
 *.json
+!cogs/twitch/dashboard_v2/package.json
+!cogs/twitch/dashboard_v2/package-lock.json
 install_windows_service.py
 *.db
 *__pycache__
@@ -59,3 +61,7 @@ Gemini.ps1
 /service/pg_twitch/
 /.github/tmp
 /erinnerungen
+
+# allow tracking of dashboard_v2 manifests despite global *.json ignore
+!cogs/twitch/dashboard_v2/package.json
+!cogs/twitch/dashboard_v2/package-lock.json
