@@ -31,8 +31,6 @@ class StandaloneMixin:
         try:
             repo_root = self.root_dir
             standalone_dir = repo_root / "standalone"
-            rank_script = standalone_dir / "rank_bot.py"
-            patchnotes_script = standalone_dir / "patchnotes_bot.py"
             custom_env: dict[str, str] = {}
             pythonpath_entries: list[str] = []
             existing_pythonpath = os.environ.get("PYTHONPATH")
@@ -44,42 +42,12 @@ class StandaloneMixin:
 
             self.standalone_manager = StandaloneBotManager()
             manager = self.standalone_manager
-            manager.register(
-                StandaloneBotConfig(
-                    key="rank",
-                    name="Rank Bot",
-                    script=rank_script,
-                    workdir=repo_root,
-                    description="Standalone Deadlock Rank Bot (eigener Discord-Token).",
-                    autostart=True,
-                    env=custom_env,
-                    tags=["discord", "ranks", "dm"],
-                    command_namespace="rank",
-                    max_log_lines=400,
-                    metrics_provider=self._collect_rank_bot_metrics,
-                )
-            )
-            logging.info("Standalone manager initialisiert (Rank Bot registriert)")
-
-            if patchnotes_script.exists():
-                manager.register(
-                    StandaloneBotConfig(
-                        key="patchnotes",
-                        name="Patchnotes Bot",
-                        script=patchnotes_script,
-                        workdir=repo_root,
-                        description="Standalone Patchnotes Broadcast Bot (eigener Discord-Token).",
-                        autostart=True,
-                        env=custom_env,
-                        tags=["discord", "patchnotes"],
-                        command_namespace="patchnotes",
-                        max_log_lines=300,
-                    )
-                )
-                logging.info("Standalone manager: Patchnotes Bot registriert")
-            else:
-                logging.warning("Patchnotes Script %s nicht gefunden – Registrierung übersprungen", patchnotes_script)
-
+            enable_rank_bot = os.getenv("ENABLE_STANDALONE_RANK_BOT", "").lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
             steam_dir = repo_root / "cogs" / "steam" / "steam_presence"
             steam_script = steam_dir / "index.js"
             if steam_script.exists():
