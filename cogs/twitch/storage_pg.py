@@ -1,16 +1,17 @@
 """PostgreSQL/TimescaleDB storage layer for Twitch analytics (Windows Tresor friendly).
 
- - DSN lookup order: env TWITCH_ANALYTICS_DSN, then Windows Credential Manager (service: DeadlockBot, key: TWITCH_ANALYTICS_DSN).
- - Provides a sqlite-like interface: get_conn() yields a psycopg connection; execute() etc. available via conn.
- - Supports sqlite-style '?' placeholders by translating to '%s'.
- - Adds minimal compatibility functions (strftime, printf) inside the target DB so existing analytics SQL keeps running.
+- DSN lookup order: env TWITCH_ANALYTICS_DSN, then Windows Credential Manager (service: DeadlockBot, key: TWITCH_ANALYTICS_DSN).
+- Provides a sqlite-like interface: get_conn() yields a psycopg connection; execute() etc. available via conn.
+- Supports sqlite-style '?' placeholders by translating to '%s'.
+- Adds minimal compatibility functions (strftime, printf) inside the target DB so existing analytics SQL keeps running.
 """
+
 from __future__ import annotations
 
 import contextlib
 import logging
 import os
-from typing import Iterable, Sequence
+from collections.abc import Iterable, Sequence
 
 import psycopg
 
@@ -29,7 +30,7 @@ class RowCompat:
 
     def __init__(self, names: Sequence[str], values: Sequence[object]):
         self._values = tuple(values)
-        self._map = {name: val for name, val in zip(names, values)}
+        self._map = {name: val for name, val in zip(names, values, strict=False)}
 
     def __getitem__(self, key):
         if isinstance(key, int):
@@ -82,9 +83,7 @@ def _load_dsn() -> str:
             return val
     except Exception as exc:  # pragma: no cover - best-effort Tresor lookup
         log.debug("Keyring lookup failed: %s", exc)
-    raise RuntimeError(
-        f"{ENV_DSN} not set (env or Windows Credential Manager '{KEYRING_SERVICE}')"
-    )
+    raise RuntimeError(f"{ENV_DSN} not set (env or Windows Credential Manager '{KEYRING_SERVICE}')")
 
 
 def _placeholder_sql(sql: str) -> str:
@@ -107,9 +106,7 @@ class _CompatCursor:
         return self._cursor.execute(_placeholder_sql(sql), params or (), *args, **kwargs)
 
     def executemany(self, sql: str, params_seq, *args, **kwargs):
-        return self._cursor.executemany(
-            _placeholder_sql(sql), params_seq, *args, **kwargs
-        )
+        return self._cursor.executemany(_placeholder_sql(sql), params_seq, *args, **kwargs)
 
     # Passthrough for fetch* and iteration
     def __getattr__(self, item):

@@ -439,7 +439,9 @@ class AIOnboarding(commands.Cog):
         log.info("AI Onboarding geladen (persistente Start-Buttons aktiv).")
 
     # ---------- Persistence ----------
-    async def _persist_view(self, message_id: int, user_id: int | None, thread_id: int | None) -> None:
+    async def _persist_view(
+        self, message_id: int, user_id: int | None, thread_id: int | None
+    ) -> None:
         payload = {"user_id": user_id, "thread_id": thread_id}
         try:
             encoded = json.dumps(payload)
@@ -485,7 +487,10 @@ class AIOnboarding(commands.Cog):
                 data_raw = row["v"] if isinstance(row, dict) else row[1]
                 data = json.loads(data_raw)
             except Exception:
-                await service_db.execute_async("DELETE FROM kv_store WHERE ns = ? AND k = ?", (NS_PERSIST_VIEWS, str(row[0]) if row else "0"))
+                await service_db.execute_async(
+                    "DELETE FROM kv_store WHERE ns = ? AND k = ?",
+                    (NS_PERSIST_VIEWS, str(row[0]) if row else "0"),
+                )
                 continue
 
             view = StartOnboardingView(
@@ -502,7 +507,9 @@ class AIOnboarding(commands.Cog):
                     "Persistente AI-Onboarding-View konnte nicht registriert werden (message_id=%s)",
                     msg_id,
                 )
-                await service_db.execute_async("DELETE FROM kv_store WHERE ns = ? AND k = ?", (NS_PERSIST_VIEWS, str(msg_id)))
+                await service_db.execute_async(
+                    "DELETE FROM kv_store WHERE ns = ? AND k = ?", (NS_PERSIST_VIEWS, str(msg_id))
+                )
         if restored:
             log.info("%s AI-Onboarding-Views nach Neustart reaktiviert", restored)
 

@@ -635,7 +635,7 @@ class DeadlockFriendRank(commands.Cog):
             if has_main_roles:
                 targets.append(guild)
                 continue
-            
+
             # Also check for subrank roles (e.g. "Initiate 1")
             if self._collect_subrank_role_ids(guild):
                 targets.append(guild)
@@ -670,7 +670,7 @@ class DeadlockFriendRank(commands.Cog):
         for snapshot in target_snapshots:
             rv = snapshot.rank_value if snapshot.rank_value is not None else 0
             sr = snapshot.subrank if snapshot.subrank is not None else 0
-            score = rv * 10 + sr # Weighted for clear precedence
+            score = rv * 10 + sr  # Weighted for clear precedence
             if score > best_score:
                 best_score = score
                 best_snapshot = snapshot
@@ -683,13 +683,13 @@ class DeadlockFriendRank(commands.Cog):
 
         # 1. Determine target subrank role (Priority: DB-ID, Fallback: Name)
         target_role: discord.Role | None = None
-        
+
         # Try ID from DB first
         if target_rank_num is not None and target_subrank_num is not None:
             mapped_role_id = subrank_role_map.get((target_rank_num, target_subrank_num))
             if mapped_role_id:
                 target_role = guild.get_role(mapped_role_id)
-        
+
         # Fallback to Name Search
         if target_role is None and target_rank_num is not None and target_subrank_num is not None:
             candidate_names = self._expected_subrank_role_names(target_rank_num, target_subrank_num)
@@ -707,13 +707,14 @@ class DeadlockFriendRank(commands.Cog):
         # 2. Identify roles to remove (all other rank/subrank roles)
         mapped_subrank_role_ids = {role_id for role_id in subrank_role_map.values() if role_id > 0}
         all_subrank_ids = mapped_subrank_role_ids | self._collect_subrank_role_ids(guild)
-        
+
         # Combined set of all roles we manage (old main roles + all possible subranks)
         managed_role_ids = RANK_ROLE_ID_SET | all_subrank_ids
-        
+
         roles_to_remove = [
-            role for role in member.roles
-            if role.id in managed_role_ids 
+            role
+            for role in member.roles
+            if role.id in managed_role_ids
             and (not target_role or role.id != target_role.id)
             and role.position < me.top_role.position
         ]
@@ -723,7 +724,7 @@ class DeadlockFriendRank(commands.Cog):
             if roles_to_remove:
                 await member.remove_roles(*roles_to_remove, reason="Deadlock rank auto-sync")
                 stats.roles_removed += len(roles_to_remove)
-            
+
             if target_role and target_role not in member.roles:
                 await member.add_roles(target_role, reason="Deadlock rank auto-sync")
                 stats.roles_added += 1

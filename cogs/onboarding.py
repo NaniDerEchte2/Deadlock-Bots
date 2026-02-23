@@ -263,7 +263,7 @@ class NextStepView(discord.ui.View):
 
             if not already_verified:
                 await self.cog._register_pending_verify(self.user_id, interaction.channel.id)
-            
+
             embed = _build_embed(next_index, interaction.user)
             await interaction.response.send_message(embed=embed, view=view)
             self.stop()
@@ -519,10 +519,15 @@ class StaticOnboarding(commands.Cog):
     async def cog_load(self):
         await self._db_ensure_schema()
         await self._db_load_pending()
-        log.info("StaticOnboarding geladen (%d Schritte, %d wartende Verifizierungen).", len(STEPS), len(self._pending_verify))
+        log.info(
+            "StaticOnboarding geladen (%d Schritte, %d wartende Verifizierungen).",
+            len(STEPS),
+            len(self._pending_verify),
+        )
 
     async def _db_ensure_schema(self):
         from service import db
+
         await db.execute_async("""
             CREATE TABLE IF NOT EXISTS onboarding_pending_verify (
                 user_id INTEGER PRIMARY KEY,
@@ -533,6 +538,7 @@ class StaticOnboarding(commands.Cog):
 
     async def _db_load_pending(self):
         from service import db
+
         rows = await db.query_all_async("SELECT user_id, channel_id FROM onboarding_pending_verify")
         self._pending_verify = {r["user_id"]: r["channel_id"] for r in rows}
 
@@ -551,7 +557,9 @@ class StaticOnboarding(commands.Cog):
 
         channel_id = self._pending_verify.pop(user_id, None)
         if channel_id:
-            await db.execute_async("DELETE FROM onboarding_pending_verify WHERE user_id=?", (user_id,))
+            await db.execute_async(
+                "DELETE FROM onboarding_pending_verify WHERE user_id=?", (user_id,)
+            )
         return channel_id
 
     @commands.Cog.listener()
