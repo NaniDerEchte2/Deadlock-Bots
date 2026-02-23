@@ -10,10 +10,9 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
-from typing import Iterable
+from typing import Iterable, Sequence
 
 import psycopg
-from psycopg.rows import dict_row
 
 log = logging.getLogger("TwitchStreams.StoragePG")
 
@@ -21,6 +20,52 @@ KEYRING_SERVICE = "DeadlockBot"
 ENV_DSN = "TWITCH_ANALYTICS_DSN"
 
 _COMPAT_INSTALLED = False
+
+
+class RowCompat:
+    """Row that supports both numeric and name-based access."""
+
+    __slots__ = ("_values", "_map")
+
+    def __init__(self, names: Sequence[str], values: Sequence[object]):
+        self._values = tuple(values)
+        self._map = {name: val for name, val in zip(names, values)}
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._values[key]
+        return self._map[key]
+
+    def get(self, key, default=None):
+        return self._map.get(key, default)
+
+    def keys(self):
+        return self._map.keys()
+
+    def values(self):
+        return self._map.values()
+
+    def items(self):
+        return self._map.items()
+
+    def __iter__(self):
+        return iter(self._values)
+
+    def __len__(self):
+        return len(self._values)
+
+    def __repr__(self) -> str:  # pragma: no cover - debug helper
+        return f"RowCompat({self._map})"
+
+
+def _compat_row_factory(cursor: psycopg.Cursor) -> psycopg.rows.RowMaker[RowCompat]:
+    """Row factory returning RowCompat with both index and name access."""
+    names = [col.name for col in cursor.description] if cursor.description else []
+
+    def _maker(values: Sequence[object]) -> RowCompat:
+        return RowCompat(names, values)
+
+    return _maker
 
 
 def _load_dsn() -> str:
@@ -156,7 +201,7 @@ def _ensure_compat_functions(conn: psycopg.Connection) -> None:
 def get_conn():
     """Context manager returning a psycopg connection with dict rows and autocommit."""
     dsn = _load_dsn()
-    conn = psycopg.connect(dsn, row_factory=dict_row, autocommit=True)
+    conn = psycopg.connect(dsn, row_factory=_compat_row_factory, autocommit=True)
     try:
         _ensure_compat_functions(conn)
         yield _CompatConnection(conn)

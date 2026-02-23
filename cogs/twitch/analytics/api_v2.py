@@ -594,7 +594,7 @@ class AnalyticsV2Mixin:
                 FROM twitch_stream_sessions s
                 WHERE s.started_at >= ?
                   AND s.ended_at IS NOT NULL
-                  AND (? IS NULL OR LOWER(s.streamer_login) = ?)
+                  AND (COALESCE(?, '') = '' OR LOWER(s.streamer_login) = ?)
                 """,
                 [since_date, streamer_login, streamer_login],
             ).fetchone()[0]
@@ -618,13 +618,13 @@ class AnalyticsV2Mixin:
                          THEN s.follower_delta ELSE 0 END) as followers,
                     AVG(CASE
                         WHEN s.avg_viewers >= 3 AND s.peak_viewers > 0
-                        THEN MIN(s.retention_10m, s.avg_viewers * 1.0 / s.peak_viewers, 1.0)
+                        THEN LEAST(1.0, s.retention_10m, s.avg_viewers * 1.0 / NULLIF(s.peak_viewers, 0))
                         ELSE NULL
                     END) as retention
                 FROM twitch_stream_sessions s
                 WHERE s.started_at >= ? AND s.started_at < ?
                   AND s.ended_at IS NOT NULL
-                  AND (? IS NULL OR LOWER(s.streamer_login) = ?)
+                  AND (COALESCE(?, '') = '' OR LOWER(s.streamer_login) = ?)
                 """,
                 [prev_since_date, since_date, streamer_login, streamer_login],
             ).fetchone()
@@ -714,7 +714,10 @@ class AnalyticsV2Mixin:
         rows = conn.execute(
             """
             SELECT
-                s.id, DATE(s.started_at), TIME(s.started_at), s.duration_seconds,
+                s.id,
+                CAST(s.started_at AS DATE) AS start_date,
+                CAST(s.started_at AS TIME) AS start_time,
+                s.duration_seconds,
                 s.start_viewers, s.peak_viewers, s.end_viewers, s.avg_viewers,
                 COALESCE(s.retention_5m, 0), COALESCE(s.retention_10m, 0), COALESCE(s.retention_20m, 0),
                 COALESCE(s.dropoff_pct, 0), COALESCE(s.unique_chatters, 0),
@@ -724,7 +727,7 @@ class AnalyticsV2Mixin:
             FROM twitch_stream_sessions s
             WHERE s.started_at >= ?
               AND s.ended_at IS NOT NULL
-              AND (? IS NULL OR LOWER(s.streamer_login) = ?)
+              AND (COALESCE(?, '') = '' OR LOWER(s.streamer_login) = ?)
             ORDER BY s.started_at DESC
             LIMIT ?
         """,
@@ -733,6 +736,10 @@ class AnalyticsV2Mixin:
 
         sessions: list[dict[str, Any]] = []
         for r in rows:
+            date_val = r[1]
+            time_val = r[2]
+            date_str = date_val.isoformat() if hasattr(date_val, "isoformat") else (date_val or "")
+            time_str = time_val.isoformat() if hasattr(time_val, "isoformat") else (time_val or "")
             peak_viewers = int(r[5]) if r[5] else 0
             avg_viewers = float(r[7]) if r[7] else 0.0
             retention_cap = (
@@ -749,8 +756,8 @@ class AnalyticsV2Mixin:
             sessions.append(
                 {
                     "id": r[0],
-                    "date": r[1] or "",
-                    "startTime": r[2] or "",
+                    "date": date_str,
+                    "startTime": time_str,
                     "duration": r[3] or 0,
                     "startViewers": r[4] or 0,
                     "peakViewers": peak_viewers,
@@ -789,30 +796,30 @@ class AnalyticsV2Mixin:
                      THEN s.follower_delta ELSE 0 END) as total_followers,
                 AVG(CASE
                     WHEN s.avg_viewers >= 3 AND s.peak_viewers > 0
-                    THEN MIN(s.retention_5m, s.avg_viewers * 1.0 / s.peak_viewers, 1.0)
+                    THEN LEAST(1.0, s.retention_5m, s.avg_viewers * 1.0 / NULLIF(s.peak_viewers, 0))
                     ELSE NULL
                 END) as avg_retention_5m,
                 AVG(CASE
                     WHEN s.avg_viewers >= 3 AND s.peak_viewers > 0
-                    THEN MIN(s.retention_10m, s.avg_viewers * 1.0 / s.peak_viewers, 1.0)
+                    THEN LEAST(1.0, s.retention_10m, s.avg_viewers * 1.0 / NULLIF(s.peak_viewers, 0))
                     ELSE NULL
                 END) as avg_retention_10m,
                 AVG(CASE
                     WHEN s.avg_viewers >= 3 AND s.peak_viewers > 0
-                    THEN MIN(s.retention_20m, s.avg_viewers * 1.0 / s.peak_viewers, 1.0)
+                    THEN LEAST(1.0, s.retention_20m, s.avg_viewers * 1.0 / NULLIF(s.peak_viewers, 0))
                     ELSE NULL
                 END) as avg_retention_20m,
                 AVG(s.dropoff_pct) as avg_dropoff,
                 SUM(s.unique_chatters) as total_unique_chatters,
                 AVG(CASE
                     WHEN s.avg_viewers >= 3 AND s.peak_viewers > 0
-                    THEN MIN(s.unique_chatters * 100.0 / s.peak_viewers, 100.0)
+                    THEN LEAST(100.0, s.unique_chatters * 100.0 / NULLIF(s.peak_viewers, 0))
                     ELSE NULL
                 END) as chat_per_100
             FROM twitch_stream_sessions s
             WHERE s.started_at >= ?
               AND s.ended_at IS NOT NULL
-              AND (? IS NULL OR LOWER(s.streamer_login) = ?)
+              AND (COALESCE(?, '') = '' OR LOWER(s.streamer_login) = ?)
         """,
             [since_date, streamer_login, streamer_login],
         ).fetchone()
@@ -829,7 +836,7 @@ class AnalyticsV2Mixin:
             FROM twitch_stream_sessions s
             WHERE s.started_at >= ?
               AND s.ended_at IS NOT NULL
-              AND (? IS NULL OR LOWER(s.streamer_login) = ?)
+              AND (COALESCE(?, '') = '' OR LOWER(s.streamer_login) = ?)
         """,
             [since_date, streamer_login, streamer_login],
         ).fetchone()
@@ -867,7 +874,7 @@ class AnalyticsV2Mixin:
             FROM twitch_stream_sessions s
             WHERE s.started_at >= ?
               AND s.ended_at IS NOT NULL
-              AND (? IS NULL OR LOWER(s.streamer_login) = ?)
+              AND (COALESCE(?, '') = '' OR LOWER(s.streamer_login) = ?)
         """,
             [since_date, streamer_login, streamer_login],
         ).fetchone()
@@ -883,7 +890,7 @@ class AnalyticsV2Mixin:
             JOIN twitch_stream_sessions s ON s.id = sc.session_id
             WHERE s.started_at >= ?
               AND s.ended_at IS NOT NULL
-              AND (? IS NULL OR LOWER(s.streamer_login) = ?)
+              AND (COALESCE(?, '') = '' OR LOWER(s.streamer_login) = ?)
               AND sc.messages > 0
             """,
             [since_date, streamer_login, streamer_login],
@@ -1222,7 +1229,7 @@ class AnalyticsV2Mixin:
                     FROM twitch_stream_sessions s
                     WHERE s.started_at >= ?
                       AND s.ended_at IS NOT NULL
-                      AND (? IS NULL OR LOWER(s.streamer_login) = ?)
+                      AND (COALESCE(?, '') = '' OR LOWER(s.streamer_login) = ?)
                     GROUP BY weekday, hour
                 """,
                     [since_date, streamer_login, streamer_login],
@@ -1264,7 +1271,7 @@ class AnalyticsV2Mixin:
                     FROM twitch_stream_sessions s
                     WHERE s.started_at >= ?
                       AND s.ended_at IS NOT NULL
-                      AND (? IS NULL OR LOWER(s.streamer_login) = ?)
+                      AND (COALESCE(?, '') = '' OR LOWER(s.streamer_login) = ?)
                     GROUP BY DATE(s.started_at)
                 """,
                     [since_date, streamer_login, streamer_login],
@@ -1272,7 +1279,7 @@ class AnalyticsV2Mixin:
 
                 data = [
                     {
-                        "date": r[0],
+                        "date": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
                         "streamCount": r[1],
                         "hoursWatched": float(r[2]) if r[2] else 0,
                         "value": float(r[2]) if r[2] else 0,
@@ -1313,7 +1320,7 @@ class AnalyticsV2Mixin:
                     FROM twitch_stream_sessions s
                     WHERE s.started_at >= ?
                       AND s.ended_at IS NOT NULL
-                      AND (? IS NULL OR LOWER(s.streamer_login) = ?)
+                      AND (COALESCE(?, '') = '' OR LOWER(s.streamer_login) = ?)
                     GROUP BY year, month
                     ORDER BY year DESC, month DESC
                 """,
@@ -1381,7 +1388,7 @@ class AnalyticsV2Mixin:
                     FROM twitch_stream_sessions s
                     WHERE s.started_at >= ?
                       AND s.ended_at IS NOT NULL
-                      AND (? IS NULL OR LOWER(s.streamer_login) = ?)
+                      AND (COALESCE(?, '') = '' OR LOWER(s.streamer_login) = ?)
                     GROUP BY weekday
                     ORDER BY weekday
                 """,
@@ -1975,26 +1982,43 @@ class AnalyticsV2Mixin:
 
         try:
             with storage.get_conn() as conn:
-                # Partners (verified)
-                partners = conn.execute("""
-                    SELECT twitch_login
-                    FROM twitch_streamers_partner_state
-                    WHERE is_partner_active = 1
-                    ORDER BY twitch_login
-                """).fetchall()
+                # Detect optional partner table
+                has_partner_table = True
+                try:
+                    conn.execute("SELECT 1 FROM twitch_streamers_partner_state LIMIT 1")
+                except Exception:
+                    has_partner_table = False
+
+                # Partners (verified) – only if table exists
+                partners = []
+                if has_partner_table:
+                    partners = conn.execute("""
+                        SELECT twitch_login
+                        FROM twitch_streamers_partner_state
+                        WHERE is_partner_active = 1
+                        ORDER BY twitch_login
+                    """).fetchall()
 
                 # Others with recent activity
-                others = conn.execute("""
-                    SELECT DISTINCT s.streamer_login
-                    FROM twitch_stream_sessions s
-                    WHERE s.started_at >= datetime('now', '-30 days')
-                      AND LOWER(s.streamer_login) NOT IN (
-                          SELECT LOWER(twitch_login)
-                            FROM twitch_streamers_partner_state
-                           WHERE is_partner_active = 1
-                      )
-                    ORDER BY s.streamer_login
-                """).fetchall()
+                if has_partner_table:
+                    others = conn.execute("""
+                        SELECT DISTINCT s.streamer_login
+                        FROM twitch_stream_sessions s
+                        WHERE s.started_at >= (NOW() - INTERVAL '30 days')
+                          AND LOWER(s.streamer_login) NOT IN (
+                              SELECT LOWER(twitch_login)
+                                FROM twitch_streamers_partner_state
+                               WHERE is_partner_active = 1
+                          )
+                        ORDER BY s.streamer_login
+                    """).fetchall()
+                else:
+                    others = conn.execute("""
+                        SELECT DISTINCT s.streamer_login
+                        FROM twitch_stream_sessions s
+                        WHERE s.started_at >= (NOW() - INTERVAL '30 days')
+                        ORDER BY s.streamer_login
+                    """).fetchall()
 
                 data = [{"login": r[0], "isPartner": True} for r in partners] + [
                     {"login": r[0], "isPartner": False} for r in others
@@ -2437,7 +2461,7 @@ class AnalyticsV2Mixin:
                     JOIN twitch_stream_sessions ss
                         ON ss.streamer_login = fe.streamer_login
                        AND fe.followed_at BETWEEN ss.started_at
-                           AND COALESCE(ss.ended_at, datetime('now'))
+                           AND COALESCE(ss.ended_at, NOW())
                     WHERE LOWER(ss.streamer_login) = ?
                       AND ss.started_at >= ?
                       AND ss.ended_at IS NOT NULL
@@ -2576,7 +2600,7 @@ class AnalyticsV2Mixin:
                     WHERE s.started_at >= ?
                       AND s.ended_at IS NOT NULL
                       AND s.tags IS NOT NULL
-                      AND (? IS NULL OR LOWER(s.streamer_login) = ?)
+                      AND (COALESCE(?, '') = '' OR LOWER(s.streamer_login) = ?)
                     GROUP BY s.tags
                     ORDER BY avg_viewers DESC
                     LIMIT ?
