@@ -9,7 +9,7 @@ legacy_access_token Felder für Analytics-EventSubs verwendet, bis sie re-authen
 
 from __future__ import annotations
 
-from .. import storage
+from .. import storage_pg as storage
 from ..constants import log
 
 

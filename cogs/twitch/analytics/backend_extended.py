@@ -9,7 +9,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from .. import storage
+from .. import storage_pg as storage
 
 log = logging.getLogger("TwitchStreams.AnalyticsBackendExtended")
 
