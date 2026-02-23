@@ -14,7 +14,6 @@ import logging
 import discord
 from discord import app_commands
 from discord.ext import commands
-
 from service.config import settings
 
 log = logging.getLogger(__name__)
@@ -87,6 +86,63 @@ class SteamLinkPanelView(discord.ui.View):
             )
         )
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @discord.ui.button(
+        label="Rank check 📊",
+        style=discord.ButtonStyle.secondary,
+        custom_id="steam_link_panel:rankcheck",
+    )
+    async def rank_check(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        try:
+            rank_cog = interaction.client.get_cog("DeadlockFriendRank")
+            if rank_cog is None or not hasattr(rank_cog, "linked_steam_ids_for_user"):
+                await interaction.followup.send(
+                    "Rank-Modul nicht geladen. Bitte Admin informieren.", ephemeral=True
+                )
+                return
+
+            steam_ids = rank_cog.linked_steam_ids_for_user(int(interaction.user.id))
+            if not steam_ids:
+                await interaction.followup.send(
+                    "Kein verknüpfter Steam-Account gefunden. Bitte zuerst verknüpfen.",
+                    ephemeral=True,
+                )
+                return
+
+            sid = str(steam_ids[0]).strip()
+            if not sid:
+                await interaction.followup.send("Kein valider Steam-Link gefunden.", ephemeral=True)
+                return
+
+            card, data, outcome = await rank_cog._fetch_profile_card({"steam_id": sid}, timeout=45.0)
+            if outcome.timed_out or not outcome.ok or not isinstance(card, dict):
+                await interaction.followup.send(
+                    f"Rank-Abfrage fehlgeschlagen ({outcome.error or 'no data'}).",
+                    ephemeral=True,
+                )
+                return
+
+            snap = rank_cog._snapshot_from_profile_card(sid, card, data)
+            if not snap:
+                await interaction.followup.send(
+                    "Keine Rank-Daten in der PlayerCard gefunden.", ephemeral=True
+                )
+                return
+
+            text = (
+                f"**Rank für {sid}**\n"
+                f"Tier: {snap.rank_name} (#{snap.rank_value})\n"
+                f"Subrank: {snap.subrank or '–'}\n"
+                f"Badge: {snap.badge_level or '–'}"
+            )
+            await interaction.followup.send(text, ephemeral=True)
+        except Exception:
+            log.exception("Rank check button failed (user_id=%s)", interaction.user.id)
+            await interaction.followup.send(
+                "Unerwarteter Fehler bei der Rank-Abfrage.", ephemeral=True
+            )
 
 
 # ---------------------------------------------------------------------------

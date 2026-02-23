@@ -81,6 +81,9 @@ class Settings(BaseSettings):
     link_cover_label: str = Field("link.earlysalty.com", alias="LINK_COVER_LABEL")
     link_button_label: str = Field("Via Discord verknüpfen", alias="LINK_BUTTON_LABEL")
     steam_button_label: str = Field("Direkt bei Steam anmelden", alias="STEAM_BUTTON_LABEL")
+    discord_oauth_client_id: str | None = Field(None, alias="DISCORD_OAUTH_CLIENT_ID")
+    discord_oauth_client_secret: str | None = Field(None, alias="DISCORD_OAUTH_CLIENT_SECRET")
+    discord_oauth_redirect: str | None = Field(None, alias="DISCORD_OAUTH_REDIRECT")
 
     # --- TempVoice IDs ---
     # TODO: Move hardcoded sets from cogs/tempvoice/core.py here eventually

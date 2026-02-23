@@ -520,9 +520,6 @@ class MainView(discord.ui.View):
         if include_presets:
             self.add_item(SavePresetButton(core))
             self.add_item(LoadPresetButton(core))
-        # Row 4: Presets (nur Ranked)
-        self.add_item(SavePresetButton(core))
-        self.add_item(LoadPresetButton(core))
 
     @staticmethod
     def lane_of(itx: discord.Interaction) -> discord.VoiceChannel | None:

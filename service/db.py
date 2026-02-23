@@ -524,6 +524,27 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
               PRIMARY KEY(user_id, steam_id)
             );
 
+            -- Archiv-Tabelle für entfernte Steam-Links (z. B. nach Member-Leave)
+            CREATE TABLE IF NOT EXISTS steam_links_archive(
+              user_id    INTEGER NOT NULL,
+              steam_id   TEXT    NOT NULL,
+              name       TEXT,
+              verified   INTEGER DEFAULT 0,
+              primary_account INTEGER DEFAULT 0,
+              deadlock_rank INTEGER,
+              deadlock_rank_name TEXT,
+              deadlock_subrank INTEGER,
+              deadlock_badge_level INTEGER,
+              deadlock_rank_updated_at INTEGER,
+              created_at DATETIME,
+              updated_at DATETIME,
+              left_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+              guild_id   INTEGER,
+              leave_reason TEXT,
+              display_name TEXT,
+              PRIMARY KEY(user_id, steam_id)
+            );
+
             -- Live-Player-State (Cache der letzten Steam-API-Auswertung)
             CREATE TABLE IF NOT EXISTS live_player_state(
               steam_id TEXT PRIMARY KEY,
@@ -978,6 +999,12 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
             )
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_steam_links_friend ON steam_links(is_steam_friend, user_id)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_steam_links_archive_user ON steam_links_archive(user_id, left_at)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_steam_links_archive_steam ON steam_links_archive(steam_id)"
             )
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_voice_log_started_user ON voice_session_log(started_at, user_id)"

@@ -2,7 +2,6 @@
 import asyncio
 import html
 import logging
-import os
 import re
 import time
 import uuid
@@ -16,6 +15,7 @@ from discord.ext import commands
 
 from cogs.steam.friend_requests import queue_friend_request, queue_friend_requests
 from cogs.steam.logging_utils import sanitize_log_value
+from cogs.steam.steam_master import SteamTaskClient
 from service import db
 from service.config import settings
 
@@ -34,9 +34,8 @@ STEAM_RETURN_URL = urljoin(PUBLIC_BASE_URL + "/", STEAM_RETURN_PATH.lstrip("/"))
 
 HTTP_HOST = settings.http_host
 HTTP_PORT = settings.http_port
-# CLIENT_SECRET is sensitive, keep it as env/secret handled by settings if possible,
-# but for now we follow the user's wish to reduce logic-level os.getenv.
-CLIENT_SECRET = (os.getenv("DISCORD_OAUTH_CLIENT_SECRET") or "").strip()
+# CLIENT_SECRET aus zentralen Settings (kein direkter os.getenv).
+CLIENT_SECRET = (settings.discord_oauth_client_secret or "").strip()
 
 # State TTL
 STATE_TTL_SEC = 600  # 10 min
@@ -58,8 +57,77 @@ def _safe_log_repr(value: Any) -> str:
     return repr(sanitize_log_value(value))
 
 
+class LinkPanelView(discord.ui.View):
+    def __init__(self, *, user_id: int, steam_url: str, link_cog: "SteamLink"):
+        super().__init__(timeout=600)
+        self.user_id = int(user_id)
+        self.link_cog = link_cog
+        self.add_item(
+            discord.ui.Button(
+                style=discord.ButtonStyle.link,
+                label="Steam Account verknüpfen",
+                url=steam_url,
+            )
+        )
+
+    @discord.ui.button(
+        label="Rank check (Steam)",
+        style=discord.ButtonStyle.secondary,
+        emoji="📊",
+        custom_id="linkpanel_rank_check",
+    )
+    async def rank_check(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            if interaction.user.id != self.user_id:
+                await interaction.followup.send("Nur der ursprüngliche Nutzer kann das verwenden.", ephemeral=True)
+                return
+
+            rank_cog = self.link_cog.bot.get_cog("DeadlockFriendRank")
+            if rank_cog is None or not hasattr(rank_cog, "_fetch_profile_card"):
+                await interaction.followup.send("Rank-Modul nicht geladen. Bitte Admin informieren.", ephemeral=True)
+                return
+
+            steam_ids = (
+                rank_cog.linked_steam_ids_for_user(int(self.user_id))
+                if hasattr(rank_cog, "linked_steam_ids_for_user")
+                else None
+            )
+            if not steam_ids:
+                await interaction.followup.send("Kein verknüpfter Steam-Account gefunden. Bitte zuerst verknüpfen.", ephemeral=True)
+                return
+            sid = str(steam_ids[0]).strip()
+            if not sid:
+                await interaction.followup.send("Kein valider Steam-Link gefunden.", ephemeral=True)
+                return
+
+            card, data, outcome = await rank_cog._fetch_profile_card({"steam_id": sid}, timeout=45.0)
+            if outcome.timed_out or not outcome.ok or not isinstance(card, dict):
+                await interaction.followup.send(
+                    f"Rank-Abfrage fehlgeschlagen ({outcome.error or 'no data'}).",
+                    ephemeral=True,
+                )
+                return
+
+            snap = rank_cog._snapshot_from_profile_card(sid, card, data)
+            if not snap:
+                await interaction.followup.send("Keine Rank-Daten in der PlayerCard gefunden.", ephemeral=True)
+                return
+
+            text = (
+                f"**Rank für {sid}**\n"
+                f"Tier: {snap.rank_name} (#{snap.rank_value})\n"
+                f"Subrank: {snap.subrank or '–'}\n"
+                f"Badge: {snap.badge_level or '–'}"
+            )
+            await interaction.followup.send(text, ephemeral=True)
+        except Exception as exc:
+            log.debug("Rank check button failed", exc_info=True, extra={"user_id": self.user_id})
+            await interaction.followup.send(f"Fehler bei der Rank-Abfrage: {exc}", ephemeral=True)
+
+
 def _env_client_id(bot: commands.Bot) -> str:
-    cid = (os.getenv("DISCORD_OAUTH_CLIENT_ID") or "").strip()
+    cid = (settings.discord_oauth_client_id or "").strip()
     if cid:
         return cid
     app_id = getattr(bot, "application_id", None)
@@ -67,8 +135,11 @@ def _env_client_id(bot: commands.Bot) -> str:
 
 
 def _env_redirect() -> str:
-    # Hardcoded Discord OAuth Redirect URI (muss mit Discord Developer Portal übereinstimmen)
-    return "https://link.earlysalty.com/discord/callback"
+    # Aus Settings; Fallback: public_base_url/discord/callback
+    configured = (settings.discord_oauth_redirect or "").strip()
+    if configured:
+        return configured
+    return settings.public_base_url.rstrip("/") + "/discord/callback"
 
 
 def get_public_urls() -> dict:
@@ -77,7 +148,7 @@ def get_public_urls() -> dict:
     UI-Cogs importieren diese Funktion und hängen selbst '?uid=<discord_id>' an.
     Kein Fallback: fehlt etwas Wesentliches -> ImportError (Start abbrechen).
     """
-    base = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
+    base = settings.public_base_url.rstrip("/")
     if not base:
         # entspricht Vorgabe: hart abbrechen, kein Fallback
         raise ImportError("PUBLIC_BASE_URL ist nicht gesetzt – keine öffentlichen URLs verfügbar.")
@@ -106,10 +177,10 @@ def get_public_urls() -> dict:
 
 def start_urls_for(uid: int) -> dict:
     """
-    Liefert user-spezifische Start-URLs MIT ?uid=... für Discord-OAuth und Steam-OpenID.
+    Liefert user-spezifische Start-URLs MIT ?uid=... für Steam-OpenID.
     Wird vom SteamLinkStepView (Welcome-DM / Rules-Panel) beim Klick verwendet.
     """
-    base = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
+    base = settings.public_base_url.rstrip("/")
     if not base:
         # bewusst nicht hart fehlschlagen – die UI meldet es dem Nutzer ephemer
         return {"discord_start": "", "steam_openid_start": ""}
@@ -215,6 +286,8 @@ class SteamLink(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.app = web.Application(middlewares=[security_headers_mw])
+        self.tasks = SteamTaskClient(poll_interval=0.5, default_timeout=45.0)
+        self.tasks = SteamTaskClient(poll_interval=0.5, default_timeout=45.0)
 
         # HTTP-Routen
         self.app.router.add_get("/", self.handle_index)
@@ -324,6 +397,25 @@ class SteamLink(commands.Cog):
         if time.time() - data["ts"] > STATE_TTL_SEC:
             return None
         return data
+
+    async def _kickoff_profile_card(self, steam_id: str) -> None:
+        """
+        Fire-and-forget PlayerCard fetch to füllen Rank-Daten direkt nach Verknüpfung.
+        """
+        if not steam_id or not re.fullmatch(r"\d{17,20}", str(steam_id).strip()):
+            return
+
+        async def _run():
+            try:
+                await self.tasks.run("GC_GET_PROFILE_CARD", {"steam_id": steam_id}, timeout=45.0)
+            except Exception:
+                log.debug(
+                    "ProfileCard prefetch failed",
+                    exc_info=True,
+                    extra={"steam_id": steam_id},
+                )
+
+        asyncio.create_task(_run(), name="steam-link-profilecard")
 
     async def _discord_at_name(self, uid: int) -> str:
         try:
@@ -492,7 +584,7 @@ class SteamLink(commands.Cog):
                 return await r.json()
 
     async def _resolve_vanity(self, vanity: str) -> str | None:
-        key = (os.getenv("STEAM_API_KEY") or "").strip()
+        key = (settings.steam_api_key.get_secret_value() if settings.steam_api_key else "").strip()
         if not key:
             return None
         url = f"{STEAM_API_BASE}/ISteamUser/ResolveVanityURL/v0001/"
@@ -545,7 +637,7 @@ class SteamLink(commands.Cog):
         return None
 
     async def _fetch_persona(self, steam_id: str) -> str | None:
-        key = (os.getenv("STEAM_API_KEY") or "").strip()
+        key = (settings.steam_api_key.get_secret_value() if settings.steam_api_key else "").strip()
         if not key:
             return None
         url = f"{STEAM_API_BASE}/ISteamUser/GetPlayerSummaries/v0002/"
@@ -772,6 +864,7 @@ class SteamLink(commands.Cog):
             display_name = await self._fetch_persona(steam_id) or await self._discord_at_name(uid)
             # Verified=0, da wir erst die Freundschaftsanfrage abwarten wollen
             _save_steam_link_row(uid, steam_id, display_name, verified=0)
+            await self._kickoff_profile_card(steam_id)
             await self._notify_user_linked(uid, [steam_id])
 
             steam_id_safe = html.escape(steam_id, quote=True)
@@ -837,6 +930,7 @@ class SteamLink(commands.Cog):
                 # Wir setzen verified=0, damit der User erst Freund werden muss
                 _save_steam_link_row(uid, steam_id, persona, verified=0)
                 saved.append(steam_id)
+                await self._kickoff_profile_card(steam_id)
 
             except Exception:
                 log.exception(
@@ -886,7 +980,6 @@ class SteamLink(commands.Cog):
     async def _send_account_link_panel(self, ctx: commands.Context) -> None:
         desc = (
             "Waehle, wie du deinen Account verknüpfen willst:\n"
-            "- **Discord**: liest deine verbundenen Accounts und erkennt Steam automatisch.\n"
             "- **Steam**: direkter OpenID-Login bei Steam.\n\n"
             "Nach erfolgreicher Verknüpfung bekommst du automatisch eine Steam-Freundschaftsanfrage vom Bot."
         )
@@ -905,22 +998,11 @@ class SteamLink(commands.Cog):
             )
             return
 
-        discord_start_url = f"{PUBLIC_BASE_URL}/discord/login?uid={ctx.author.id}"
         steam_start_url = f"{PUBLIC_BASE_URL}/steam/login?uid={ctx.author.id}"
-        view = discord.ui.View()
-        view.add_item(
-            discord.ui.Button(
-                style=discord.ButtonStyle.link,
-                label=LINK_BUTTON_LABEL,
-                url=discord_start_url,
-            )
-        )
-        view.add_item(
-            discord.ui.Button(
-                style=discord.ButtonStyle.link,
-                label=STEAM_BUTTON_LABEL,
-                url=steam_start_url,
-            )
+        view = LinkPanelView(
+            user_id=ctx.author.id,
+            steam_url=steam_start_url,
+            link_cog=self,
         )
         await self._send_ephemeral(ctx, embed=embed, view=view)
 

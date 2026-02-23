@@ -42,8 +42,22 @@ class SteamVerifiedRole(commands.Cog):
         self._transient_member_retry_until: dict[int, float] = {}
         self._task = None
         self._fast_lane_task = None
+        self._assign_concurrency = max(
+            1, int(os.getenv("VERIFIED_ASSIGN_CONCURRENCY", "3"))
+        )
+        self._assign_semaphore = asyncio.Semaphore(self._assign_concurrency)
+        self._guild_resolve_lock = asyncio.Lock()
+        self._cached_guild: discord.Guild | None = None
+        self._cached_role: discord.Role | None = None
+        self._guild_cache_ttl = float(os.getenv("VERIFIED_GUILD_CACHE_TTL_SECONDS", "600"))
+        self._guild_cache_expires_at = 0.0
+        self._guild_resolve_backoff_until = 0.0
+        self._fast_lane_max = max(1, int(os.getenv("VERIFIED_FAST_LANE_MAX", "60")))
+        self._post_assign_delay = max(
+            0.0, float(os.getenv("VERIFIED_ASSIGN_DELAY_SECONDS", "0.2"))
+        )
         log.info(
-            "SteamVerifiedRole init: guild=%s role=%s db=%s every=%ss dry_run=%s log_ch=%s fetch_delay=%ss missing_retry=%ss transient_retry=%ss",
+            "SteamVerifiedRole init: guild=%s role=%s db=%s every=%ss dry_run=%s log_ch=%s fetch_delay=%ss missing_retry=%ss transient_retry=%ss assign_conc=%s fast_lane_max=%s",
             self.guild_id,
             self.verified_role_id,
             self.db_path,
@@ -53,6 +67,8 @@ class SteamVerifiedRole(commands.Cog):
             self._member_fetch_min_interval,
             self._missing_member_retry_seconds,
             self._transient_member_retry_seconds,
+            self._assign_concurrency,
+            self._fast_lane_max,
         )
 
     # ---------- DB ----------
@@ -179,24 +195,73 @@ class SteamVerifiedRole(commands.Cog):
                 self._last_member_fetch_started_at = loop.time()
             return await guild.fetch_member(user_id)
 
-    async def _resolve_guild_and_role(self) -> tuple[discord.Guild, discord.Role]:
-        if not self.guild_id:
-            log.error("GUILD_ID ist nicht konfiguriert.")
+    async def _resolve_guild_and_role(self) -> tuple[discord.Guild | None, discord.Role | None]:
+        now = self._monotonic_now()
+        if (
+            self._cached_guild
+            and self._cached_role
+            and now < self._guild_cache_expires_at
+        ):
+            return self._cached_guild, self._cached_role
+
+        if now < self._guild_resolve_backoff_until:
+            log.warning(
+                "Guild-Resolve Backoff aktiv (%.2fs verbleibend).",
+                self._guild_resolve_backoff_until - now,
+            )
             return None, None
-        guild = self.bot.get_guild(self.guild_id)
-        if guild is None:
+
+        guild = self.bot.get_guild(self.guild_id) if self.guild_id else None
+        if guild:
+            role = guild.get_role(self.verified_role_id)
+            if role:
+                self._cached_guild, self._cached_role = guild, role
+                self._guild_cache_expires_at = now + self._guild_cache_ttl
+                return guild, role
+
+        async with self._guild_resolve_lock:
+            now = self._monotonic_now()
+            if (
+                self._cached_guild
+                and self._cached_role
+                and now < self._guild_cache_expires_at
+            ):
+                return self._cached_guild, self._cached_role
+            if now < self._guild_resolve_backoff_until:
+                return None, None
+            if not self.guild_id:
+                log.error("GUILD_ID ist nicht konfiguriert.")
+                return None, None
+            guild = self.bot.get_guild(self.guild_id)
+            if guild:
+                role = guild.get_role(self.verified_role_id)
+                if role:
+                    self._cached_guild, self._cached_role = guild, role
+                    self._guild_cache_expires_at = self._monotonic_now() + self._guild_cache_ttl
+                    return guild, role
             try:
                 guild = await self.bot.fetch_guild(self.guild_id)
             except discord.HTTPException as exc:
-                log.warning("Konnte Guild nicht abrufen (%s): %s", self.guild_id, exc)
-        if guild is None:
-            log.error("Guild %s nicht gefunden/zugreifbar.", self.guild_id)
-            return None, None
-        role = guild.get_role(self.verified_role_id)
-        if role is None:
-            log.error("Rolle %s in Guild %s nicht gefunden.", self.verified_role_id, guild.id)
-            return None, None
-        return guild, role
+                if exc.status == 429:
+                    self._guild_resolve_backoff_until = self._monotonic_now() + 5.0
+                    log.warning(
+                        "Rate-Limit beim fetch_guild(%s), Backoff 5s: %s",
+                        self.guild_id,
+                        exc,
+                    )
+                else:
+                    log.warning("Konnte Guild nicht abrufen (%s): %s", self.guild_id, exc)
+                return None, None
+            if guild is None:
+                log.error("Guild %s nicht gefunden/zugreifbar.", self.guild_id)
+                return None, None
+            role = guild.get_role(self.verified_role_id)
+            if role is None:
+                log.error("Rolle %s in Guild %s nicht gefunden.", self.verified_role_id, guild.id)
+                return None, None
+            self._cached_guild, self._cached_role = guild, role
+            self._guild_cache_expires_at = self._monotonic_now() + self._guild_cache_ttl
+            return guild, role
 
     async def _get_log_channel(self, guild: discord.Guild):
         ch = self.bot.get_channel(self.log_channel_id)
@@ -246,63 +311,80 @@ class SteamVerifiedRole(commands.Cog):
         except Exception as exc:
             log.warning("Rang-Check nach Verifizierung fehlgeschlagen für %s: %s", user_id, exc)
 
-    async def assign_verified_role(self, user_id: int) -> bool:
+    async def assign_verified_role(
+        self,
+        user_id: int,
+        guild: discord.Guild | None = None,
+        role: discord.Role | None = None,
+    ) -> bool:
         """Versucht, einem Nutzer sofort die Verified-Rolle zuzuweisen."""
-        guild, role = await self._resolve_guild_and_role()
-        if not guild or not role:
-            return False
-
-        member = guild.get_member(user_id)
-        if member is None:
-            try:
-                member = await self._fetch_member_rate_limited(guild, user_id)
-            except discord.NotFound:
-                self._mark_member_missing(user_id)
+        async with self._assign_semaphore:
+            guild_local, role_local = guild, role
+            if not guild_local or not role_local:
+                guild_local, role_local = await self._resolve_guild_and_role()
+            if not guild_local or not role_local:
                 return False
+
+            member = guild_local.get_member(user_id)
+            if member is None:
+                try:
+                    member = await self._fetch_member_rate_limited(guild_local, user_id)
+                except discord.NotFound:
+                    self._mark_member_missing(user_id)
+                    return False
+                except TimeoutError:
+                    self._mark_member_transient_error(user_id)
+                    log.warning(
+                        "Timeout beim Abrufen von Member %s für Sofort-Zuweisung.", user_id
+                    )
+                    return False
+                except discord.HTTPException as exc:
+                    self._mark_member_transient_error(user_id)
+                    log.warning(
+                        "HTTP-Fehler beim Abrufen von Member %s für Sofort-Zuweisung: %s",
+                        user_id,
+                        exc,
+                    )
+                    return False
+                except Exception:
+                    self._mark_member_transient_error(user_id)
+                    return False
+
+            if role_local in member.roles:
+                return True
+
+            try:
+                await member.add_roles(role_local, reason="Manuelle Verifizierung / Sofort-Zuweisung")
+                self._clear_member_retry_state(user_id)
+                asyncio.create_task(self._trigger_rank_check(user_id))
+                await self._announce_assignments(
+                    guild_local,
+                    [
+                        f"✅ <@{user_id}> ({member.display_name}) hat sich verifiziert - Rolle sofort zugewiesen."
+                    ],
+                )
+                if self._post_assign_delay > 0:
+                    await asyncio.sleep(self._post_assign_delay)
+                return True
             except TimeoutError:
                 self._mark_member_transient_error(user_id)
-                log.warning("Timeout beim Abrufen von Member %s für Sofort-Zuweisung.", user_id)
+                log.warning("Timeout beim Rollen-Assign (Sofort-Zuweisung) für Member %s.", user_id)
                 return False
             except discord.HTTPException as exc:
                 self._mark_member_transient_error(user_id)
                 log.warning(
-                    "HTTP-Fehler beim Abrufen von Member %s für Sofort-Zuweisung: %s",
+                    "HTTP-Fehler beim Rollen-Assign (Sofort-Zuweisung) für %s: %s",
                     user_id,
                     exc,
                 )
                 return False
-            except Exception:
-                self._mark_member_transient_error(user_id)
-                return False
 
-        if role in member.roles:
-            return True
-
-        try:
-            await member.add_roles(role, reason="Manuelle Verifizierung / Sofort-Zuweisung")
-            self._clear_member_retry_state(user_id)
-            asyncio.create_task(self._trigger_rank_check(user_id))
-            await self._announce_assignments(
-                guild,
-                [
-                    f"✅ <@{user_id}> ({member.display_name}) hat sich verifiziert - Rolle sofort zugewiesen."
-                ],
-            )
-            return True
-        except TimeoutError:
-            self._mark_member_transient_error(user_id)
-            log.warning("Timeout beim Rollen-Assign (Sofort-Zuweisung) für Member %s.", user_id)
-            return False
-        except discord.HTTPException as exc:
-            self._mark_member_transient_error(user_id)
-            log.warning(
-                "HTTP-Fehler beim Rollen-Assign (Sofort-Zuweisung) für %s: %s",
-                user_id,
-                exc,
-            )
-            return False
-
-    async def assign_verified_role_with_retries(self, user_id: int) -> bool:
+    async def assign_verified_role_with_retries(
+        self,
+        user_id: int,
+        guild: discord.Guild | None = None,
+        role: discord.Role | None = None,
+    ) -> bool:
         """
         Versucht die Rollenvergabe mit schnellen Retries (z.B. direkt nach Freundschaft).
         Standard: 3 Versuche im Abstand von 30s (per env konfigurierbar).
@@ -311,7 +393,7 @@ class SteamVerifiedRole(commands.Cog):
             attempts = max(1, self._immediate_retry_attempts)
             interval = max(0.0, self._immediate_retry_interval)
             for i in range(attempts):
-                ok = await self.assign_verified_role(user_id)
+                ok = await self.assign_verified_role(user_id, guild=guild, role=role)
                 if ok:
                     return True
                 if i < attempts - 1 and interval > 0:
@@ -352,7 +434,7 @@ class SteamVerifiedRole(commands.Cog):
             log.error("Konnte Bot-Member in Guild nicht bestimmen.")
             return 0
 
-        if not guild.me.guild_permissions.manage_roles:
+        if not me.guild_permissions.manage_roles:
             log.error("Bot hat kein 'Manage Roles' in Guild %s.", guild.id)
             return 0
         # Rolle über der Verified-Rolle?
@@ -503,16 +585,23 @@ class SteamVerifiedRole(commands.Cog):
         if not guild or not role:
             return
 
-        ids = self._fetch_recent_verified_ids(self._fast_lane_window_seconds)
+        ids = list(self._fetch_recent_verified_ids(self._fast_lane_window_seconds))
         if not ids:
             return
+        if len(ids) > self._fast_lane_max:
+            log.warning(
+                "Fast-Lane: %s IDs gefunden, kappe auf %s um Rate-Limits zu vermeiden.",
+                len(ids),
+                self._fast_lane_max,
+            )
+            ids = ids[: self._fast_lane_max]
 
         async def handle(uid: int):
             member = guild.get_member(uid)
             if member and role in member.roles:
                 return False
             try:
-                ok = await self.assign_verified_role_with_retries(uid)
+                ok = await self.assign_verified_role_with_retries(uid, guild=guild, role=role)
                 if ok:
                     log.info("Fast-Lane: Verified-Rolle vergeben für %s", uid)
                 return ok
@@ -599,8 +688,9 @@ class SteamVerifiedRole(commands.Cog):
         db_exists = os.path.exists(self.db_path)
         ids = self._fetch_verified_discord_ids()
         ids_sample = list(ids)[:5]
-        manage_roles = guild.me.guild_permissions.manage_roles if guild else False
-        top_pos = max((r.position for r in guild.me.roles), default=0) if guild else -1
+        me = guild.me if guild else None
+        manage_roles = me.guild_permissions.manage_roles if me else False
+        top_pos = max((r.position for r in me.roles), default=0) if me else -1
         role_pos = role.position if role else -1
         members_present = sum(1 for i in ids if guild and guild.get_member(i))
         members_with_role = len(role.members) if role else 0

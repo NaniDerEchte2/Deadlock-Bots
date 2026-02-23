@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import email
 import imaplib
+import json
 import logging
 import os
 import re
@@ -386,9 +387,24 @@ class SteamGuardAuto(commands.Cog):
         to auto-submit code from email.
         """
         try:
-            # Check standalone_bot_state for guard_required
-            import json
+            # Skip completely if Steam is already logged in – avoid needless polling
+            with db.get_conn() as conn:
+                row_state = conn.execute(
+                    "SELECT payload FROM standalone_bot_state WHERE bot = 'steam' LIMIT 1"
+                ).fetchone()
+            if row_state:
+                try:
+                    state = json.loads(row_state[0])
+                    runtime = state.get("runtime", {})
+                    if runtime.get("logged_on"):
+                        if self._guard_check_active:
+                            log.debug("Guard check disabled because logged_on=True")
+                            self._guard_check_active = False
+                        return
+                except Exception:
+                    pass
 
+            # Check standalone_bot_state for guard_required
             with db.get_conn() as conn:
                 cursor = conn.execute(
                     "SELECT payload FROM standalone_bot_state WHERE bot = 'steam' LIMIT 1"

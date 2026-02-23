@@ -1353,11 +1353,21 @@ const markFriendRequestSentStmt = db.prepare(`
 `);
 const markFriendRequestFailedStmt = db.prepare(`
   UPDATE steam_friend_requests
-     SET status='pending',
-         last_attempt=?,
-         attempts=COALESCE(attempts,0)+1,
-         error=?
-   WHERE steam_id=?
+      SET status='pending',
+          last_attempt=?,
+          attempts=COALESCE(attempts,0)+1,
+          error=?
+    WHERE steam_id=?
+`);
+const deleteFriendRequestStmt = db.prepare(`
+  DELETE FROM steam_friend_requests WHERE steam_id=?
+`);
+const clearFriendFlagStmt = db.prepare(`
+  UPDATE steam_links
+     SET is_steam_friend = 0,
+         verified = CASE WHEN verified != 0 THEN 0 ELSE verified END,
+         updated_at = CURRENT_TIMESTAMP
+   WHERE steam_id = ?
 `);
 const verifySteamLinkStmt = db.prepare(`
   UPDATE steam_links
@@ -1912,6 +1922,84 @@ function sendFriendRequest(steamId) {
       reject(err);
     }
   });
+}
+
+async function removeFriendship(steamInput) {
+  let parsed;
+  try {
+    parsed = parseSteamID(steamInput);
+  } catch (err) {
+    const message = err && err.message ? err.message : String(err);
+    throw new Error(`Ungültige SteamID: ${message}`);
+  }
+
+  const sid64 = typeof parsed.getSteamID64 === 'function' ? parsed.getSteamID64() : String(parsed);
+  const previousRel = client && client.myFriends ? client.myFriends[sid64] : undefined;
+
+  if (!client || typeof client.removeFriend !== 'function') {
+    throw new Error('removeFriend not supported by steam client');
+  }
+
+  try {
+    client.removeFriend(parsed);
+  } catch (err) {
+    const message = err && err.message ? err.message : String(err);
+    log('warn', 'Failed to remove friend', { steam_id64: sid64, error: message });
+    throw new Error(message);
+  }
+
+  try {
+    deleteFriendRequestStmt.run(sid64);
+  } catch (err) {
+    log('debug', 'Failed to delete steam_friend_requests row after removal', {
+      steam_id64: sid64,
+      error: err && err.message ? err.message : String(err),
+    });
+  }
+
+  try {
+    clearFriendFlagStmt.run(sid64);
+  } catch (err) {
+    log('debug', 'Failed to clear steam_links flags after removal', {
+      steam_id64: sid64,
+      error: err && err.message ? err.message : String(err),
+    });
+  }
+
+  return {
+    steam_id64: sid64,
+    account_id: parsed.accountid ?? null,
+    previous_relationship: relationshipName(previousRel),
+  };
+}
+
+const profileCardThrottle = new Map(); // steam_id64 -> last fetch ts
+
+function requestProfileCardForSid(steamId64) {
+  const sid = normalizeSteamId64(steamId64);
+  if (!sid) return;
+
+  const now = nowSeconds();
+  const last = profileCardThrottle.get(sid) || 0;
+  if (now - last < 600) return; // max alle 10 Minuten pro Account
+
+  profileCardThrottle.set(sid, now);
+
+  try {
+    const parsed = parseSteamID(sid);
+    const accountId = parsed?.accountid ? Number(parsed.accountid) : null;
+    if (!Number.isFinite(accountId) || accountId <= 0) return;
+
+    gcProfileCard.fetchPlayerCard({
+      accountId,
+      timeoutMs: 15000,
+      friendAccessHint: true,
+    }).catch((err) => {
+      log('debug', 'ProfileCard prefetch failed', { steam_id64: sid, error: err && err.message ? err.message : String(err) });
+    });
+  } catch (err) {
+    log('debug', 'ProfileCard prefetch parse failed', { steam_id64: sid, error: err && err.message ? err.message : String(err) });
+  }
 }
 
 function normalizeSteamId64(value) {
@@ -2762,6 +2850,17 @@ function processNextTask() {
         break;
       }
 
+      case 'AUTH_REMOVE_FRIEND': {
+        const promise = (async () => {
+          if (!runtimeState.logged_on) throw new Error('Not logged in');
+          const raw = payload?.steam_id ?? payload?.steam_id64;
+          const result = await removeFriendship(raw);
+          return { ok: true, data: result };
+        })();
+        isAsync = finalizeTaskRun(task, promise);
+        break;
+      }
+
       case 'BUILD_PUBLISH': {
         // Check if another build publish is already in progress
         if (heroBuildPublishWaiter) {
@@ -3592,6 +3691,9 @@ client.on('friendRelationship', (steamId, relationship) => {
         });
 
       }
+
+      // Direkt nach neuer Freundschaft: PlayerCard nur für diesen Account laden (Rate-Limit: 10 Min)
+      requestProfileCardForSid(sid64);
 
     } else if (Number(relationship) === Number(EFriendRelationship.None)) {
 

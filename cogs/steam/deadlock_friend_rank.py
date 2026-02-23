@@ -30,7 +30,7 @@ ACCOUNT_ID_RE = re.compile(r"^\d{1,10}$")
 DISCORD_MENTION_RE = re.compile(r"^<@!?(\d+)>$")
 
 MIN_DISCORD_SNOWFLAKE = 10_000_000_000_000_000
-AUTO_SYNC_INTERVAL_MINUTES = 20.0
+AUTO_SYNC_INTERVAL_MINUTES = 60.0
 
 RANK_TIERS: dict[int, str] = {
     0: "Obscurus",
@@ -216,6 +216,9 @@ class DeadlockFriendRank(commands.Cog):
 
     @staticmethod
     def _linked_steam_ids_for_discord_user(discord_user_id: int) -> list[str]:
+        """
+        Raw lookup from steam_links (no side effects). Kept static for re-use in other modules.
+        """
         rows = db.query_all(
             """
             SELECT steam_id
@@ -240,10 +243,81 @@ class DeadlockFriendRank(commands.Cog):
             out.append(steam_id)
         return out
 
-    @staticmethod
-    def _linked_steam_id_for_discord_user(discord_user_id: int) -> str | None:
-        steam_ids = DeadlockFriendRank._linked_steam_ids_for_discord_user(discord_user_id)
-        return steam_ids[0] if steam_ids else None
+    def _restore_links_from_archive(self, discord_user_id: int) -> list[str]:
+        """
+        Re-hydrate links that were archived (e.g., due to an aggressive reconcile)
+        back into steam_links for active members.
+        """
+        archived = db.query_all(
+            """
+            SELECT steam_id, name, verified, primary_account, created_at, updated_at, leave_reason
+              FROM steam_links_archive
+             WHERE user_id=? AND COALESCE(leave_reason, '') LIKE 'reconcile%'
+            """,
+            (int(discord_user_id),),
+        )
+        if not archived:
+            return []
+
+        restored: list[str] = []
+        # Use the synchronous connection helper here; this function is sync
+        # and the async transaction context manager would raise a TypeError.
+        with db.get_conn() as conn:
+            for row in archived:
+                rdict = dict(row)
+                steam_id = str(rdict.get("steam_id", "")).strip()
+                if not steam_id or not STEAM_ID64_RE.fullmatch(steam_id):
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO steam_links(
+                        user_id, steam_id, name, verified, primary_account, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP))
+                    ON CONFLICT(user_id, steam_id) DO UPDATE SET
+                        name=excluded.name,
+                        verified=excluded.verified,
+                        primary_account=excluded.primary_account,
+                        updated_at=CURRENT_TIMESTAMP
+                    """,
+                    (
+                        int(discord_user_id),
+                        steam_id,
+                        rdict.get("name"),
+                        rdict.get("verified", 0),
+                        rdict.get("primary_account", 0),
+                        rdict.get("created_at"),
+                        rdict.get("updated_at"),
+                    ),
+                )
+                restored.append(steam_id)
+        return restored
+
+    def linked_steam_ids_for_user(
+        self,
+        discord_user_id: int,
+        *,
+        restore_from_archive: bool = True,
+    ) -> list[str]:
+        """
+        Preferred lookup used by commands/UI:
+        - Reads steam_links
+        - Optionally rehydrates from archive on cache-only removals
+        """
+        steam_ids = self._linked_steam_ids_for_discord_user(discord_user_id)
+        if steam_ids or not restore_from_archive:
+            return steam_ids
+
+        restored = self._restore_links_from_archive(discord_user_id)
+        if restored:
+            return self._linked_steam_ids_for_discord_user(discord_user_id)
+        return []
+
+    def linked_steam_id_for_user(
+        self, discord_user_id: int, *, restore_from_archive: bool = True
+    ) -> str | None:
+        ids = self.linked_steam_ids_for_user(discord_user_id, restore_from_archive=restore_from_archive)
+        return ids[0] if ids else None
 
     @staticmethod
     def _extract_rank_fields(
@@ -365,7 +439,7 @@ class DeadlockFriendRank(commands.Cog):
         target = (raw_target or "").strip()
 
         if not target:
-            steam_id = self._linked_steam_id_for_discord_user(author_id)
+            steam_id = self.linked_steam_id_for_user(author_id)
             if not steam_id:
                 raise ValueError(
                     "Kein verknüpfter Steam-Account gefunden. Nutze zuerst `/account_verknüpfen` oder gib eine SteamID an."
@@ -378,7 +452,7 @@ class DeadlockFriendRank(commands.Cog):
         mention = DISCORD_MENTION_RE.fullmatch(target)
         if mention:
             discord_user_id = int(mention.group(1))
-            steam_id = self._linked_steam_id_for_discord_user(discord_user_id)
+            steam_id = self.linked_steam_id_for_user(discord_user_id)
             if not steam_id:
                 raise ValueError("Der erwähnte Discord-User hat keinen verknüpften Steam-Account.")
             return RankLookupTarget(
@@ -1029,7 +1103,7 @@ class DeadlockFriendRank(commands.Cog):
         private_response = getattr(ctx, "interaction", None) is not None
         await self._defer_if_interaction(ctx, ephemeral=private_response)
         target = user or ctx.author
-        steam_ids = self._linked_steam_ids_for_discord_user(int(target.id))
+        steam_ids = self.linked_steam_ids_for_user(int(target.id))
         if not steam_ids:
             await self._send_ctx_response(
                 ctx,

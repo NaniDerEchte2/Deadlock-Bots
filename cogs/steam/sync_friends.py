@@ -7,6 +7,7 @@ into the steam_links table, ensuring all bot friends are tracked in the database
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import discord
@@ -207,6 +208,8 @@ class SteamFriendsSync(commands.Cog):
             return
 
         immediate = 0
+        guild = self.bot.get_guild(settings.guild_id) if settings.guild_id else None
+        role = guild.get_role(settings.verified_role_id) if guild else None
         try:
             verified_cog = self.bot.get_cog("SteamVerifiedRole")
             if verified_cog is not None:
@@ -215,7 +218,9 @@ class SteamFriendsSync(commands.Cog):
                     async def run(uid_local: int):
                         nonlocal immediate
                         try:
-                            ok = await verified_cog.assign_verified_role_with_retries(uid_local)
+                            ok = await verified_cog.assign_verified_role_with_retries(
+                                uid_local, guild=guild, role=role
+                            )
                             if ok:
                                 immediate += 1
                         except Exception as exc:  # noqa: PERF203
@@ -261,6 +266,8 @@ class SteamFriendsSync(commands.Cog):
         # 2. Verified-Rollen sofort aktualisieren (add + remove)
         role_changes = 0
         immediate = 0
+        guild = self.bot.get_guild(settings.guild_id) if settings.guild_id else None
+        role = guild.get_role(settings.verified_role_id) if guild else None
         try:
             verified_cog = self.bot.get_cog("SteamVerifiedRole")
             if verified_cog is not None:
@@ -270,7 +277,9 @@ class SteamFriendsSync(commands.Cog):
                     async def run(uid_local: int):
                         nonlocal immediate
                         try:
-                            ok = await verified_cog.assign_verified_role_with_retries(uid_local)
+                            ok = await verified_cog.assign_verified_role_with_retries(
+                                uid_local, guild=guild, role=role
+                            )
                             if ok:
                                 immediate += 1
                         except Exception as exc:  # noqa: PERF203
