@@ -61,8 +61,8 @@ class AnalyticsBackendExtended:
                     }
 
                 # Get all components
-                metrics = AnalyticsBackendExtended._calculate_comprehensive_metrics(
-                    conn, since_date, streamer_login
+                metrics_raw = AnalyticsBackendExtended._calculate_comprehensive_metrics(
+                    conn, since_date, streamer_login, days
                 )
                 retention_timeline = AnalyticsBackendExtended._get_retention_timeline(
                     conn, since_date, streamer_login
@@ -77,11 +77,13 @@ class AnalyticsBackendExtended:
                     conn, since_date, streamer_login
                 )
                 insights = AnalyticsBackendExtended._generate_comprehensive_insights(
-                    metrics, retention_timeline, discovery_timeline, chat_timeline
+                    metrics_raw, retention_timeline, discovery_timeline, chat_timeline
                 )
                 comparison = AnalyticsBackendExtended._get_comparison_data(
                     conn, since_date, streamer_login
                 )
+
+                metrics = AnalyticsBackendExtended._format_metrics_for_ui(metrics_raw)
 
                 return {
                     "empty": False,
@@ -101,7 +103,7 @@ class AnalyticsBackendExtended:
 
     @staticmethod
     def _calculate_comprehensive_metrics(
-        conn, since_date: str, streamer_login: str | None
+        conn, since_date: str, streamer_login: str | None, days: int
     ) -> dict[str, Any]:
         """Calculate all metrics needed for the dashboard."""
         normalized_login = streamer_login.lower().strip() if streamer_login else None
@@ -237,7 +239,7 @@ class AnalyticsBackendExtended:
 
         # Calculate trends (compare to previous period)
         prev_since = (
-            datetime.fromisoformat(since_date.replace("Z", "+00:00")) - timedelta(days=30)
+            datetime.fromisoformat(since_date.replace("Z", "+00:00")) - timedelta(days=days)
         ).isoformat()
         if has_follower_delta:
             if normalized_login:
@@ -317,10 +319,10 @@ class AnalyticsBackendExtended:
 
         return {
             # Retention
-            "retention_5m": ret_5m / 100.0,
-            "retention_10m": ret_10m / 100.0,
-            "retention_20m": ret_20m / 100.0,
-            "avg_dropoff": avg_dropoff / 100.0,
+            "retention_5m": ret_5m,
+            "retention_10m": ret_10m,
+            "retention_20m": ret_20m,
+            "avg_dropoff": avg_dropoff,
             "retention_5m_trend": retention_trend,
             # Discovery
             "avg_peak_viewers": avg_peak,
@@ -340,6 +342,15 @@ class AnalyticsBackendExtended:
             "session_count": session_count,
             "total_duration_hours": total_duration_hours,
         }
+
+    @staticmethod
+    def _format_metrics_for_ui(metrics: dict[str, Any]) -> dict[str, Any]:
+        """Convert retention/dropoff values to percent scale for UI consumers."""
+        formatted = metrics.copy()
+        for key in ("retention_5m", "retention_10m", "retention_20m", "avg_dropoff"):
+            if key in formatted and formatted[key] is not None:
+                formatted[key] = formatted[key] * 100
+        return formatted
 
     @staticmethod
     def _get_retention_timeline(
@@ -552,138 +563,67 @@ class AnalyticsBackendExtended:
         normalized_login = streamer_login.lower().strip() if streamer_login else None
         safe_limit = max(1, min(int(limit), 200))
 
-        # BUGFIX: Prüfe ob follower_* Spalten existieren, sonst verwende 0
-        try:
-            conn.execute("SELECT follower_start FROM twitch_stream_sessions LIMIT 1")
-            has_follower_cols = True
-        except Exception:
-            has_follower_cols = False
-            log.warning("Follower-Spalten fehlen in DB - verwende Default-Werte (0)")
-
-        if has_follower_cols:
-            if normalized_login:
-                rows = conn.execute(
-                    """
-                    SELECT
-                        s.id,
-                        DATE(s.started_at) as date,
-                        TIME(s.started_at) as start_time,
-                        s.duration_seconds,
-                        s.start_viewers,
-                        s.peak_viewers,
-                        s.end_viewers,
-                        s.avg_viewers,
-                        s.retention_5m,
-                        s.retention_10m,
-                        s.retention_20m,
-                        s.dropoff_pct,
-                        s.unique_chatters,
-                        s.first_time_chatters,
-                        s.returning_chatters,
-                        COALESCE(s.follower_start, 0) as follower_start,
-                        COALESCE(s.follower_end, 0) as follower_end,
-                        s.stream_title
-                    FROM twitch_stream_sessions s
-                    WHERE s.started_at >= ?
-                      AND s.ended_at IS NOT NULL
-                      AND LOWER(s.streamer_login) = ?
-                    ORDER BY s.started_at DESC
-                    LIMIT ?
-                    """,
-                    [since_date, normalized_login, safe_limit],
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    """
-                    SELECT
-                        s.id,
-                        DATE(s.started_at) as date,
-                        TIME(s.started_at) as start_time,
-                        s.duration_seconds,
-                        s.start_viewers,
-                        s.peak_viewers,
-                        s.end_viewers,
-                        s.avg_viewers,
-                        s.retention_5m,
-                        s.retention_10m,
-                        s.retention_20m,
-                        s.dropoff_pct,
-                        s.unique_chatters,
-                        s.first_time_chatters,
-                        s.returning_chatters,
-                        COALESCE(s.follower_start, 0) as follower_start,
-                        COALESCE(s.follower_end, 0) as follower_end,
-                        s.stream_title
-                    FROM twitch_stream_sessions s
-                    WHERE s.started_at >= ?
-                      AND s.ended_at IS NOT NULL
-                    ORDER BY s.started_at DESC
-                    LIMIT ?
-                    """,
-                    [since_date, safe_limit],
-                ).fetchall()
+        if normalized_login:
+            rows = conn.execute(
+                """
+                SELECT
+                    s.id,
+                    DATE(s.started_at) as date,
+                    TIME(s.started_at) as start_time,
+                    s.duration_seconds,
+                    s.start_viewers,
+                    s.peak_viewers,
+                    s.end_viewers,
+                    s.avg_viewers,
+                    s.retention_5m,
+                    s.retention_10m,
+                    s.retention_20m,
+                    s.dropoff_pct,
+                    s.unique_chatters,
+                    s.first_time_chatters,
+                    s.returning_chatters,
+                    COALESCE(s.followers_start, 0) as followers_start,
+                    COALESCE(s.followers_end, 0) as followers_end,
+                    s.stream_title
+                FROM twitch_stream_sessions s
+                WHERE s.started_at >= ?
+                  AND s.ended_at IS NOT NULL
+                  AND LOWER(s.streamer_login) = ?
+                ORDER BY s.started_at DESC
+                LIMIT ?
+                """,
+                [since_date, normalized_login, safe_limit],
+            ).fetchall()
         else:
-            if normalized_login:
-                rows = conn.execute(
-                    """
-                    SELECT
-                        s.id,
-                        DATE(s.started_at) as date,
-                        TIME(s.started_at) as start_time,
-                        s.duration_seconds,
-                        s.start_viewers,
-                        s.peak_viewers,
-                        s.end_viewers,
-                        s.avg_viewers,
-                        s.retention_5m,
-                        s.retention_10m,
-                        s.retention_20m,
-                        s.dropoff_pct,
-                        s.unique_chatters,
-                        s.first_time_chatters,
-                        s.returning_chatters,
-                        0 as follower_start,
-                        0 as follower_end,
-                        s.stream_title
-                    FROM twitch_stream_sessions s
-                    WHERE s.started_at >= ?
-                      AND s.ended_at IS NOT NULL
-                      AND LOWER(s.streamer_login) = ?
-                    ORDER BY s.started_at DESC
-                    LIMIT ?
-                    """,
-                    [since_date, normalized_login, safe_limit],
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    """
-                    SELECT
-                        s.id,
-                        DATE(s.started_at) as date,
-                        TIME(s.started_at) as start_time,
-                        s.duration_seconds,
-                        s.start_viewers,
-                        s.peak_viewers,
-                        s.end_viewers,
-                        s.avg_viewers,
-                        s.retention_5m,
-                        s.retention_10m,
-                        s.retention_20m,
-                        s.dropoff_pct,
-                        s.unique_chatters,
-                        s.first_time_chatters,
-                        s.returning_chatters,
-                        0 as follower_start,
-                        0 as follower_end,
-                        s.stream_title
-                    FROM twitch_stream_sessions s
-                    WHERE s.started_at >= ?
-                      AND s.ended_at IS NOT NULL
-                    ORDER BY s.started_at DESC
-                    LIMIT ?
-                    """,
-                    [since_date, safe_limit],
-                ).fetchall()
+            rows = conn.execute(
+                """
+                SELECT
+                    s.id,
+                    DATE(s.started_at) as date,
+                    TIME(s.started_at) as start_time,
+                    s.duration_seconds,
+                    s.start_viewers,
+                    s.peak_viewers,
+                    s.end_viewers,
+                    s.avg_viewers,
+                    s.retention_5m,
+                    s.retention_10m,
+                    s.retention_20m,
+                    s.dropoff_pct,
+                    s.unique_chatters,
+                    s.first_time_chatters,
+                    s.returning_chatters,
+                    COALESCE(s.followers_start, 0) as followers_start,
+                    COALESCE(s.followers_end, 0) as followers_end,
+                    s.stream_title
+                FROM twitch_stream_sessions s
+                WHERE s.started_at >= ?
+                  AND s.ended_at IS NOT NULL
+                ORDER BY s.started_at DESC
+                LIMIT ?
+                """,
+                [since_date, safe_limit],
+            ).fetchall()
 
         sessions = []
         for row in rows:
@@ -697,10 +637,10 @@ class AnalyticsBackendExtended:
                     "peakViewers": int(row[5]) if row[5] else 0,
                     "endViewers": int(row[6]) if row[6] else 0,
                     "avgViewers": float(row[7]) if row[7] else 0.0,
-                    "retention5m": float(row[8]) if row[8] else 0.0,
-                    "retention10m": float(row[9]) if row[9] else 0.0,
-                    "retention20m": float(row[10]) if row[10] else 0.0,
-                    "dropoffPct": float(row[11]) if row[11] else 0.0,
+                    "retention5m": float(row[8]) * 100 if row[8] is not None else 0.0,
+                    "retention10m": float(row[9]) * 100 if row[9] is not None else 0.0,
+                    "retention20m": float(row[10]) * 100 if row[10] is not None else 0.0,
+                    "dropoffPct": float(row[11]) * 100 if row[11] is not None else 0.0,
                     "uniqueChatters": int(row[12]) if row[12] else 0,
                     "firstTimeChatters": int(row[13]) if row[13] else 0,
                     "returningChatters": int(row[14]) if row[14] else 0,

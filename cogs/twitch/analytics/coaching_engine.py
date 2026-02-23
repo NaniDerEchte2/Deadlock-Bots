@@ -71,7 +71,7 @@ class CoachingEngine:
 # ---------------------------------------------------------------------------
 
 
-def _efficiency(conn: sqlite3.Connection, streamer: str, since: str) -> dict[str, Any]:
+def _efficiency(conn, streamer: str, since: str) -> dict[str, Any]:
     # Per-streamer efficiency: viewer-hours / stream-hours
     rows = conn.execute(
         """
@@ -85,7 +85,7 @@ def _efficiency(conn: sqlite3.Connection, streamer: str, since: str) -> dict[str
         WHERE s.started_at >= ?
           AND s.duration_seconds > 300
         GROUP BY s.streamer_login
-        HAVING SUM(s.duration_seconds / 3600.0) > 1
+        HAVING SUM(s.duration_seconds) / 3600.0 > 1
         ORDER BY efficiency_ratio DESC
         """,
         (since,),

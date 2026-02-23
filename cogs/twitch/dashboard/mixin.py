@@ -5,13 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import sqlite3
 from datetime import UTC, datetime, timedelta
 
 import discord
 from aiohttp import web
 
-from .. import storage
+from .. import storage_pg as storage
 from ..analytics.backend_extended import AnalyticsBackendExtended
 from ..constants import TWITCH_TARGET_GAME_NAME, log
 from .server_v2 import build_v2_app
@@ -38,6 +37,16 @@ VERIFICATION_SUCCESS_DM_MESSAGE = (
     "Streamer-Teams. Wir melden uns, falls wir noch Fragen haben – ansonsten schauen wir uns deine Angaben kurz an. "
     "Bei Fragen kannst du dich gerne hier melden: https://discord.com/channels/1289721245281292288/1428062025145385111"
 )
+
+def _row_to_dict(row) -> dict:
+    if row is None:
+        return {}
+    if hasattr(row, "keys"):
+        return {k: row[k] for k in row.keys()}
+    try:
+        return dict(row)
+    except Exception:
+        return {}
 
 
 class TwitchDashboardMixin:
@@ -108,12 +117,13 @@ class TwitchDashboardMixin:
                           ) AS sess
                             ON sess.streamer_login = LOWER(s.twitch_login)
                          WHERE COALESCE(s.is_monitored_only, 0) = 0
-                         ORDER BY s.twitch_login
+                          ORDER BY s.twitch_login
                         """,
                         (target_game,),
                     ).fetchall()
-                return [dict(row) for row in rows]
-            except sqlite3.OperationalError as exc:
+                return [_row_to_dict(row) for row in rows]
+            except Exception as exc:
+                # Legacy retry for transient DB errors; retain small backoff.
                 if "locked" not in str(exc).lower() or attempt == 2:
                     raise
                 await asyncio.sleep(0.3 * (attempt + 1))
@@ -364,7 +374,7 @@ class TwitchDashboardMixin:
                             1 if mark_member else 0,
                         ),
                     )
-        except sqlite3.IntegrityError:
+        except Exception:
             raise ValueError("Discord-ID wird bereits verwendet")
 
         return f"Discord-Daten für {normalized} aktualisiert"
@@ -1114,9 +1124,10 @@ class TwitchDashboardMixin:
             ).fetchone()
             if not row:
                 return {}
-            data["meta"] = dict(row)
+            data["meta"] = _row_to_dict(row)
 
             # 2. Aggregated Session Stats (Last 30 days)
+            since_30d = (datetime.now(UTC) - timedelta(days=30)).isoformat()
             agg = c.execute(
                 """
                 SELECT COUNT(*) as total_streams,
@@ -1127,11 +1138,11 @@ class TwitchDashboardMixin:
                        SUM(unique_chatters) as total_unique_chatters
                   FROM twitch_stream_sessions
                  WHERE streamer_login=?
-                   AND started_at > datetime('now', '-30 days')
+                   AND started_at > ?
                 """,
-                (login,),
+                (login, since_30d),
             ).fetchone()
-            data["stats_30d"] = dict(agg) if agg else {}
+            data["stats_30d"] = _row_to_dict(agg) if agg else {}
 
             # 3. Recent Sessions
             sessions = c.execute(
@@ -1145,7 +1156,7 @@ class TwitchDashboardMixin:
                 """,
                 (login,),
             ).fetchall()
-            data["recent_sessions"] = [dict(s) for s in sessions]
+            data["recent_sessions"] = [_row_to_dict(s) for s in sessions]
 
         return data
 
@@ -1159,7 +1170,7 @@ class TwitchDashboardMixin:
             ).fetchone()
             if not row:
                 return {}
-            data["session"] = dict(row)
+            data["session"] = _row_to_dict(row)
 
             # 2. Viewer Timeline (Chart data)
             timeline = c.execute(
@@ -1171,7 +1182,7 @@ class TwitchDashboardMixin:
                 """,
                 (session_id,),
             ).fetchall()
-            data["timeline"] = [dict(t) for t in timeline]
+            data["timeline"] = [_row_to_dict(t) for t in timeline]
 
             # 3. Chat Stats (if needed separately, though rolled up in session)
             # potentially fetch top chatters here
@@ -1185,49 +1196,50 @@ class TwitchDashboardMixin:
                 """,
                 (session_id,),
             ).fetchall()
-            data["top_chatters"] = [dict(tc) for tc in top_chatters]
+            data["top_chatters"] = [_row_to_dict(tc) for tc in top_chatters]
 
         return data
 
     async def _dashboard_comparison_stats(self, days: int = 30) -> dict:
         """Fetch comparative stats: Me vs Category vs Top."""
         data = {}
+        since_dt = (datetime.now(UTC) - timedelta(days=days)).isoformat()
         with storage.get_conn() as c:
             # Global Category Stats (Deadlock)
             cat_stats = c.execute(
                 """
                 SELECT AVG(viewer_count) as avg_viewers, MAX(viewer_count) as peak_viewers
                   FROM twitch_stats_category
-                 WHERE ts_utc > datetime('now', ?)
+                 WHERE ts_utc > ?
                 """,
-                (f"-{days} days",),
+                (since_dt,),
             ).fetchone()
-            data["category"] = dict(cat_stats) if cat_stats else {}
+            data["category"] = _row_to_dict(cat_stats) if cat_stats else {}
 
             # Tracked Partner Stats
             track_stats = c.execute(
                 """
                 SELECT AVG(viewer_count) as avg_viewers, MAX(viewer_count) as peak_viewers
                   FROM twitch_stats_tracked
-                 WHERE ts_utc > datetime('now', ?)
+                 WHERE ts_utc > ?
                 """,
-                (f"-{days} days",),
+                (since_dt,),
             ).fetchone()
-            data["tracked_avg"] = dict(track_stats) if track_stats else {}
+            data["tracked_avg"] = _row_to_dict(track_stats) if track_stats else {}
 
             # Top 5 Streamers by Avg Viewers (Local Data)
             top_streamers = c.execute(
                 """
                 SELECT streamer_login, AVG(avg_viewers) as val
                   FROM twitch_stream_sessions
-                 WHERE started_at > datetime('now', ?)
+                 WHERE started_at > ?
                  GROUP BY streamer_login
                  ORDER BY val DESC
                  LIMIT 5
                 """,
-                (f"-{days} days",),
+                (since_dt,),
             ).fetchall()
-            data["top_streamers"] = [dict(r) for r in top_streamers]
+            data["top_streamers"] = [_row_to_dict(r) for r in top_streamers]
 
         return data
 
@@ -1401,13 +1413,13 @@ class TwitchDashboardMixin:
                     (login,),
                 ).fetchone()
                 if row:
-                    row_data = dict(row)
+                    row_data = _row_to_dict(row)
                     should_notify = row_data.get("manual_verified_at") is None
 
                 if mode == "permanent":
                     c.execute(
                         "UPDATE twitch_streamers "
-                        "SET manual_verified_permanent=1, manual_verified_until=NULL, manual_verified_at=datetime('now'), "
+                        "SET manual_verified_permanent=1, manual_verified_until=NULL, manual_verified_at=NOW(), "
                         "    manual_partner_opt_out=0, is_monitored_only=0, "
                         "    is_on_discord=1 "
                         "WHERE twitch_login=?",
@@ -1417,8 +1429,8 @@ class TwitchDashboardMixin:
                 else:
                     c.execute(
                         "UPDATE twitch_streamers "
-                        "SET manual_verified_permanent=0, manual_verified_until=datetime('now','+30 days'), "
-                        "    manual_verified_at=datetime('now'), manual_partner_opt_out=0, is_monitored_only=0, is_on_discord=1 "
+                        "SET manual_verified_permanent=0, manual_verified_until=NOW() + INTERVAL '30 days', "
+                        "    manual_verified_at=NOW(), manual_partner_opt_out=0, is_monitored_only=0, is_on_discord=1 "
                         "WHERE twitch_login=?",
                         (login,),
                     )
@@ -1461,7 +1473,7 @@ class TwitchDashboardMixin:
                     (login,),
                 ).fetchone()
                 if row:
-                    row_data = dict(row)
+                    row_data = _row_to_dict(row)
                     c.execute(
                         "UPDATE twitch_streamers "
                         "SET manual_verified_permanent=0, manual_verified_until=NULL, manual_verified_at=NULL, "

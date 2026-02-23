@@ -61,7 +61,9 @@ class AnalyticsBackend:
                     return {"empty": True}
 
                 # Get metrics
-                metrics = AnalyticsBackend._calculate_metrics(conn, since_date, streamer_login)
+                metrics_raw = AnalyticsBackend._calculate_metrics(
+                    conn, since_date, streamer_login, days
+                )
 
                 # Get timelines
                 retention_timeline = AnalyticsBackend._get_retention_timeline(
@@ -76,8 +78,10 @@ class AnalyticsBackend:
 
                 # Generate insights
                 insights = AnalyticsBackend._generate_insights(
-                    metrics, retention_timeline, discovery_timeline, chat_timeline
+                    metrics_raw, retention_timeline, discovery_timeline, chat_timeline
                 )
+
+                metrics = AnalyticsBackend._format_metrics_for_ui(metrics_raw)
 
                 return {
                     "metrics": metrics,
@@ -92,7 +96,9 @@ class AnalyticsBackend:
             return {"error": "Internal error", "empty": True}
 
     @staticmethod
-    def _calculate_metrics(conn, since_date: str, streamer_login: str | None) -> dict[str, Any]:
+    def _calculate_metrics(
+        conn, since_date: str, streamer_login: str | None, days: int
+    ) -> dict[str, Any]:
         """Calculate summary metrics for KPI cards."""
         normalized_login = streamer_login.lower().strip() if streamer_login else None
 
@@ -213,7 +219,7 @@ class AnalyticsBackend:
 
         # Calculate trends (compare to previous period)
         prev_since = (
-            datetime.fromisoformat(since_date.replace("Z", "+00:00")) - timedelta(days=30)
+            datetime.fromisoformat(since_date.replace("Z", "+00:00")) - timedelta(days=days)
         ).isoformat()
         if normalized_login:
             prev_row = conn.execute(
@@ -241,10 +247,10 @@ class AnalyticsBackend:
         retention_trend = ((ret_5m - prev_ret_5m) / prev_ret_5m * 100) if prev_ret_5m > 0 else 0.0
 
         return {
-            "retention_5m": ret_5m / 100.0,  # Convert to 0-1 range
-            "retention_10m": ret_10m / 100.0,
-            "retention_20m": ret_20m / 100.0,
-            "avg_dropoff": avg_dropoff / 100.0,
+            "retention_5m": ret_5m,
+            "retention_10m": ret_10m,
+            "retention_20m": ret_20m,
+            "avg_dropoff": avg_dropoff,
             "retention_5m_trend": retention_trend,
             "avg_peak_viewers": avg_peak,
             "total_followers_delta": total_followers,
@@ -258,6 +264,15 @@ class AnalyticsBackend:
             "total_returning_chatters": total_returning,
             "chat_engagement_trend": 0.0,  # TODO: Calculate
         }
+
+    @staticmethod
+    def _format_metrics_for_ui(metrics: dict[str, Any]) -> dict[str, Any]:
+        """Convert retention/dropoff values to percent scale for UI consumers."""
+        formatted = metrics.copy()
+        for key in ("retention_5m", "retention_10m", "retention_20m", "avg_dropoff"):
+            if key in formatted and formatted[key] is not None:
+                formatted[key] = formatted[key] * 100
+        return formatted
 
     @staticmethod
     def _get_retention_timeline(
