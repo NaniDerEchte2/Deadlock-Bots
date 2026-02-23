@@ -143,11 +143,38 @@ def _rank_index(name: str) -> int:
     return RANK_ORDER.index(n) if n in RANK_SET else 0
 
 
+_SUBRANK_RE = re.compile(
+    rf"^({'|'.join(RANK_ORDER[1:])}|{'|'.join(_RANK_SHORT_MAP.keys())})\\s+([1-6])$",
+    re.IGNORECASE,
+)
+
+
+def _rank_score(name: str) -> int:
+    """Berechnet einen Score für Rang + Sub-Rang.
+
+    Basis: Hauptrangindex * 6; Sub-Rang 1-6 wird addiert.
+    Beispiel: Initiate (1) → 6, Initiate 3 → 9, Emissary 1 → 37.
+    """
+    n = name.lower().strip()
+    base_idx = _rank_index(n)
+    if base_idx > 0:
+        return base_idx * 6
+    m = _SUBRANK_RE.match(n)
+    if m:
+        rank_part = m.group(1).lower()
+        sub = int(m.group(2))
+        base_name = _RANK_SHORT_MAP.get(rank_part, rank_part)
+        base_idx = _rank_index(base_name)
+        if base_idx > 0:
+            return base_idx * 6 + sub
+    return 0
+
+
 def _rank_roles(guild: discord.Guild) -> dict[str, discord.Role]:
     out: dict[str, discord.Role] = {}
     for r in guild.roles:
         n = r.name.lower()
-        if n in RANK_SET:
+        if n in RANK_SET or _SUBRANK_RE.match(n):
             out[n] = r
     return out
 
@@ -550,6 +577,20 @@ class TempVoiceCore(commands.Cog):
                 created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        await db.execute_async(
+            """
+            CREATE TABLE IF NOT EXISTS tempvoice_presets (
+                user_id     INTEGER NOT NULL,
+                category_id INTEGER NOT NULL,
+                name        TEXT NOT NULL,
+                base_name   TEXT NOT NULL,
+                limit       INTEGER NOT NULL,
+                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, category_id, name)
+            )
+            """
+        )
         try:
             cols = await db.query_all_async("PRAGMA table_info(tempvoice_lanes)")
             col_names = {str(c["name"]) for c in cols}
@@ -1021,6 +1062,10 @@ class TempVoiceCore(commands.Cog):
     def first_guild(self):
         return self._first_guild()
 
+    # Public helper for interface
+    def is_managed_lane(self, ch: discord.VoiceChannel | None) -> bool:
+        return _is_managed_lane(ch)
+
     async def safe_edit_channel(
         self,
         lane: discord.VoiceChannel,
@@ -1172,6 +1217,105 @@ class TempVoiceCore(commands.Cog):
         limit = self._default_limit_for_lane(lane)
         await self.set_lane_template(lane, base_name=base, limit=limit)
         return base, limit
+
+    # --------- Presets (nur Ranked) ---------
+    async def save_preset(self, lane: discord.VoiceChannel, owner_id: int, preset_name: str):
+        preset_name = preset_name.strip()
+        if not preset_name:
+            raise ValueError("Preset-Name darf nicht leer sein.")
+        base = self.lane_base.get(lane.id) or _strip_suffixes(lane.name)
+        limit = lane.user_limit or self._default_limit_for_lane(lane)
+        enforced_limit = self._enforce_limit(lane.id, limit)
+        try:
+            await db.execute_async(
+                """
+                INSERT INTO tempvoice_presets(user_id, category_id, name, base_name, limit)
+                VALUES(?,?,?,?,?)
+                ON CONFLICT(user_id, category_id, name) DO UPDATE SET
+                    base_name=excluded.base_name,
+                    limit=excluded.limit,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (
+                    int(owner_id),
+                    int(lane.category_id or 0),
+                    preset_name[:64],
+                    base,
+                    int(enforced_limit),
+                ),
+            )
+        except Exception as e:
+            log.debug("save_preset failed for user %s: %r", owner_id, e)
+            raise
+
+    async def list_presets(
+        self, owner_id: int, category_id: int, limit: int = 25
+    ) -> list[dict[str, Any]]:
+        try:
+            rows = await db.query_all_async(
+                """
+                SELECT name, base_name, limit
+                FROM tempvoice_presets
+                WHERE user_id=? AND category_id=?
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (int(owner_id), int(category_id), int(max(1, limit))),
+            )
+            return rows or []
+        except Exception as e:
+            log.debug("list_presets failed for user %s: %r", owner_id, e)
+            return []
+
+    async def apply_preset(self, lane: discord.VoiceChannel, owner_id: int, name: str) -> bool:
+        try:
+            row = await db.query_one_async(
+                """
+                SELECT base_name, limit FROM tempvoice_presets
+                WHERE user_id=? AND category_id=? AND name=?
+                """,
+                (int(owner_id), int(lane.category_id or 0), name),
+            )
+        except Exception as e:
+            log.debug("apply_preset fetch failed for user %s: %r", owner_id, e)
+            return False
+        if not row:
+            return False
+        base = row["base_name"]
+        limit = int(row["limit"])
+        await self.set_lane_template(lane, base_name=base, limit=limit)
+        return True
+
+    async def apply_preset_batch(
+        self, category: discord.CategoryChannel, requester: discord.Member, name: str
+    ) -> tuple[int, int]:
+        """
+        Wendet ein Preset auf alle gemanagten Lanes einer Kategorie an.
+        - Admins/Mods (manage_channels) dürfen alle Lanes ändern.
+        - Sonst nur Lanes, deren Owner der Anfragende ist.
+        Returns (applied, skipped).
+        """
+        perms = category.permissions_for(requester)
+        is_mod = perms.manage_channels or perms.administrator
+        applied = 0
+        skipped = 0
+        for lane in category.voice_channels:
+            if not self.is_managed_lane(lane):
+                continue
+            owner_id = self.lane_owner.get(lane.id)
+            if not is_mod and owner_id != requester.id:
+                skipped += 1
+                continue
+            ok = await self.apply_preset(lane, requester.id, name)
+            if not ok:
+                skipped += 1
+                continue
+            applied += 1
+            try:
+                await self.refresh_name(lane)
+            except Exception:
+                pass
+        return applied, skipped
 
     async def _persist_lane_base(self, lane_id: int, base_name: str) -> None:
         self.lane_base[lane_id] = base_name
@@ -1386,7 +1530,11 @@ class TempVoiceCore(commands.Cog):
                 return self._rank_roles_cache[guild.id]
 
         # Cache miss oder abgelaufen - neu berechnen
-        out = {r.name.lower(): r for r in guild.roles if r.name.lower() in RANK_SET}
+        out = {
+            r.name.lower(): r
+            for r in guild.roles
+            if r.name.lower() in RANK_SET or _SUBRANK_RE.match(r.name)
+        }
         self._rank_roles_cache[guild.id] = out
         self._cache_timestamp[guild.id] = now
         return out
@@ -1418,10 +1566,13 @@ class TempVoiceCore(commands.Cog):
             return
 
         # Apply MinRank parallel
-        min_idx = _rank_index(min_rank)
+        min_score = _rank_score(min_rank)
         tasks = []
         for name, role in ranks.items():
-            if _rank_index(name) < min_idx:
+            score = _rank_score(name)
+            if score == 0:
+                continue
+            if score < min_score:
                 ow = lane.overwrites_for(role)
                 ow.connect = False
                 tasks.append(_set_perm_safe(role, ow, "TempVoice: MinRank deny"))

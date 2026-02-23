@@ -5,7 +5,14 @@ import logging
 import discord
 from discord.ext import commands
 
-from .core import FIXED_LANE_IDS, MINRANK_CATEGORY_IDS, RANK_ORDER
+from service.config import settings
+
+from .core import (
+    FIXED_LANE_IDS,
+    MINRANK_CATEGORY_IDS,
+    RANK_ORDER,
+    RANKED_CATEGORY_ID,
+)
 
 logger = logging.getLogger("cogs.tempvoice.interface")
 
@@ -491,6 +498,10 @@ class MainView(discord.ui.View):
         self.add_item(DuoCallButton(core))
         self.add_item(TrioCallButton(core))
         self.add_item(LurkerButton(util))
+        # Row 4: Presets (nur Ranked)
+        self.add_item(SavePresetButton(core))
+        self.add_item(LoadPresetButton(core))
+        self.add_item(BatchPresetButton(core))
 
     @staticmethod
     def lane_of(itx: discord.Interaction) -> discord.VoiceChannel | None:
@@ -737,6 +748,225 @@ class ResetLaneButton(discord.ui.Button):
         )
 
 
+class SavePresetButton(discord.ui.Button):
+    def __init__(self, core):
+        super().__init__(
+            label="💾 Preset speichern",
+            style=discord.ButtonStyle.success,
+            row=4,
+            custom_id="tv_preset_save",
+        )
+        self.core = core
+
+    async def callback(self, itx: discord.Interaction):
+        m: discord.Member = itx.user  # type: ignore
+        lane = MainView.lane_of(itx)
+        if not lane:
+            await itx.response.send_message("Tritt zuerst deiner Lane bei.", ephemeral=True)
+            return
+        if lane.category_id != RANKED_CATEGORY_ID:
+            await itx.response.send_message("Presets gibt es nur f\u00fcr Ranked Lanes.", ephemeral=True)
+            return
+        owner_id = self.core.lane_owner.get(lane.id, m.id)
+        perms = lane.permissions_for(m)
+        if not (owner_id == m.id or perms.manage_channels or perms.administrator):
+            await itx.response.send_message(
+                "Nur Owner/Mods d\u00fcrfen Presets speichern.", ephemeral=True
+            )
+            return
+        base = self.core.lane_base.get(lane.id) or lane.name
+        modal = SavePresetModal(self.core, lane, owner_id, preset_name_hint=base)
+        await itx.response.send_modal(modal)
+
+
+class SavePresetModal(discord.ui.Modal, title="Preset speichern"):
+    preset_name = discord.ui.TextInput(
+        label="Preset-Name",
+        placeholder="z.B. Lane 1 / Asc Duo",
+        max_length=64,
+        required=True,
+    )
+
+    def __init__(self, core, lane: discord.VoiceChannel, owner_id: int, preset_name_hint: str):
+        super().__init__(timeout=120)
+        self.core = core
+        self.lane = lane
+        self.owner_id = owner_id
+        # Vorbelegen (nur visuell)
+        try:
+            self.preset_name.default = preset_name_hint[:64]
+        except Exception:
+            pass
+
+    async def on_submit(self, itx: discord.Interaction):
+        name = str(self.preset_name.value).strip()
+        if not name:
+            await itx.response.send_message("Name darf nicht leer sein.", ephemeral=True)
+            return
+        try:
+            await self.core.save_preset(self.lane, self.owner_id, name)
+        except Exception as e:
+            logger.debug("SavePresetModal failed: %r", e)
+            await itx.response.send_message("Preset konnte nicht gespeichert werden.", ephemeral=True)
+            return
+        await itx.response.send_message(f"Preset \"{name}\" gespeichert.", ephemeral=True)
+
+
+class LoadPresetButton(discord.ui.Button):
+    def __init__(self, core):
+        super().__init__(
+            label="\ud83d\uddc2 Preset laden",
+            style=discord.ButtonStyle.secondary,
+            row=4,
+            custom_id="tv_preset_load",
+        )
+        self.core = core
+
+    async def callback(self, itx: discord.Interaction):
+        m: discord.Member = itx.user  # type: ignore
+        lane = MainView.lane_of(itx)
+        if not lane:
+            await itx.response.send_message("Tritt zuerst deiner Lane bei.", ephemeral=True)
+            return
+        if lane.category_id != RANKED_CATEGORY_ID:
+            await itx.response.send_message("Presets gibt es nur f\u00fcr Ranked Lanes.", ephemeral=True)
+            return
+        owner_id = self.core.lane_owner.get(lane.id, m.id)
+        perms = lane.permissions_for(m)
+        if not (owner_id == m.id or perms.manage_channels or perms.administrator):
+            await itx.response.send_message(
+                "Nur Owner/Mods d\u00fcrfen Presets laden.", ephemeral=True
+            )
+            return
+        presets = await self.core.list_presets(owner_id, int(lane.category_id or 0))
+        if not presets:
+            await itx.response.send_message("Du hast noch keine Presets gespeichert.", ephemeral=True)
+            return
+        options = []
+        for row in presets[:25]:  # Discord Select max 25 Optionen
+            label = f"{row['name']}"
+            desc = f"{row['base_name']} • Limit {row['limit']}"
+            options.append(
+                discord.SelectOption(
+                    label=label[:100], value=row["name"], description=desc[:100]
+                )
+            )
+        view = PresetSelectView(
+            self.core,
+            lane,
+            owner_id,
+            options,
+            batch=False,
+            category=lane.category,
+            requester=m,
+        )
+        await itx.response.send_message("Preset ausw\u00e4hlen:", view=view, ephemeral=True)
+
+
+class PresetSelect(discord.ui.Select):
+    def __init__(self, options):
+        super().__init__(min_values=1, max_values=1, options=options, row=0, custom_id="tv_preset_pick")
+
+    async def callback(self, itx: discord.Interaction):
+        view: PresetSelectView = self.view  # type: ignore
+        await view.apply(itx, self.values[0])
+
+
+class PresetSelectView(discord.ui.View):
+    def __init__(
+        self,
+        core,
+        lane: discord.VoiceChannel,
+        owner_id: int,
+        options,
+        *,
+        batch: bool = False,
+        category: discord.CategoryChannel | None = None,
+        requester: discord.Member | None = None,
+    ):
+        super().__init__(timeout=60)
+        self.core = core
+        self.lane = lane
+        self.owner_id = owner_id
+        self.batch = batch
+        self.category = category
+        self.requester = requester
+        self.add_item(PresetSelect(options))
+
+    async def apply(self, itx: discord.Interaction, preset_name: str):
+        if self.batch and self.category:
+            requester = self.requester or itx.user  # type: ignore
+            applied, skipped = await self.core.apply_preset_batch(
+                self.category, requester, preset_name
+            )
+            await itx.response.send_message(
+                f"Preset \"{preset_name}\" angewendet auf {applied} Lanes (übersprungen: {skipped}).",
+                ephemeral=True,
+            )
+            return
+        ok = await self.core.apply_preset(self.lane, self.owner_id, preset_name)
+        if not ok:
+            await itx.response.send_message("Preset nicht gefunden oder Fehler beim Anwenden.", ephemeral=True)
+            return
+        await self.core.refresh_name(self.lane)
+        await itx.response.send_message(f"Preset \"{preset_name}\" angewendet.", ephemeral=True)
+
+
+class BatchPresetButton(discord.ui.Button):
+    def __init__(self, core):
+        super().__init__(
+            label="📦 Preset Batch",
+            style=discord.ButtonStyle.secondary,
+            row=4,
+            custom_id="tv_preset_batch",
+        )
+        self.core = core
+
+    async def callback(self, itx: discord.Interaction):
+        m: discord.Member = itx.user  # type: ignore
+        lane = MainView.lane_of(itx)
+        if not lane:
+            await itx.response.send_message("Tritt zuerst deiner Lane bei.", ephemeral=True)
+            return
+        if lane.category_id != RANKED_CATEGORY_ID:
+            await itx.response.send_message("Batch-Presets gibt es nur für Ranked Lanes.", ephemeral=True)
+            return
+        owner_id = self.core.lane_owner.get(lane.id, m.id)
+        perms = lane.permissions_for(m)
+        if not (owner_id == m.id or perms.manage_channels or perms.administrator):
+            await itx.response.send_message(
+                "Nur Owner/Mods dürfen Batch-Presets anwenden.", ephemeral=True
+            )
+            return
+        presets = await self.core.list_presets(owner_id, int(lane.category_id or 0))
+        if not presets:
+            await itx.response.send_message("Du hast noch keine Presets gespeichert.", ephemeral=True)
+            return
+        options = []
+        for row in presets[:25]:
+            label = f"{row['name']}"
+            desc = f"{row['base_name']} • Limit {row['limit']}"
+            options.append(
+                discord.SelectOption(
+                    label=label[:100], value=row["name"], description=desc[:100]
+                )
+            )
+        view = PresetSelectView(
+            self.core,
+            lane,
+            owner_id,
+            options,
+            batch=True,
+            category=lane.category,
+            requester=m,
+        )
+        await itx.response.send_message(
+            "Preset auswählen (wird auf alle Ranked-Lanes in dieser Kategorie angewendet):",
+            view=view,
+            ephemeral=True,
+        )
+
+
 class MinRankSelect(discord.ui.Select):
     def __init__(self, core):
         self.core = core
@@ -772,6 +1002,15 @@ class MinRankSelect(discord.ui.Select):
         if not lane:
             await itx.response.send_message("Tritt zuerst deiner Lane bei.", ephemeral=True)
             return
+        verified_role_id = getattr(settings, "verified_role_id", None)
+        if verified_role_id:
+            has_verified = any(r.id == verified_role_id for r in getattr(m, "roles", []))
+            if not has_verified:
+                await itx.response.send_message(
+                    "Du kannst den Mindest-Rang nur setzen, wenn du verifiziert bist.",
+                    ephemeral=True,
+                )
+                return
         if getattr(self.core, "is_min_rank_blocked", None) and self.core.is_min_rank_blocked(lane):  # type: ignore[attr-defined]
             await itx.response.send_message("Mindest-Rang ist hier deaktiviert.", ephemeral=True)
             return
