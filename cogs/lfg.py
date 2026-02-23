@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from collections.abc import Iterable
 from datetime import datetime, timedelta
@@ -38,25 +39,27 @@ USE_AI_LFG_DETECTION = True
 PRESENCE_STALE_SECONDS = 120  # 2 Minuten (reduziert für genauere Erkennung)
 
 # Rank-Matching: wie viele Ränge Unterschied sind erlaubt?
-RANK_TOLERANCE = 2  # ±2 Ränge
+RANK_TOLERANCE = 1.5  # ±1.5 Ränge (mit Subranks)
 MAX_MENTION_PINGS = 10
 ACTIVITY_LOOKBACK_DAYS = 14
 MIN_ACTIVITY_SCORE_SESSIONS = 3
 MIN_TIME_MATCH_SCORE = 0.5
 
-# Scoring Weights (Rank ist bewusst dominant)
-WEIGHT_RANK = 70
+# Scoring Weights (angepasst auf neues Schema)
+WEIGHT_RANK = 10
 WEIGHT_TIME = 10
-WEIGHT_LANE = 7
-WEIGHT_COPLAY = 7
-WEIGHT_PRESENCE = 4
-WEIGHT_ACTIVITY = 2
+WEIGHT_LANE = 30
+WEIGHT_COPLAY = 20
+WEIGHT_PRESENCE = 25  # präsenz höher gewichtet, v. a. bei Pattern-Match
+WEIGHT_ACTIVITY = 20
 
 # Spezielle Channel / Kategorien
 NEW_PLAYER_LANE_ID = 1465839460485697556
 STREET_BRAWL_LANE_ID = 1357422958544420944
+# Vorgabe des Users: Casual & Ranked Kategorien
 CASUAL_CATEGORY_ID = 1289721245281292290
-RANKED_CATEGORY_ID = 1412804540994162789  # "Grind" Category
+RANKED_CATEGORY_ID = 1357422957017698478
+STREET_BRAWL_CATEGORY_ID = 1357422957017698478
 
 # Rollen & Ranks
 UNKNOWN_ROLE_ID = 1397687886580547745
@@ -84,6 +87,27 @@ DISCORD_RANK_ROLES = {
     1397687886580547745: ("Unbekannt", 0),
 }
 
+# Sub-Rank Rollen (z. B. "Ascendant 3" oder "Asc 3")
+RANK_SHORT_NAMES = {
+    "Initiate": "Ini",
+    "Seeker": "See",
+    "Alchemist": "Alc",
+    "Arcanist": "Arc",
+    "Ritualist": "Rit",
+    "Emissary": "Emi",
+    "Archon": "Arch",
+    "Oracle": "Ora",
+    "Phantom": "Pha",
+    "Ascendant": "Asc",
+    "Eternus": "Ete",
+}
+SHORT_NAME_TO_RANK = {v.casefold(): k for k, v in RANK_SHORT_NAMES.items()}
+RANK_NAME_TO_VALUE = {name.lower(): val for name, val in DISCORD_RANK_ROLES.values()}
+_SUBRANK_PATTERN = "|".join(
+    re.escape(n) for n in list(RANK_NAME_TO_VALUE.keys()) + list(RANK_SHORT_NAMES.values())
+)
+SUBRANK_ROLE_RE = re.compile(rf"^({_SUBRANK_PATTERN})\s+([1-6])$", re.IGNORECASE)
+
 
 class SmartLFGAgent(commands.Cog):
     """
@@ -105,19 +129,56 @@ class SmartLFGAgent(commands.Cog):
     async def cog_unload(self) -> None:
         log.info("SmartLFGAgent entladen")
 
-    def _get_user_rank(self, member: discord.Member) -> tuple[str, int]:
-        """Ermittelt den höchsten Rang eines Users."""
-        highest = ("Unbekannt", 0)
+    def _parse_subrank_role_name(self, role_name: str) -> tuple[str, int, int] | None:
+        """Parst Rollen wie 'Ascendant 3' oder 'Asc 3'."""
+        if not role_name:
+            return None
+        match = SUBRANK_ROLE_RE.match(role_name.strip())
+        if not match:
+            return None
+        rank_label_raw = match.group(1).casefold()
+        subrank = int(match.group(2))
+        if subrank < 1 or subrank > 6:
+            return None
+
+        rank_name = SHORT_NAME_TO_RANK.get(rank_label_raw, rank_label_raw.title())
+        rank_val = RANK_NAME_TO_VALUE.get(rank_name.lower())
+        if rank_val is None:
+            return None
+        return rank_name, int(rank_val), subrank
+
+    def _get_user_rank_info(self, member: discord.Member) -> tuple[str, int, int | None]:
+        """Gibt (Rank-Name, Rank-Wert, Subrank) zurück, inkl. Subrank-Rollen."""
+        highest_name = UNKNOWN_RANK_NAME
+        highest_val = 0
+        highest_sub: int | None = None
+        highest_score = -1  # score = tier*10 + subrank
+
         for role in member.roles:
+            parsed = self._parse_subrank_role_name(getattr(role, "name", ""))
+            if parsed:
+                r_name, r_val, sub = parsed
+                score = r_val * 10 + sub
+                if score > highest_score:
+                    highest_name, highest_val, highest_sub = r_name, r_val, sub
+                    highest_score = score
+                continue
+
             if role.id in DISCORD_RANK_ROLES:
                 r_name, r_val = DISCORD_RANK_ROLES[role.id]
-                if r_val > highest[1]:
-                    highest = (r_name, r_val)
+                score = r_val * 10 + 5
+                if score > highest_score:
+                    highest_name, highest_val, highest_sub = r_name, r_val, None
+                    highest_score = score
 
-        # Fallback: Wenn User 'Unbekannt' Rolle explizit hat oder gar keine Rank Rolle
-        if highest[1] == 0:
-            return (UNKNOWN_RANK_NAME, 0)
-        return highest
+        if highest_val == 0:
+            return (UNKNOWN_RANK_NAME, 0, None)
+        return highest_name, highest_val, highest_sub
+
+    def _get_user_rank(self, member: discord.Member) -> tuple[str, int]:
+        """Ermittelt den höchsten Rang eines Users (ohne Subrank-Rückgabe)."""
+        name, val, _ = self._get_user_rank_info(member)
+        return name, val
 
     def _keyword_lfg_intent(self, message_content: str) -> bool:
         """Fallback-Heuristik für LFG-Erkennung."""
@@ -278,12 +339,22 @@ class SmartLFGAgent(commands.Cog):
             return []
         return []
 
-    def _rank_score(self, diff: int) -> float:
-        if diff <= 0:
+    def _rank_score(
+        self,
+        target_rank: int,
+        target_sub: int | None,
+        cand_rank: int,
+        cand_sub: int | None,
+    ) -> float:
+        """Scoring mit Subranks: toleranter innerhalb derselben Stufe."""
+        t_sub = target_sub if target_sub is not None else 5
+        c_sub = cand_sub if cand_sub is not None else 5
+        diff_points = abs((target_rank * 10 + t_sub) - (cand_rank * 10 + c_sub))
+        if diff_points <= 5:
             return 1.0
-        if diff == 1:
+        if diff_points <= 10:
             return 0.7
-        if diff == 2:
+        if diff_points <= 20:
             return 0.4
         return 0.0
 
@@ -315,27 +386,55 @@ class SmartLFGAgent(commands.Cog):
         guild: discord.Guild | None,
         content_lower: str,
         author_rank_value: int,
+        has_rank: bool,
     ) -> list[int]:
         if not guild:
             return []
 
-        if "street brawl" in content_lower:
-            return [STREET_BRAWL_LANE_ID]
+        lanes: list[int] = []
 
-        if "ranked" in content_lower or "grind" in content_lower:
-            ranked_cat = guild.get_channel(RANKED_CATEGORY_ID)
-            if isinstance(ranked_cat, discord.CategoryChannel):
-                return [vc.id for vc in ranked_cat.voice_channels]
-            return []
+        # Spezieller Modus: Street Brawl
+        if "street brawl" in content_lower or "streetbrawl" in content_lower:
+            sb_cat = guild.get_channel(STREET_BRAWL_CATEGORY_ID)
+            if isinstance(sb_cat, discord.CategoryChannel):
+                lanes.extend(vc.id for vc in sb_cat.voice_channels)
+            if not lanes and STREET_BRAWL_LANE_ID:
+                lanes.append(STREET_BRAWL_LANE_ID)
+            return lanes
 
-        if author_rank_value <= 5:
-            return [NEW_PLAYER_LANE_ID]
+        # Primäre Kategorie: Ranked nur wenn Rank bekannt, sonst Casual
+        primary_cat_id = RANKED_CATEGORY_ID if has_rank else CASUAL_CATEGORY_ID
 
-        casual_cat = guild.get_channel(CASUAL_CATEGORY_ID)
-        if isinstance(casual_cat, discord.CategoryChannel):
-            return [vc.id for vc in casual_cat.voice_channels]
+        # Keyword „ranked/grind“ erzwingt Ranked – aber nur wenn Rank erkennbar
+        ranked_keyword = "ranked" in content_lower or "grind" in content_lower
+        if ranked_keyword and not has_rank:
+            primary_cat_id = CASUAL_CATEGORY_ID
+        elif ranked_keyword:
+            primary_cat_id = RANKED_CATEGORY_ID
 
-        return []
+        primary_cat = guild.get_channel(primary_cat_id)
+        if isinstance(primary_cat, discord.CategoryChannel):
+            lanes.extend(vc.id for vc in primary_cat.voice_channels)
+
+        # Low-Elo / unbekannt: New Player Lane zusätzlich
+        if author_rank_value <= 5 and NEW_PLAYER_LANE_ID not in lanes:
+            lanes.append(NEW_PLAYER_LANE_ID)
+
+        # Wenn Rank erkennbar: Casual als Fallback ergänzen (mehr Kandidaten)
+        if has_rank and primary_cat_id != CASUAL_CATEGORY_ID:
+            casual_cat = guild.get_channel(CASUAL_CATEGORY_ID)
+            if isinstance(casual_cat, discord.CategoryChannel):
+                lanes.extend(vc.id for vc in casual_cat.voice_channels)
+
+        # Deduplizieren unter Beibehaltung der Reihenfolge
+        seen: set[int] = set()
+        unique_lanes: list[int] = []
+        for cid in lanes:
+            if cid not in seen:
+                unique_lanes.append(cid)
+                seen.add(cid)
+
+        return unique_lanes
 
     async def _fetch_activity_patterns(
         self,
@@ -416,7 +515,7 @@ class SmartLFGAgent(commands.Cog):
             member = guild.get_member(co_id)
             if not member:
                 continue
-            _, r_val = self._get_user_rank(member)
+            _, r_val, _ = self._get_user_rank_info(member)
             if r_val > 0:
                 ranks.append(r_val)
         if not ranks:
@@ -429,6 +528,7 @@ class SmartLFGAgent(commands.Cog):
         author: discord.Member,
         message_content: str,
         author_rank_value: int,
+        author_subrank: int | None,
     ) -> list[dict[str, object]]:
         guild = author.guild
         if not guild:
@@ -441,6 +541,7 @@ class SmartLFGAgent(commands.Cog):
         co_player_stats = await self._fetch_co_player_stats(author.id)
 
         target_rank = author_rank_value
+        target_sub = author_subrank
         rank_strict = True
         if target_rank == 0:
             inferred = self._infer_target_rank_from_coplayers(guild, list(co_player_stats.keys()))
@@ -454,7 +555,7 @@ class SmartLFGAgent(commands.Cog):
 
         content_lower = (message_content or "").lower()
         lane_channel_ids = self._get_target_lane_channel_ids(
-            guild, content_lower, author_rank_value
+            guild, content_lower, author_rank_value, has_rank=author_rank_value > 0
         )
         cutoff_str = (datetime.utcnow() - timedelta(days=ACTIVITY_LOOKBACK_DAYS)).strftime(
             "%Y-%m-%d %H:%M:%S"
@@ -487,13 +588,15 @@ class SmartLFGAgent(commands.Cog):
             if member.voice and member.voice.channel:
                 continue
 
-            rank_name, rank_value = self._get_user_rank(member)
+            rank_name, rank_value, rank_sub = self._get_user_rank_info(member)
 
             if rank_strict and target_rank > 0 and rank_value > 0:
-                diff = abs(rank_value - target_rank)
-                if diff > RANK_TOLERANCE:
+                diff_points = abs(
+                    (rank_value * 10 + (rank_sub or 5)) - (target_rank * 10 + (target_sub or 5))
+                )
+                if diff_points > int(RANK_TOLERANCE * 10):
                     continue
-                rank_score = self._rank_score(diff)
+                rank_score = self._rank_score(target_rank, target_sub, rank_value, rank_sub)
             elif rank_strict and target_rank > 0 and rank_value == 0:
                 continue
             else:
@@ -505,7 +608,9 @@ class SmartLFGAgent(commands.Cog):
             activity_sessions = pattern[2] if pattern else 0
 
             time_score = self._time_match_score(typical_hours, typical_days, now)
-            activity_score = min(1.0, activity_sessions / 10.0) if activity_sessions > 0 else 0.0
+            activity_score = max(
+                time_score, min(1.0, activity_sessions / 8.0) if activity_sessions > 0 else 0.0
+            )
 
             lane_score = 1.0 if discord_id in lane_active_users else 0.0
 
@@ -531,6 +636,9 @@ class SmartLFGAgent(commands.Cog):
                     and time_score < MIN_TIME_MATCH_SCORE
                 ):
                     continue
+                # Muster passt zur aktuellen Uhrzeit -> Presence virtuell hochstufen
+                if time_score >= MIN_TIME_MATCH_SCORE:
+                    presence_score = max(presence_score, 0.8)
 
             score = (
                 rank_score * WEIGHT_RANK
@@ -546,6 +654,7 @@ class SmartLFGAgent(commands.Cog):
                     "user_id": discord_id,
                     "rank_name": rank_name,
                     "rank_value": rank_value,
+                    "rank_sub": rank_sub,
                     "stage": stage,
                     "minutes": minutes,
                     "score": score,
@@ -714,7 +823,7 @@ class SmartLFGAgent(commands.Cog):
             prefix = f"{message.author.mention} (LFG: {message.channel.mention}) "
 
         # 1. User Info
-        rank_name, rank_val = self._get_user_rank(message.author)
+        rank_name, rank_val, rank_sub = self._get_user_rank_info(message.author)
         is_new_player = rank_val <= 5  # Unbekannt (0) bis Ritualist (5)
 
         player_lines: list[str] = []
@@ -723,6 +832,7 @@ class SmartLFGAgent(commands.Cog):
                 message.author,
                 message.content,
                 rank_val,
+                rank_sub,
             )
             if message.guild:
                 player_lines, _lobby_count, _match_count = self._build_player_lines(
@@ -814,6 +924,11 @@ class SmartLFGAgent(commands.Cog):
             response_parts.append(clean_text)
 
         if response_parts:
+            # Wenn keine Matches gezeigt werden, Nutzer aktiv zum Lane-Erstellen motivieren
+            if not player_lines:
+                response_parts.append(
+                    "Mach dir einfach eine Lane auf – meist joinen in wenigen Minuten Leute nach."
+                )
             final_text = "\n\n".join(response_parts)
             if prefix:
                 final_text = prefix + final_text
