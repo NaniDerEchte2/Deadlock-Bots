@@ -43,8 +43,37 @@ def _load_dsn() -> str:
 
 
 def _placeholder_sql(sql: str) -> str:
-    """Convert sqlite-style '?' placeholders to psycopg '%s'."""
+    """Convert sqlite-style placeholders and escape literal '%' for psycopg.
+
+    psycopg only accepts %s/%b/%t as placeholders. Any other lone '%' (e.g.
+    strftime('%w', ...) or printf('%02d', ...)) must be doubled so psycopg
+    treats them as literals. We also convert sqlite-style '?' placeholders
+    to '%s'.
+    """
+    # First escape all percent signs; psycopg will collapse '%%' back to '%'.
+    sql = sql.replace("%", "%%")
+    # Restore the valid placeholders we actually want to send through.
+    sql = (
+        sql.replace("%%s", "%s")
+        .replace("%%b", "%b")
+        .replace("%%t", "%t")
+    )
+    # Finally, translate sqlite-style '?' placeholders to '%s'.
     return sql.replace("?", "%s")
+
+
+class _CompatCursor(psycopg.Cursor):
+    """Cursor that understands sqlite-style '?' placeholders."""
+
+    def execute(self, sql: str, params=None, *args, **kwargs):  # type: ignore[override]
+        return super().execute(_placeholder_sql(sql), params or (), *args, **kwargs)
+
+
+class _CompatConnection(psycopg.Connection):
+    """Connection that applies sqlite-style placeholder compatibility."""
+
+    def execute(self, sql: str, params=None, *args, **kwargs):  # type: ignore[override]
+        return super().execute(_placeholder_sql(sql), params or (), *args, **kwargs)
 
 
 def _ensure_compat_functions(conn: psycopg.Connection) -> None:
@@ -95,7 +124,13 @@ def _ensure_compat_functions(conn: psycopg.Connection) -> None:
 def get_conn():
     """Context manager returning a psycopg connection with dict rows and autocommit."""
     dsn = _load_dsn()
-    conn = psycopg.connect(dsn, row_factory=dict_row, autocommit=True)
+    conn = psycopg.connect(
+        dsn,
+        row_factory=dict_row,
+        autocommit=True,
+        connection_factory=_CompatConnection,
+        cursor_factory=_CompatCursor,
+    )
     try:
         _ensure_compat_functions(conn)
         yield conn
