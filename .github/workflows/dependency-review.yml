@@ -96,7 +96,7 @@ jobs:
           found=0
           audit_fail=0
 
-          python -m pip install pip-audit==2.8.2 safety==3.7.0
+          python -m pip install --require-hashes -r .github/requirements-tools-locked.txt
 
           while IFS= read -r req_file; do
             found=1

@@ -42,19 +42,7 @@ jobs:
           web.run_app(app, host="127.0.0.1", port=8788, access_log=None)
           PY
 
-          python -m pip install \
-            aiohttp==3.13.3 \
-            aiohttp-jinja2==1.6 \
-            aiohttp-session==2.12.1 \
-            aiohttp-basicauth==1.1.0 \
-            "discord.py==2.6.4" \
-            jinja2==3.1.6 \
-            pydantic==2.12.5 \
-            pydantic-settings==2.13.1 \
-            beautifulsoup4==4.14.3 \
-            cryptography==46.0.5 \
-            requests==2.32.5 \
-            aiosqlite==0.22.1
+          python -m pip install --require-hashes -r requirements-locked.txt
           
           python .github/tmp/run_dashboard_auth_guard.py > dashboard-auth-guard.log 2>&1 &
           echo $! > dashboard-auth-guard.pid

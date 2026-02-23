@@ -26,7 +26,7 @@ jobs:
 
       - name: Install uv
         run: |
-          pip install uv==0.6.1 \
+          pip install --require-hashes uv==0.6.1 \
             --hash=sha256:f9e3a59deb1dfcab1f62ba7585bcd066d780177ea2f7de7f382921d76c580323 \
             --hash=sha256:e50e5209d86255a92bfb453bcd4399f6f47a7cfbb6d1ca6facf83edf97d10805 \
             --hash=sha256:be98d181a1a72b1ee7126c3de926eb8d71f5391fd0482371616b46ddb49366e6 \

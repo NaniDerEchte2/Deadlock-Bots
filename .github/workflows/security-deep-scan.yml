@@ -98,38 +98,6 @@ jobs:
           echo "✅ Bandit scan completed"
           bandit -r . -ll || true
 
-      # Safety - Known Vulnerabilities (recursive requirements scan)
-      - name: Safety Vulnerability Check
-        if: needs.detect-languages.outputs.has_requirements == 'true'
-        run: |
-          echo "Running Safety vulnerability check (recursive requirements scan)..."
-          mkdir -p safety-reports
-          found=0
-          audit_fail=0
-          while IFS= read -r req_file; do
-            found=1
-            rel_path="${req_file#./}"
-            safe_name="$(echo "$rel_path" | sed 's#[^A-Za-z0-9._-]#_#g')"
-            echo "Safety scan for $req_file"
-            if ! safety check -r "$req_file" --json > "safety-reports/${safe_name}.json"; then
-              audit_fail=1
-            fi
-          done < <(find . -type f -name "requirements*.txt" \
-            -not -path "*/.venv/*" \
-            -not -path "*/venv/*" \
-            -not -path "*/.git/*" | sort)
-
-          if [ "$found" -eq 0 ]; then
-            echo "ℹ️ No requirements*.txt files found for Safety scan"
-          else
-            echo "✅ Safety recursive scan completed"
-          fi
-
-          if [ "$audit_fail" -ne 0 ]; then
-            echo "⚠️ Safety found vulnerable dependencies (see artifacts)."
-          fi
-        continue-on-error: true
-
       # Pip-Audit (recursive requirements scan)
       - name: Pip-Audit Deep Scan
         if: needs.detect-languages.outputs.has_requirements == 'true'
@@ -192,7 +160,6 @@ jobs:
           name: python-security-reports
           path: |
             bandit-report.json
-            safety-reports/*.json
             pip-audit-reports/*.json
             radon-*.txt
             vulture-report.txt
@@ -270,10 +237,9 @@ jobs:
         run: |
           ESLINT_DIR=/tmp/eslint-scan
           mkdir -p "$ESLINT_DIR"
-          npm install --prefix "$ESLINT_DIR" --no-save \
-            eslint@10.0.0 \
-            eslint-plugin-security@3.0.1 \
-            eslint-plugin-no-secrets@2.2.2
+          cp .github/eslint-security/package.json "$ESLINT_DIR"/
+          cp .github/eslint-security/package-lock.json "$ESLINT_DIR"/
+          npm ci --prefix "$ESLINT_DIR" --ignore-scripts
           cat > "$ESLINT_DIR/eslint.config.mjs" << 'ESLINTEOF'
           import pluginSecurity from "eslint-plugin-security";
           import noSecrets from "eslint-plugin-no-secrets";

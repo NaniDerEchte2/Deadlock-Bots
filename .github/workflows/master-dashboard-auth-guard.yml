@@ -37,20 +37,7 @@ jobs:
           MASTER_GUARD_CSRF_TOKEN: "guard-csrf"
         run: |
           mkdir -p .master-auth-guard
-          python -m pip install \
-            aiohttp==3.13.3 \
-            aiohttp-jinja2==1.6 \
-            aiohttp-session==2.12.1 \
-            aiohttp-basicauth==1.1.0 \
-            "discord.py==2.6.4" \
-            jinja2==3.1.6 \
-            pydantic==2.12.5 \
-            pydantic-settings==2.13.1 \
-            beautifulsoup4==4.14.3 \
-            cryptography==46.0.5 \
-            requests==2.32.5 \
-            aiosqlite==0.22.1 \
-            keyring==25.7.0
+          python -m pip install --require-hashes -r requirements-locked.txt
           
           python .github/scripts/master_dashboard_auth_guard_server.py > master-dashboard-auth-guard.log 2>&1 &
           echo $! > master-dashboard-auth-guard.pid
