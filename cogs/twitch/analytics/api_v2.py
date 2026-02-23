@@ -9,7 +9,7 @@ import ipaddress
 import json
 import logging
 from decimal import Decimal
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode, urlsplit
 
@@ -3195,7 +3195,7 @@ class AnalyticsV2Mixin:
                 def _sanitize(obj):
                     if isinstance(obj, Decimal):
                         return float(obj)
-                    if isinstance(obj, datetime):
+                    if isinstance(obj, (datetime, date)):
                         return obj.isoformat()
                     if isinstance(obj, dict):
                         return {k: _sanitize(v) for k, v in obj.items()}
@@ -3575,17 +3575,14 @@ class AnalyticsV2Mixin:
                 if ad_rows:
                     session_ids = list({int(r["session_id"]) for r in ad_rows if r["session_id"]})
                     if session_ids:
-                        session_ids_json = json.dumps(session_ids)
                         vrows = c.execute(
                             """
                             SELECT session_id, minutes_from_start, viewer_count
                               FROM twitch_session_viewers
-                             WHERE session_id IN (
-                                SELECT CAST(value AS INTEGER) FROM json_each(?)
-                             )
+                             WHERE session_id = ANY(?)
                              ORDER BY session_id, minutes_from_start
                             """,
-                            (session_ids_json,),
+                            (session_ids,),
                         ).fetchall()
                         for vr in vrows:
                             sid = int(vr["session_id"])
