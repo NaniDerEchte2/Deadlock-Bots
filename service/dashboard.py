@@ -3785,6 +3785,7 @@ class DashboardServer:
     @staticmethod
     def _map_deadlock_hero_row(row: Any) -> dict[str, Any]:
         """Normalize hero row to JSON-friendly dict."""
+
         def _get(key: str, idx: int | None = None) -> Any:
             try:
                 return row[key]  # type: ignore[index]

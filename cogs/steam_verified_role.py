@@ -42,9 +42,7 @@ class SteamVerifiedRole(commands.Cog):
         self._transient_member_retry_until: dict[int, float] = {}
         self._task = None
         self._fast_lane_task = None
-        self._assign_concurrency = max(
-            1, int(os.getenv("VERIFIED_ASSIGN_CONCURRENCY", "3"))
-        )
+        self._assign_concurrency = max(1, int(os.getenv("VERIFIED_ASSIGN_CONCURRENCY", "3")))
         self._assign_semaphore = asyncio.Semaphore(self._assign_concurrency)
         self._guild_resolve_lock = asyncio.Lock()
         self._cached_guild: discord.Guild | None = None
@@ -53,9 +51,7 @@ class SteamVerifiedRole(commands.Cog):
         self._guild_cache_expires_at = 0.0
         self._guild_resolve_backoff_until = 0.0
         self._fast_lane_max = max(1, int(os.getenv("VERIFIED_FAST_LANE_MAX", "60")))
-        self._post_assign_delay = max(
-            0.0, float(os.getenv("VERIFIED_ASSIGN_DELAY_SECONDS", "0.2"))
-        )
+        self._post_assign_delay = max(0.0, float(os.getenv("VERIFIED_ASSIGN_DELAY_SECONDS", "0.2")))
         log.info(
             "SteamVerifiedRole init: guild=%s role=%s db=%s every=%ss dry_run=%s log_ch=%s fetch_delay=%ss missing_retry=%ss transient_retry=%ss assign_conc=%s fast_lane_max=%s",
             self.guild_id,
@@ -197,11 +193,7 @@ class SteamVerifiedRole(commands.Cog):
 
     async def _resolve_guild_and_role(self) -> tuple[discord.Guild | None, discord.Role | None]:
         now = self._monotonic_now()
-        if (
-            self._cached_guild
-            and self._cached_role
-            and now < self._guild_cache_expires_at
-        ):
+        if self._cached_guild and self._cached_role and now < self._guild_cache_expires_at:
             return self._cached_guild, self._cached_role
 
         if now < self._guild_resolve_backoff_until:
@@ -221,11 +213,7 @@ class SteamVerifiedRole(commands.Cog):
 
         async with self._guild_resolve_lock:
             now = self._monotonic_now()
-            if (
-                self._cached_guild
-                and self._cached_role
-                and now < self._guild_cache_expires_at
-            ):
+            if self._cached_guild and self._cached_role and now < self._guild_cache_expires_at:
                 return self._cached_guild, self._cached_role
             if now < self._guild_resolve_backoff_until:
                 return None, None
@@ -334,9 +322,7 @@ class SteamVerifiedRole(commands.Cog):
                     return False
                 except TimeoutError:
                     self._mark_member_transient_error(user_id)
-                    log.warning(
-                        "Timeout beim Abrufen von Member %s für Sofort-Zuweisung.", user_id
-                    )
+                    log.warning("Timeout beim Abrufen von Member %s für Sofort-Zuweisung.", user_id)
                     return False
                 except discord.HTTPException as exc:
                     self._mark_member_transient_error(user_id)
@@ -354,7 +340,9 @@ class SteamVerifiedRole(commands.Cog):
                 return True
 
             try:
-                await member.add_roles(role_local, reason="Manuelle Verifizierung / Sofort-Zuweisung")
+                await member.add_roles(
+                    role_local, reason="Manuelle Verifizierung / Sofort-Zuweisung"
+                )
                 self._clear_member_retry_state(user_id)
                 asyncio.create_task(self._trigger_rank_check(user_id))
                 await self._announce_assignments(

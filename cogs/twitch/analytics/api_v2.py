@@ -8,8 +8,8 @@ import collections
 import ipaddress
 import json
 import logging
-from decimal import Decimal
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 from urllib.parse import urlencode, urlsplit
 
@@ -917,9 +917,7 @@ class AnalyticsV2Mixin:
         )
 
         avg_viewers = float(row[0]) if row[0] else 0
-        engagement_rate = (
-            (active_chatters / distinct_viewers * 100) if distinct_viewers > 0 else 0
-        )
+        engagement_rate = (active_chatters / distinct_viewers * 100) if distinct_viewers > 0 else 0
 
         return {
             "avg_avg_viewers": avg_viewers,
@@ -1634,8 +1632,12 @@ class AnalyticsV2Mixin:
                                 "login": r[0],
                                 "totalMessages": int(r[1]) if r[1] else 0,
                                 "totalSessions": int(r[2]) if r[2] else 0,
-                                "firstSeen": r[3].isoformat() if hasattr(r[3], "isoformat") else r[3],
-                                "lastSeen": r[4].isoformat() if hasattr(r[4], "isoformat") else r[4],
+                                "firstSeen": r[3].isoformat()
+                                if hasattr(r[3], "isoformat")
+                                else r[3],
+                                "lastSeen": r[4].isoformat()
+                                if hasattr(r[4], "isoformat")
+                                else r[4],
                                 "loyaltyScore": round(
                                     min(
                                         100.0,
@@ -1719,15 +1721,17 @@ class AnalyticsV2Mixin:
                 )
 
                 totals_b = {
-                    r[0].lower(): (conn.execute(
-                        """
+                    r[0].lower(): (
+                        conn.execute(
+                            """
                         SELECT COUNT(DISTINCT chatter_login)
                         FROM twitch_chatter_rollup
                         WHERE LOWER(streamer_login) = ?
                         """,
-                        [r[0].lower()],
-                    ).fetchone()[0]
-                    or 1)
+                            [r[0].lower()],
+                        ).fetchone()[0]
+                        or 1
+                    )
                     for r in rows
                 }
 
@@ -2571,7 +2575,7 @@ class AnalyticsV2Mixin:
                             "sessions": session_count,
                             "followerValidSamples": follower_valid_samples,
                             "raidEvents": raid_count,
-                             "uniqueViewersMethod": unique_viewers_method,
+                            "uniqueViewersMethod": unique_viewers_method,
                         },
                     }
                 )
@@ -2663,9 +2667,7 @@ class AnalyticsV2Mixin:
                     return (vals[mid - 1] + vals[mid]) / 2
 
                 # Filter: nur Tags mit ausreichend Samples
-                filtered = {
-                    tag: data for tag, data in tag_stats.items() if data["samples"] >= 3
-                }
+                filtered = {tag: data for tag, data in tag_stats.items() if data["samples"] >= 3}
 
                 sorted_tags = sorted(
                     filtered.items(),
@@ -2916,7 +2918,9 @@ class AnalyticsV2Mixin:
 
                 language_session_total = int(sum(r[1] or 0 for r in language_rows))
                 primary_lang_row = language_rows[0] if language_rows else None
-                primary_lang_code = (primary_lang_row[0] or "unknown") if primary_lang_row else "unknown"
+                primary_lang_code = (
+                    (primary_lang_row[0] or "unknown") if primary_lang_row else "unknown"
+                )
                 language_confidence = (
                     round(((primary_lang_row[1] or 0) / max(1, language_session_total)) * 100, 1)
                     if primary_lang_row
@@ -3313,6 +3317,7 @@ class AnalyticsV2Mixin:
         try:
             with storage.get_conn() as conn:
                 data = CoachingEngine.get_coaching_data(conn, streamer, days)
+
                 # Normalize Decimal/Datetime values for JSON serialization
                 def _sanitize(obj):
                     if isinstance(obj, Decimal):
@@ -3832,5 +3837,6 @@ class AnalyticsV2Mixin:
                 "window_days": days,
             }
         )
+
 
 __all__ = ["AnalyticsV2Mixin"]

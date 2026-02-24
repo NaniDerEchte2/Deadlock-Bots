@@ -45,7 +45,9 @@ STAGING_RULES: dict[int, dict[str, Any]] = {
 CASUAL_RANK_FALLBACK = "Chill"
 MINRANK_CATEGORY_ID: int = _cfg.TEMPVOICE_CATEGORY_COMP  # Comp/Ranked Kategorie
 RANKED_CATEGORY_ID: int = _cfg.TEMPVOICE_CATEGORY_COMP  # Comp/Ranked Kategorie (war: Grind)
-INTERFACE_TEXT_CHANNEL_ID: int = _cfg.TEMPVOICE_INTERFACE_CHANNEL  # exportiert (wird vom Interface genutzt)
+INTERFACE_TEXT_CHANNEL_ID: int = (
+    _cfg.TEMPVOICE_INTERFACE_CHANNEL
+)  # exportiert (wird vom Interface genutzt)
 ENGLISH_ONLY_ROLE_ID: int = _cfg.ENGLISH_ONLY_ROLE
 
 DEFAULT_CASUAL_CAP = 8
