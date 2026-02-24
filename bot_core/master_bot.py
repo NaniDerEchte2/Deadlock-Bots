@@ -100,6 +100,24 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
                 # Externe Cogs sollen bei Imports bevorzugt werden
                 sys.path.insert(0, str(parent))
 
+        # Falls das cogs-Paket bereits importiert wurde (z.B. während bootstrap),
+        # erweitern wir den Suchpfad nachträglich um externe Cog-Verzeichnisse.
+        try:  # pragma: no cover - runtime behavior
+            import cogs as cogs_pkg
+
+            for path in [self.cogs_dir, *self.extra_cogs_dirs]:
+                try:
+                    resolved = Path(path).resolve()
+                except Exception:
+                    continue
+                if resolved.is_dir():
+                    pstr = str(resolved)
+                    if pstr not in cogs_pkg.__path__:
+                        cogs_pkg.__path__.append(pstr)
+        except Exception:
+            # Wenn cogs noch nicht importiert wurde, ist nichts zu tun.
+            pass
+
         blocklist_path = os.getenv("COG_BLOCKLIST_FILE")
         if blocklist_path:
             self.blocklist_path = Path(blocklist_path)
