@@ -3,7 +3,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from ..partner_utils import is_partner_channel_for_chat_tracking
-from ..storage import get_conn
+from ..storage_pg import get_conn
 from .constants import eventsub
 
 log = logging.getLogger("TwitchStreams.ChatBot")

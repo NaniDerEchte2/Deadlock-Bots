@@ -114,7 +114,7 @@ class SocialMediaDashboard:
         return clip_id if clip_id > 0 else None
 
     def _clip_owned_by_streamer(self, clip_id: int, streamer_login: str) -> bool:
-        from ..storage import get_conn
+        from ..storage_pg import get_conn
 
         with get_conn() as conn:
             row = conn.execute(
@@ -129,7 +129,7 @@ class SocialMediaDashboard:
         return bool(row)
 
     def _streamer_template_owned_by_streamer(self, template_id: int, streamer_login: str) -> bool:
-        from ..storage import get_conn
+        from ..storage_pg import get_conn
 
         with get_conn() as conn:
             row = conn.execute(

@@ -11,7 +11,7 @@ import time
 
 from discord.ext import commands
 
-from ..storage import get_conn
+from ..storage_pg import get_conn
 from .clip_manager import ClipManager
 
 log = logging.getLogger("TwitchStreams.ClipFetcher")

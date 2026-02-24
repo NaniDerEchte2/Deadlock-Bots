@@ -25,7 +25,7 @@ import discord
 
 from ..api.token_manager import TwitchBotTokenManager
 from ..constants import TWITCH_NOTIFY_CHANNEL_ID, TWITCH_TARGET_GAME_NAME
-from ..storage import get_conn
+from ..storage_pg import get_conn
 from .commands import RaidCommandsMixin
 from .connection import ConnectionMixin
 from .constants import (

@@ -9,7 +9,7 @@ Klare Trennung zwischen:
 import logging
 from datetime import UTC, datetime
 
-from .storage import get_conn
+from .storage_pg import get_conn
 
 log = logging.getLogger("TwitchStreams.PartnerUtils")
 

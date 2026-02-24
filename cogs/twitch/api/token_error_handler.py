@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 
 import discord
 
-from ..storage import get_conn
+from ..storage_pg import get_conn
 
 log = logging.getLogger("TwitchStreams.TokenErrorHandler")
 

@@ -6,7 +6,7 @@ from collections import deque
 
 from service import db
 
-from ..storage import get_conn
+from ..storage_pg import get_conn
 from .constants import (
     _PROMO_ACTIVITY_ENABLED,
     _PROMO_COOLDOWN_MAX,

@@ -8,7 +8,8 @@ import discord
 from discord.ext import commands
 
 from ..chat.constants import PROMO_MESSAGES
-from ..storage import get_conn
+from ..storage import get_conn as _sqlite_get_conn
+from ..storage_pg import get_conn
 from .views import RaidAuthGenerateView, build_raid_requirements_embed
 
 log = logging.getLogger("TwitchStreams.RaidCommands")
@@ -87,7 +88,7 @@ class RaidCommandsMixin:
         twitch_login, twitch_user_id, raid_bot_enabled = row
 
         # Prüfen, ob bereits autorisiert
-        with get_conn() as conn:
+        with _sqlite_get_conn() as conn:
             auth_row = conn.execute(
                 "SELECT raid_enabled FROM twitch_raid_auth WHERE twitch_user_id = ?",
                 (twitch_user_id,),
@@ -121,16 +122,17 @@ class RaidCommandsMixin:
             return
 
         # Aktivieren
-        with get_conn() as conn:
+        with _sqlite_get_conn() as conn:
             conn.execute(
                 "UPDATE twitch_raid_auth SET raid_enabled = 1 WHERE twitch_user_id = ?",
                 (twitch_user_id,),
             )
+            conn.commit()
+        with get_conn() as conn:
             conn.execute(
                 "UPDATE twitch_streamers SET raid_bot_enabled = 1 WHERE twitch_user_id = ?",
                 (twitch_user_id,),
             )
-            conn.commit()
 
         await ctx.send(
             f"✅ Auto-Raid wurde für **{twitch_login}** aktiviert!\n"
@@ -159,16 +161,17 @@ class RaidCommandsMixin:
 
         twitch_login, twitch_user_id = row
 
-        with get_conn() as conn:
+        with _sqlite_get_conn() as conn:
             conn.execute(
                 "UPDATE twitch_raid_auth SET raid_enabled = 0 WHERE twitch_user_id = ?",
                 (twitch_user_id,),
             )
+            conn.commit()
+        with get_conn() as conn:
             conn.execute(
                 "UPDATE twitch_streamers SET raid_bot_enabled = 0 WHERE twitch_user_id = ?",
                 (twitch_user_id,),
             )
-            conn.commit()
 
         await ctx.send(
             f"🛑 Auto-Raid wurde für **{twitch_login}** deaktiviert.\n"
@@ -183,32 +186,28 @@ class RaidCommandsMixin:
         discord_user_id = str(ctx.author.id)
 
         with get_conn() as conn:
-            row = conn.execute(
-                """
-                SELECT s.twitch_login, s.twitch_user_id, s.raid_bot_enabled,
-                       a.raid_enabled, a.authorized_at, a.token_expires_at
-                FROM twitch_streamers s
-                LEFT JOIN twitch_raid_auth a ON s.twitch_user_id = a.twitch_user_id
-                WHERE s.discord_user_id = ?
-                """,
+            _s_row = conn.execute(
+                "SELECT twitch_login, twitch_user_id, raid_bot_enabled FROM twitch_streamers WHERE discord_user_id = ?",
                 (discord_user_id,),
             ).fetchone()
 
-        if not row:
+        if not _s_row:
             await ctx.send(
                 "❌ Du bist nicht als Streamer-Partner registriert.",
                 ephemeral=True,
             )
             return
 
-        (
-            twitch_login,
-            twitch_user_id,
-            raid_bot_enabled,
-            raid_enabled,
-            authorized_at,
-            token_expires_at,
-        ) = row
+        twitch_login, twitch_user_id, raid_bot_enabled = _s_row[0], _s_row[1], _s_row[2]
+
+        with _sqlite_get_conn() as conn:
+            _a_row = conn.execute(
+                "SELECT raid_enabled, authorized_at, token_expires_at FROM twitch_raid_auth WHERE twitch_user_id = ?",
+                (twitch_user_id,),
+            ).fetchone()
+        raid_enabled = _a_row[0] if _a_row else None
+        authorized_at = _a_row[1] if _a_row else None
+        token_expires_at = _a_row[2] if _a_row else None
 
         # Raid-History abrufen
         with get_conn() as conn:
@@ -421,15 +420,21 @@ class RaidCommandsMixin:
             self._register_persistent_raid_auth_views()
 
         # Alle Streamer mit needs_reauth=1 und Discord-User-ID holen
-        with get_conn() as conn:
-            rows = conn.execute(
-                """
-                SELECT a.twitch_user_id, a.twitch_login, s.discord_user_id
-                FROM twitch_raid_auth a
-                LEFT JOIN twitch_streamers s ON a.twitch_user_id = s.twitch_user_id
-                WHERE a.needs_reauth = 1
-                """
+        with _sqlite_get_conn() as conn:
+            _auth_rows = conn.execute(
+                "SELECT twitch_user_id, twitch_login FROM twitch_raid_auth WHERE needs_reauth = 1"
             ).fetchall()
+        rows = []
+        if _auth_rows:
+            _uids = [r[0] for r in _auth_rows]
+            _ph = ",".join("?" * len(_uids))
+            with get_conn() as conn:
+                _discord_rows = conn.execute(
+                    f"SELECT twitch_user_id, discord_user_id FROM twitch_streamers WHERE twitch_user_id IN ({_ph})",
+                    _uids,
+                ).fetchall()
+            _discord_map = {str(r[0]): r[1] for r in _discord_rows}
+            rows = [(r[0], r[1], _discord_map.get(str(r[0]))) for r in _auth_rows]
 
         sent, deleted_total = 0, 0
         failed_list: list[str] = []
@@ -469,12 +474,13 @@ class RaidCommandsMixin:
                     view=view,
                 )
                 # reauth_notified_at aktualisieren
-                with get_conn() as conn:
+                with _sqlite_get_conn() as conn:
                     conn.execute(
                         "UPDATE twitch_raid_auth SET reauth_notified_at=CURRENT_TIMESTAMP "
                         "WHERE twitch_user_id=?",
                         (twitch_user_id,),
                     )
+                    conn.commit()
                 sent += 1
                 log.info("reauth_all: DM gesendet an %s (%s)", twitch_login, discord_uid)
             except Exception as e:
@@ -559,24 +565,30 @@ class RaidCommandsMixin:
         # User angegeben → echte Daten aus DB holen
         discord_user_id = str(target.id)
         with get_conn() as conn:
-            row = conn.execute(
-                """
-                SELECT a.twitch_user_id, a.twitch_login, b.error_message,
-                       b.notified, b.user_dm_sent
-                FROM twitch_streamers s
-                LEFT JOIN twitch_raid_auth a ON s.twitch_user_id = a.twitch_user_id
-                LEFT JOIN twitch_token_blacklist b ON s.twitch_user_id = b.twitch_user_id
-                WHERE s.discord_user_id = ?
-                LIMIT 1
-                """,
+            _s_row = conn.execute(
+                "SELECT twitch_user_id FROM twitch_streamers WHERE discord_user_id = ? LIMIT 1",
                 (discord_user_id,),
             ).fetchone()
 
-        if not row or not row[0]:
+        if not _s_row or not _s_row[0]:
             await ctx.send(f"❌ Kein Twitch-Account für <@{target.id}> gefunden.", ephemeral=True)
             return
 
-        twitch_user_id, twitch_login, error_message, notified, user_dm_sent = row
+        twitch_user_id = _s_row[0]
+        with _sqlite_get_conn() as conn:
+            _a_row = conn.execute(
+                "SELECT twitch_login FROM twitch_raid_auth WHERE twitch_user_id = ?",
+                (twitch_user_id,),
+            ).fetchone()
+        with get_conn() as conn:
+            _b_row = conn.execute(
+                "SELECT error_message, notified, user_dm_sent FROM twitch_token_blacklist WHERE twitch_user_id = ?",
+                (twitch_user_id,),
+            ).fetchone()
+        twitch_login = _a_row[0] if _a_row else None
+        error_message = _b_row[0] if _b_row else None
+        notified = _b_row[1] if _b_row else None
+        user_dm_sent = _b_row[2] if _b_row else None
         error_message = (
             error_message or 'HTTP 400: {"status":400,"message":"Invalid refresh token"}'
         )

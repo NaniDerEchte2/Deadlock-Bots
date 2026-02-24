@@ -6,7 +6,8 @@ import time
 from datetime import UTC, datetime
 
 from ..constants import TWITCH_TARGET_GAME_NAME
-from ..storage import get_conn
+from ..storage import get_conn as _sqlite_get_conn
+from ..storage_pg import get_conn
 
 log = logging.getLogger("TwitchStreams.RaidMixin")
 
@@ -183,22 +184,34 @@ class TwitchRaidMixin:
         # Online-Partner finden (nur verifizierte Partner, die gerade live sind)
         online_partners = []
         partner_logins_lower: list[str] = []
-        with get_conn() as conn:
-            partners = conn.execute(
+        # Step 1: Partner-Stammdaten aus PG
+        with get_conn() as pg_conn:
+            pg_partners = pg_conn.execute(
                 """
-            SELECT DISTINCT s.twitch_login,
-                            s.twitch_user_id,
-                            s.archived_at,
-                            a.raid_enabled,
-                            a.authorized_at
-              FROM twitch_streamers_partner_state s
-              LEFT JOIN twitch_raid_auth a ON s.twitch_user_id = a.twitch_user_id
-             WHERE s.is_partner_active = 1
-               AND s.twitch_user_id IS NOT NULL
-               AND s.twitch_user_id != ?
-            """,
+                SELECT DISTINCT twitch_login, twitch_user_id, archived_at
+                  FROM twitch_streamers_partner_state
+                 WHERE is_partner_active = 1
+                   AND twitch_user_id IS NOT NULL
+                   AND twitch_user_id != ?
+                """,
                 (twitch_user_id,),
             ).fetchall()
+        # Step 2: Auth-Daten aus SQLite für diese User-IDs
+        _auth_map: dict[str, tuple] = {}
+        if pg_partners:
+            _partner_ids = [r[1] for r in pg_partners]
+            _placeholders = ",".join("?" * len(_partner_ids))
+            with _sqlite_get_conn() as _sc:
+                for _ar in _sc.execute(
+                    f"SELECT twitch_user_id, raid_enabled, authorized_at FROM twitch_raid_auth WHERE twitch_user_id IN ({_placeholders})",
+                    _partner_ids,
+                ).fetchall():
+                    _auth_map[str(_ar[0])] = (_ar[1], _ar[2])
+        # Step 3: Kombinieren (gleiche Struktur wie vorheriges JOIN-Result)
+        partners = [
+            (r[0], r[1], r[2], *_auth_map.get(str(r[1]), (None, None)))
+            for r in pg_partners
+        ]
 
         # Nur Partner, die gerade live sind
         for (
@@ -229,18 +242,16 @@ class TwitchRaidMixin:
             if partner_logins_lower:
                 try:
                     rows = []
+                    _ls_placeholders = ",".join("?" * len(partner_logins_lower))
                     with get_conn() as conn:
-                        for login_lower in partner_logins_lower:
-                            row = conn.execute(
-                                """
-                                SELECT streamer_login, had_deadlock_in_session, last_game, last_deadlock_seen_at
-                                FROM twitch_live_state
-                                WHERE streamer_login = ?
-                                """,
-                                (login_lower,),
-                            ).fetchone()
-                            if row:
-                                rows.append(row)
+                        rows = conn.execute(
+                            f"""
+                            SELECT streamer_login, had_deadlock_in_session, last_game, last_deadlock_seen_at
+                              FROM twitch_live_state
+                             WHERE streamer_login IN ({_ls_placeholders})
+                            """,
+                            partner_logins_lower,
+                        ).fetchall()
                     for row in rows:
                         login_lower = (
                             str(row["streamer_login"] if hasattr(row, "keys") else row[0])

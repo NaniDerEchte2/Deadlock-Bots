@@ -22,7 +22,8 @@ import aiohttp
 import discord
 
 from ..api.token_error_handler import TokenErrorHandler
-from ..storage import backfill_tracked_stats_from_category, get_conn
+from ..storage import get_conn as _sqlite_get_conn
+from ..storage_pg import backfill_tracked_stats_from_category, get_conn
 
 TWITCH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"  # noqa: S105
 TWITCH_AUTHORIZE_URL = "https://id.twitch.tv/oauth2/authorize"
@@ -421,7 +422,7 @@ class RaidAuthManager:
         Returns the number of refreshed tokens.
         """
         refreshed_count = 0
-        with get_conn() as conn:
+        with _sqlite_get_conn() as conn:
             # Hole alle User mit raid_enabled=1
             rows = conn.execute(
                 """
@@ -486,7 +487,7 @@ class RaidAuthManager:
             async with self._lock:
                 try:
                     # Double-Check im Lock, falls parallel ein Raid lief und refresht hat
-                    with get_conn() as conn:
+                    with _sqlite_get_conn() as conn:
                         current = conn.execute(
                             "SELECT token_expires_at FROM twitch_raid_auth WHERE twitch_user_id = ?",
                             (user_id,),
@@ -527,7 +528,7 @@ class RaidAuthManager:
                     new_expires_at = datetime.now(UTC).timestamp() + expires_in
                     new_expires_iso = datetime.fromtimestamp(new_expires_at, UTC).isoformat()
 
-                    with get_conn() as conn:
+                    with _sqlite_get_conn() as conn:
                         self._write_token_refresh(
                             conn, user_id, new_access, new_refresh, new_expires_iso
                         )
@@ -555,7 +556,7 @@ class RaidAuthManager:
     async def snapshot_and_flag_reauth(self) -> int:
         """Setzt needs_reauth=1 für alle und löscht Klartext-Tokens.
         Gibt Anzahl betroffener Zeilen zurück."""
-        with get_conn() as conn:
+        with _sqlite_get_conn() as conn:
             conn.execute("""
                 UPDATE twitch_raid_auth SET
                     legacy_access_token  = NULL,
@@ -579,7 +580,7 @@ class RaidAuthManager:
         Entfernt legacy_* Snapshots für Streamer mit needs_reauth=0.
         Diese Daten sind nach erfolgreichem Re-Auth nicht mehr nötig.
         """
-        with get_conn() as conn:
+        with _sqlite_get_conn() as conn:
             conn.execute(
                 """
                 UPDATE twitch_raid_auth
@@ -637,7 +638,7 @@ class RaidAuthManager:
             )
             return
 
-        with get_conn() as conn:
+        with _sqlite_get_conn() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO twitch_raid_auth
@@ -733,7 +734,7 @@ class RaidAuthManager:
             )
             return None
 
-        with get_conn() as conn:
+        with _sqlite_get_conn() as conn:
             row = conn.execute(
                 """
                 SELECT access_token_enc, refresh_token_enc,
@@ -778,7 +779,7 @@ class RaidAuthManager:
         # Token abgelaufen -> refresh
         async with self._lock:
             # Erneuter Check innerhalb des Locks (Double-Check Locking Pattern)
-            with get_conn() as conn:
+            with _sqlite_get_conn() as conn:
                 row_check = conn.execute(
                     """SELECT token_expires_at,
                               access_token_enc,
@@ -829,7 +830,7 @@ class RaidAuthManager:
                 new_expires_at = datetime.now(UTC).timestamp() + expires_in
                 new_expires_at_iso = datetime.fromtimestamp(new_expires_at, UTC).isoformat()
 
-                with get_conn() as conn:
+                with _sqlite_get_conn() as conn:
                     self._write_token_refresh(
                         conn,
                         twitch_user_id,
@@ -872,7 +873,7 @@ class RaidAuthManager:
             return None
 
         # SCHRITT 2: Token aus DB holen
-        with get_conn() as conn:
+        with _sqlite_get_conn() as conn:
             row = conn.execute(
                 """
                 SELECT access_token_enc, refresh_token_enc,
@@ -917,7 +918,7 @@ class RaidAuthManager:
         # SCHRITT 4: Token abgelaufen -> refresh (mit Blacklist-Protection)
         async with self._lock:
             # Double-Check Locking
-            with get_conn() as conn:
+            with _sqlite_get_conn() as conn:
                 row_check = conn.execute(
                     """SELECT token_expires_at,
                               access_token_enc, enc_version
@@ -965,7 +966,7 @@ class RaidAuthManager:
                 new_expires_at = datetime.now(UTC).timestamp() + expires_in
                 new_expires_at_iso = datetime.fromtimestamp(new_expires_at, UTC).isoformat()
 
-                with get_conn() as conn:
+                with _sqlite_get_conn() as conn:
                     self._write_token_refresh(
                         conn,
                         twitch_user_id,
@@ -990,7 +991,7 @@ class RaidAuthManager:
         login = (twitch_login or "").strip().lower()
         if not login:
             return None
-        with get_conn() as conn:
+        with _sqlite_get_conn() as conn:
             row = conn.execute(
                 "SELECT twitch_user_id FROM twitch_streamers WHERE LOWER(twitch_login) = ?",
                 (login,),
@@ -1007,7 +1008,7 @@ class RaidAuthManager:
         """Entfernt die Raid-Autorisierung für einen Streamer."""
         login_hint = ""
         discord_user_id = ""
-        with get_conn() as conn:
+        with _sqlite_get_conn() as conn:
             auth_row = conn.execute(
                 "SELECT twitch_login FROM twitch_raid_auth WHERE twitch_user_id = ?",
                 (twitch_user_id,),
@@ -1063,7 +1064,7 @@ class RaidAuthManager:
 
     def set_raid_enabled(self, twitch_user_id: str, enabled: bool) -> None:
         """Aktiviert/Deaktiviert Auto-Raid für einen Streamer."""
-        with get_conn() as conn:
+        with _sqlite_get_conn() as conn:
             conn.execute(
                 "UPDATE twitch_raid_auth SET raid_enabled = ? WHERE twitch_user_id = ?",
                 (1 if enabled else 0, twitch_user_id),
@@ -1081,7 +1082,7 @@ class RaidAuthManager:
         True, wenn ein OAuth-Grant mit raid_enabled=1 für den Streamer existiert.
         Nutzt DB-Check, damit wir vor Auto-Raids kurzschließen können.
         """
-        with get_conn() as conn:
+        with _sqlite_get_conn() as conn:
             row = conn.execute(
                 "SELECT raid_enabled FROM twitch_raid_auth WHERE twitch_user_id = ?",
                 (twitch_user_id,),
@@ -1091,7 +1092,7 @@ class RaidAuthManager:
     def get_scopes(self, twitch_user_id: str) -> list[str]:
         """Liefert die gespeicherten OAuth-Scopes für einen Streamer (lowercased, unabhängig von raid_enabled)."""
         try:
-            with get_conn() as conn:
+            with _sqlite_get_conn() as conn:
                 row = conn.execute(
                     "SELECT scopes FROM twitch_raid_auth WHERE twitch_user_id = ?",
                     (twitch_user_id,),
@@ -2453,30 +2454,76 @@ class RaidBot:
         except Exception:
             return
 
+        # 1. Candidates that still need a follower count
+        needs_total = [
+            c for c in candidates if c.get("followers_total") is None
+        ]
+        if not needs_total:
+            return
+
+        # 2. Bulk-query PG stream_sessions cache for known logins
+        logins_needed = [
+            (c.get("user_login") or "").lower() for c in needs_total
+            if (c.get("user_login") or "").strip()
+        ]
+        if logins_needed:
+            try:
+                _ph = ",".join("?" * len(logins_needed))
+                with get_conn() as conn:
+                    _db_rows = conn.execute(
+                        f"""
+                        SELECT streamer_login, COALESCE(followers_end, followers_start) AS follower_total
+                          FROM twitch_stream_sessions
+                         WHERE streamer_login IN ({_ph})
+                           AND COALESCE(followers_end, followers_start) IS NOT NULL
+                         ORDER BY COALESCE(ended_at, started_at) DESC
+                        """,
+                        logins_needed,
+                    ).fetchall()
+                # Keep only most recent hit per login
+                _db_map: dict[str, int] = {}
+                for _r in _db_rows:
+                    _login = str(_r[0]).lower()
+                    if _login not in _db_map and _r[1] is not None:
+                        _db_map[_login] = int(_r[1])
+                # Write DB values into candidates
+                for c in needs_total:
+                    _clogin = (c.get("user_login") or "").lower()
+                    if _clogin in _db_map:
+                        c["followers_total"] = _db_map[_clogin]
+            except Exception:
+                log.debug("followers_totals: DB cache query failed", exc_info=True)
+
+        # 3. Parallel API fallback for remaining candidates (no DB hit)
+        api_needed = [
+            c for c in needs_total if c.get("followers_total") is None
+            and str(c.get("user_id") or "").strip()
+        ]
+        if not api_needed:
+            return
+
         api = TwitchAPI(
             self.auth_manager.client_id,
             self.auth_manager.client_secret,
             session=self.session,
         )
 
-        for candidate in candidates:
-            if candidate.get("followers_total") is not None:
-                continue
+        async def _fetch_one(candidate: dict) -> None:
             user_id = str(candidate.get("user_id") or "").strip()
-            if not user_id:
-                continue
             try:
                 token = await self.auth_manager.get_valid_token(user_id, self.session)
             except Exception:
-                token = None
+                return
             if not token:
-                continue
+                return
             try:
                 followers = await api.get_followers_total(user_id, user_token=token)
             except Exception:
-                continue
+                return
             if followers is not None:
                 candidate["followers_total"] = int(followers)
+
+        await asyncio.gather(*(_fetch_one(c) for c in api_needed), return_exceptions=True)
 
     async def _select_fairest_candidate(
         self, candidates: list[dict], from_broadcaster_id: str
@@ -2616,15 +2663,19 @@ class RaidBot:
 
         # Prüfen, ob Streamer Auto-Raid aktiviert hat
         with get_conn() as conn:
-            row = conn.execute(
-                """
-                SELECT s.raid_bot_enabled, a.raid_enabled
-                FROM twitch_streamers s
-                LEFT JOIN twitch_raid_auth a ON s.twitch_user_id = a.twitch_user_id
-                WHERE s.twitch_user_id = ?
-                """,
+            _s_row = conn.execute(
+                "SELECT raid_bot_enabled FROM twitch_streamers WHERE twitch_user_id = ?",
                 (broadcaster_id,),
             ).fetchone()
+        with _sqlite_get_conn() as conn:
+            _a_row = conn.execute(
+                "SELECT raid_enabled FROM twitch_raid_auth WHERE twitch_user_id = ?",
+                (broadcaster_id,),
+            ).fetchone()
+        row = (
+            (_s_row[0] if _s_row else None),
+            (_a_row[0] if _a_row else None),
+        ) if (_s_row is not None or _a_row is not None) else None
 
         if not row:
             log.debug("Streamer %s not found in DB", broadcaster_login)
@@ -2652,6 +2703,20 @@ class RaidBot:
         exclude_ids = {broadcaster_id}
         cached_de_streams = None  # Cache für Fallback-Streams um API zu schonen
 
+        # Blacklist einmalig bulk-laden für den gesamten Retry-Loop
+        blacklisted_ids: set[str] = set()
+        blacklisted_logins: set[str] = set()
+        try:
+            with get_conn() as conn:
+                for _bl_row in conn.execute(
+                    "SELECT target_id, lower(target_login) FROM twitch_raid_blacklist"
+                ).fetchall():
+                    if _bl_row[0]:
+                        blacklisted_ids.add(str(_bl_row[0]))
+                    blacklisted_logins.add(str(_bl_row[1]))
+        except Exception:
+            log.error("Error loading blacklist", exc_info=True)
+
         for attempt in range(max_attempts):
             attempt_start_ts = time.monotonic()
             target = None
@@ -2665,7 +2730,8 @@ class RaidBot:
                 for s in online_partners
                 if s.get("user_id") not in exclude_ids
                 and bool(s.get("raid_enabled", True))
-                and not self._is_blacklisted(s.get("user_id"), s.get("user_login"))
+                and str(s.get("user_id") or "") not in blacklisted_ids
+                and (s.get("user_login") or "").lower() not in blacklisted_logins
             ]
 
             if partner_candidates:
@@ -2694,7 +2760,8 @@ class RaidBot:
                     s
                     for s in cached_de_streams
                     if s.get("user_id") not in exclude_ids
-                    and not self._is_blacklisted(s.get("user_id"), s.get("user_login"))
+                    and str(s.get("user_id") or "") not in blacklisted_ids
+                    and (s.get("user_login") or "").lower() not in blacklisted_logins
                 ]
 
                 if fallback_candidates:

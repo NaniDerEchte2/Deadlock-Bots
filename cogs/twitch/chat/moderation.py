@@ -3,7 +3,7 @@ import re
 import time
 from datetime import UTC, datetime
 
-from ..storage import get_conn
+from ..storage_pg import get_conn
 from .constants import (
     _INVITE_QUESTION_CHANNEL_COOLDOWN_SEC,
     _INVITE_QUESTION_RE,

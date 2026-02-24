@@ -15,7 +15,7 @@ import logging
 import time
 from datetime import UTC, datetime, timedelta
 
-from ..storage import get_conn
+from ..storage_pg import get_conn
 
 log = logging.getLogger("TwitchStreams.PartnerRecruit")
 

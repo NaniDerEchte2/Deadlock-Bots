@@ -9,7 +9,7 @@ import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
-from ..storage import get_conn
+from ..storage_pg import get_conn
 
 log = logging.getLogger("TwitchStreams.ClipManager")
 

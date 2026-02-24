@@ -16,7 +16,7 @@ from pathlib import Path
 
 from discord.ext import commands
 
-from ..storage import get_conn
+from ..storage_pg import get_conn
 from .clip_manager import ClipManager
 from .uploaders import VideoProcessor
 
