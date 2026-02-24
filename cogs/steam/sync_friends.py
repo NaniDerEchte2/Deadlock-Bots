@@ -215,6 +215,7 @@ class SteamFriendsSync(commands.Cog):
             if verified_cog is not None:
                 tasks = []
                 for uid in result.get("newly_verified_ids", []):
+
                     async def run(uid_local: int):
                         nonlocal immediate
                         try:
@@ -224,7 +225,10 @@ class SteamFriendsSync(commands.Cog):
                             if ok:
                                 immediate += 1
                         except Exception as exc:  # noqa: PERF203
-                            log.warning("Assign verified (immediate) failed for %s: %s", uid_local, exc)
+                            log.warning(
+                                "Assign verified (immediate) failed for %s: %s", uid_local, exc
+                            )
+
                     tasks.append(asyncio.create_task(run(int(uid))))
                 if tasks:
                     await asyncio.gather(*tasks, return_exceptions=True)
@@ -274,6 +278,7 @@ class SteamFriendsSync(commands.Cog):
                 # direkte Vergabe mit schnellen Retries
                 tasks = []
                 for uid in result.get("newly_verified_ids", []):
+
                     async def run(uid_local: int):
                         nonlocal immediate
                         try:
@@ -283,7 +288,10 @@ class SteamFriendsSync(commands.Cog):
                             if ok:
                                 immediate += 1
                         except Exception as exc:  # noqa: PERF203
-                            log.warning("Assign verified (immediate) failed for %s: %s", uid_local, exc)
+                            log.warning(
+                                "Assign verified (immediate) failed for %s: %s", uid_local, exc
+                            )
+
                     tasks.append(asyncio.create_task(run(int(uid))))
                 if tasks:
                     await asyncio.gather(*tasks, return_exceptions=True)

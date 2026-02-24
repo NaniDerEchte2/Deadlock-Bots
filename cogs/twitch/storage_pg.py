@@ -20,6 +20,7 @@ log = logging.getLogger("TwitchStreams.StoragePG")
 KEYRING_SERVICE = "DeadlockBot"
 ENV_DSN = "TWITCH_ANALYTICS_DSN"
 
+
 class RowCompat:
     """Row that supports both numeric and name-based access."""
 

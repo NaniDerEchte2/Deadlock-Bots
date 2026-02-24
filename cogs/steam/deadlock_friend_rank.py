@@ -316,7 +316,9 @@ class DeadlockFriendRank(commands.Cog):
     def linked_steam_id_for_user(
         self, discord_user_id: int, *, restore_from_archive: bool = True
     ) -> str | None:
-        ids = self.linked_steam_ids_for_user(discord_user_id, restore_from_archive=restore_from_archive)
+        ids = self.linked_steam_ids_for_user(
+            discord_user_id, restore_from_archive=restore_from_archive
+        )
         return ids[0] if ids else None
 
     @staticmethod
