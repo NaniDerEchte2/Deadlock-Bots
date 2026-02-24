@@ -119,6 +119,31 @@ class CogLoaderMixin:
         self.auto_discover_cogs()
         return {"namespace": normalized, "changed": True}
 
+    def _iter_cogs_dirs(self) -> list[Path]:
+        """Return all configured cog roots (primary + extras), de-duplicated."""
+        candidates: list[Path] = []
+        primary = getattr(self, "cogs_dir", None)
+        if primary:
+            candidates.append(Path(primary))
+        for extra in getattr(self, "extra_cogs_dirs", []) or []:
+            try:
+                candidates.append(Path(extra))
+            except Exception:
+                continue
+
+        unique: list[Path] = []
+        seen: set[Path] = set()
+        for path in candidates:
+            try:
+                resolved = path.resolve()
+            except Exception:
+                continue
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            unique.append(resolved)
+        return unique
+
     def _should_exclude(self, module_path: str) -> bool:
         default_excludes = {
             "",
@@ -138,61 +163,75 @@ class CogLoaderMixin:
     def auto_discover_cogs(self):
         try:
             importlib.invalidate_caches()
-            if not self.cogs_dir.exists():
-                logging.warning(f"Cogs directory not found: {self.cogs_dir}")
+            cogs_dirs = self._iter_cogs_dirs()
+            if not cogs_dirs:
+                logging.warning("Cogs directories not configured; discovery skipped")
                 return
 
-            discovered: list[str] = []
+            discovered: set[str] = set()
             pkg_dirs_with_setup: list[Path] = []
 
-            # Pass 1: Paket-Cogs mit setup() in __init__.py
-            for init_file in self.cogs_dir.rglob("__init__.py"):
-                if any(part == "__pycache__" for part in init_file.parts):
+            for base_dir in cogs_dirs:
+                if not base_dir.exists():
+                    logging.warning(f"Cogs directory not found: {base_dir}")
                     continue
-                try:
-                    content = init_file.read_text(encoding="utf-8", errors="ignore")
-                except Exception as e:
-                    logging.warning(f"⚠️ Error reading {init_file}: {e}")
-                    continue
-                has_setup = ("async def setup(" in content) or ("def setup(" in content)
-                if not has_setup:
-                    continue
-                rel = init_file.relative_to(self.cogs_dir.parent)
-                module_path = ".".join(rel.parts[:-1])
-                if self._should_exclude(module_path):
-                    logging.debug(f"🚫 Excluded cog (package): {module_path}")
-                    continue
-                discovered.append(module_path)
-                pkg_dirs_with_setup.append(init_file.parent)
-                logging.debug(f"🔍 Auto-discovered package cog: {module_path}")
 
-            # Pass 2: Einzelne .py
-            for cog_file in self.cogs_dir.rglob("*.py"):
-                if cog_file.name == "__init__.py":
-                    continue
-                if any(part == "__pycache__" for part in cog_file.parts):
-                    continue
-                if any(cog_file.is_relative_to(pkg_dir) for pkg_dir in pkg_dirs_with_setup):
-                    continue
-                try:
-                    content = cog_file.read_text(encoding="utf-8", errors="ignore")
-                except Exception as e:
-                    logging.warning(f"⚠️ Error checking {cog_file.name}: {e}")
-                    continue
-                has_setup = ("async def setup(" in content) or ("def setup(" in content)
-                if not has_setup:
-                    logging.debug(f"⏭️ Skipped {cog_file}: no setup() found")
-                    continue
-                rel = cog_file.relative_to(self.cogs_dir.parent)
-                module_path = ".".join(rel.with_suffix("").parts)
-                if self._should_exclude(module_path):
-                    logging.debug(f"🚫 Excluded cog: {module_path}")
-                    continue
-                discovered.append(module_path)
-                logging.debug(f"🔍 Auto-discovered cog: {module_path}")
+                parent = base_dir.parent
 
-            self.cogs_list = sorted(set(discovered))
-            logging.info(f"✅ Auto-discovery complete: {len(self.cogs_list)} cogs found")
+                # Pass 1: Paket-Cogs mit setup() in __init__.py
+                for init_file in base_dir.rglob("__init__.py"):
+                    if any(part == "__pycache__" for part in init_file.parts):
+                        continue
+                    try:
+                        content = init_file.read_text(encoding="utf-8", errors="ignore")
+                    except Exception as e:
+                        logging.warning(f"⚠️ Error reading {init_file}: {e}")
+                        continue
+                    has_setup = ("async def setup(" in content) or ("def setup(" in content)
+                    if not has_setup:
+                        continue
+                    rel = init_file.relative_to(parent)
+                    module_path = ".".join(rel.parts[:-1])
+                    if self._should_exclude(module_path):
+                        logging.debug(f"🚫 Excluded cog (package): {module_path}")
+                        continue
+                    if module_path in discovered:
+                        continue
+                    discovered.add(module_path)
+                    pkg_dirs_with_setup.append(init_file.parent)
+                    logging.debug(f"🔍 Auto-discovered package cog: {module_path}")
+
+                # Pass 2: Einzelne .py
+                for cog_file in base_dir.rglob("*.py"):
+                    if cog_file.name == "__init__.py":
+                        continue
+                    if any(part == "__pycache__" for part in cog_file.parts):
+                        continue
+                    if any(cog_file.is_relative_to(pkg_dir) for pkg_dir in pkg_dirs_with_setup):
+                        continue
+                    try:
+                        content = cog_file.read_text(encoding="utf-8", errors="ignore")
+                    except Exception as e:
+                        logging.warning(f"⚠️ Error checking {cog_file.name}: {e}")
+                        continue
+                    has_setup = ("async def setup(" in content) or ("def setup(" in content)
+                    if not has_setup:
+                        logging.debug(f"⏭️ Skipped {cog_file}: no setup() found")
+                        continue
+                    rel = cog_file.relative_to(parent)
+                    module_path = ".".join(rel.with_suffix("").parts)
+                    if self._should_exclude(module_path):
+                        logging.debug(f"🚫 Excluded cog: {module_path}")
+                        continue
+                    if module_path in discovered:
+                        continue
+                    discovered.add(module_path)
+                    logging.debug(f"🔍 Auto-discovered cog: {module_path}")
+
+            self.cogs_list = sorted(discovered)
+            logging.info(
+                f"✅ Auto-discovery complete: {len(self.cogs_list)} cogs found across {len(cogs_dirs)} roots"
+            )
 
             for key in list(self.cog_status.keys()):
                 if self.is_namespace_blocked(key, assume_normalized=True):

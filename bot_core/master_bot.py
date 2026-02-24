@@ -4,6 +4,7 @@ import asyncio
 import datetime as _dt
 import logging
 import os
+import sys
 from pathlib import Path
 
 import discord
@@ -63,7 +64,42 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
 
         self.setup_logging()
 
+        # Unterstütze zusätzliche Cog-Quellen (z.B. ausgelagerter Steam-Bot)
         self.cogs_dir = self.root_dir / "cogs"
+        extra_dirs: list[Path] = []
+
+        steam_env = (os.getenv("STEAM_COGS_DIR") or "").strip()
+        if steam_env:
+            extra_dirs.append(Path(steam_env).expanduser())
+
+        default_external = (
+            Path(os.path.expandvars(r"%USERPROFILE%")) / "Documents" / "Deadlock-Steam-Bot" / "cogs"
+        )
+        if default_external.exists():
+            extra_dirs.append(default_external)
+
+        for raw in (os.getenv("EXTRA_COG_DIRS") or "").split(os.pathsep):
+            item = raw.strip()
+            if not item:
+                continue
+            extra_dirs.append(Path(item).expanduser())
+
+        self.extra_cogs_dirs: list[Path] = []
+        seen_dirs: set[Path] = set()
+        for candidate in extra_dirs:
+            try:
+                resolved = candidate.resolve()
+            except Exception:
+                continue
+            if not resolved.is_dir() or resolved in seen_dirs:
+                continue
+            seen_dirs.add(resolved)
+            self.extra_cogs_dirs.append(resolved)
+            parent = resolved.parent
+            if parent and str(parent) not in sys.path:
+                # Externe Cogs sollen bei Imports bevorzugt werden
+                sys.path.insert(0, str(parent))
+
         blocklist_path = os.getenv("COG_BLOCKLIST_FILE")
         if blocklist_path:
             self.blocklist_path = Path(blocklist_path)
