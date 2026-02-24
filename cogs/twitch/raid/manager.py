@@ -1162,10 +1162,14 @@ class RaidExecutor:
         }
 
         try:
+            api_started = time.monotonic()
             async with session.post(url, headers=headers, params=params) as r:
+                api_elapsed_ms = (time.monotonic() - api_started) * 1000.0
                 if r.status != 200:
                     txt = await r.text()
-                    error_msg = f"Raid API failed: HTTP {r.status}: {txt[:200]}"
+                    error_msg = (
+                        f"Raid API failed in {api_elapsed_ms:.0f}ms: HTTP {r.status}: {txt[:200]}"
+                    )
                     log.error(error_msg)
                     self._save_raid_history(
                         from_broadcaster_id,
@@ -1184,11 +1188,12 @@ class RaidExecutor:
 
                 # Erfolg!
                 log.info(
-                    "Raid successful: %s -> %s (%d viewers, %d candidates)",
+                    "Raid successful: %s -> %s (%d viewers, %d candidates, api=%.0fms)",
                     from_broadcaster_login,
                     to_broadcaster_login,
                     viewer_count,
                     candidates_count,
+                    api_elapsed_ms,
                 )
                 self._save_raid_history(
                     from_broadcaster_id,
@@ -1288,8 +1293,8 @@ class RaidBot:
         self._bot_id = None  # Wird bei set_chat_bot gesetzt als Fallback
         self._cog = None  # Referenz zum TwitchStreamCog für EventSub subscriptions
 
-        # Pending Raids: {to_broadcaster_id: (from_broadcaster_login, target_stream_data, timestamp, is_partner_raid, viewer_count)}
-        self._pending_raids: dict[str, tuple[str, dict | None, float, bool, int]] = {}
+        # Pending Raids: {to_broadcaster_id: (from_login, target_stream_data, registered_ts, is_partner_raid, viewer_count, offline_trigger_ts)}
+        self._pending_raids: dict[str, tuple[str, dict | None, float, bool, int, float | None]] = {}
         # Unterdrückt den nächsten Offline-Auto-Raid, wenn kurz zuvor ein manueller/externer Raid erkannt wurde.
         self._manual_raid_suppression: dict[str, float] = {}
 
@@ -1861,17 +1866,22 @@ class RaidBot:
         timeout = 300  # 5 Minuten
         stale = [
             to_id
-            for to_id, (_, _, timestamp, _, _) in self._pending_raids.items()
-            if now - timestamp > timeout
+            for to_id, pending in self._pending_raids.items()
+            if now - (pending[2] if len(pending) > 2 else 0) > timeout
         ]
         for to_id in stale:
-            from_login, _, timestamp, _, _ = self._pending_raids.pop(to_id)
-            age = now - timestamp
+            pending = self._pending_raids.pop(to_id)
+            from_login = pending[0] if len(pending) > 0 else "<unknown>"
+            registered_ts = pending[2] if len(pending) > 2 else 0.0
+            offline_ts = pending[5] if len(pending) > 5 else None
+            age = now - registered_ts
+            offline_pending_s = (time.monotonic() - offline_ts) if offline_ts else -1.0
             log.warning(
-                "Pending raid timed out after %.0fs: %s -> (ID: %s). EventSub event never arrived.",
+                "Pending raid timed out after %.0fs: %s -> (ID: %s). EventSub event never arrived. offline->pending=%.0fs",
                 age,
                 from_login,
                 to_id,
+                offline_pending_s,
             )
 
     async def _register_pending_raid(
@@ -1882,6 +1892,7 @@ class RaidBot:
         target_stream_data: dict | None = None,
         is_partner_raid: bool = False,
         viewer_count: int = 0,
+        offline_trigger_ts: float | None = None,
     ):
         """
         Registriert einen Raid, der auf EventSub Bestätigung wartet.
@@ -1897,18 +1908,24 @@ class RaidBot:
             is_partner_raid: True wenn es ein Partner-Raid ist (für Partner-Message)
             viewer_count: Viewer-Count beim Raid-Start (für Partner-Message)
         """
+        registered_ts = time.time()
         self._pending_raids[to_broadcaster_id] = (
             from_broadcaster_login,
             target_stream_data,
-            time.time(),
+            registered_ts,
             is_partner_raid,
             viewer_count,
+            offline_trigger_ts,
+        )
+        offline_to_pending_ms = (
+            (time.monotonic() - offline_trigger_ts) * 1000 if offline_trigger_ts else None
         )
         log.info(
-            "Pending raid registered: %s -> %s (ID: %s). Creating EventSub subscription...",
+            "Pending raid registered: %s -> %s (ID: %s). Creating EventSub subscription... offline->pending=%s",
             from_broadcaster_login,
             to_broadcaster_login,
             to_broadcaster_id,
+            f"{offline_to_pending_ms:.0f}ms" if offline_to_pending_ms is not None else "n/a",
         )
 
         # Dynamische EventSub subscription erstellen
@@ -1976,13 +1993,12 @@ class RaidBot:
             )
             return
 
-        (
-            expected_from,
-            target_stream_data,
-            _,
-            is_partner_raid,
-            registered_viewer_count,
-        ) = pending
+        expected_from = pending[0] if len(pending) > 0 else from_broadcaster_login
+        target_stream_data = pending[1] if len(pending) > 1 else None
+        registered_ts = pending[2] if len(pending) > 2 else time.time()
+        is_partner_raid = pending[3] if len(pending) > 3 else False
+        registered_viewer_count = pending[4] if len(pending) > 4 else viewer_count
+        offline_trigger_ts = pending[5] if len(pending) > 5 else None
 
         # Verify it's the same raid we started
         if expected_from.lower() != from_broadcaster_login.lower():
@@ -1994,11 +2010,13 @@ class RaidBot:
             return
 
         log.info(
-            "✅ Raid arrival confirmed: %s -> %s (%d viewers, partner_raid=%s)",
+            "✅ Raid arrival confirmed: %s -> %s (%d viewers, partner_raid=%s, api->arrival=%.0fs, offline->arrival=%.0fs)",
             from_broadcaster_login,
             to_broadcaster_login,
             viewer_count,
             is_partner_raid,
+            time.time() - registered_ts,
+            (time.monotonic() - offline_trigger_ts) if offline_trigger_ts else -1.0,
         )
 
         # silent_raid Check: Streamer kann Raid-Nachrichten im Chat unterdrücken
@@ -2575,6 +2593,7 @@ class RaidBot:
         online_partners: list[dict],
         api=None,
         category_id: str | None = None,
+        offline_trigger_ts: float | None = None,
     ) -> str | None:
         """
         Wird aufgerufen, wenn ein Streamer offline geht.
@@ -2584,6 +2603,9 @@ class RaidBot:
         - Auto-Retry bei Fehlern (z.B. Ziel hat Raids deaktiviert)
         - Blacklist-Management für nicht raidbare Kanäle
         """
+        flow_start_ts = offline_trigger_ts if offline_trigger_ts is not None else time.monotonic()
+        offline_trigger_ts = flow_start_ts
+
         # Prüfen, ob Auto-Raid durch manuellen Raid unterdrückt ist
         if self.is_offline_auto_raid_suppressed(broadcaster_id):
             log.info(
@@ -2616,12 +2638,22 @@ class RaidBot:
             log.debug("Raid bot disabled for %s (no auth)", broadcaster_login)
             return None
 
+        log.info(
+            "Auto-raid pipeline started for %s (id=%s): viewers=%d, stream_duration=%ds, online_partners=%d",
+            broadcaster_login,
+            broadcaster_id,
+            viewer_count,
+            stream_duration_sec,
+            len(online_partners),
+        )
+
         # Retry-Loop Setup
         max_attempts = 3
         exclude_ids = {broadcaster_id}
         cached_de_streams = None  # Cache für Fallback-Streams um API zu schonen
 
         for attempt in range(max_attempts):
+            attempt_start_ts = time.monotonic()
             target = None
             is_partner_raid = False
             candidates_count = 0
@@ -2673,54 +2705,71 @@ class RaidBot:
 
             if not target:
                 log.info(
-                    "No valid raid target found for %s (Attempt %d/%d)",
+                    "No valid raid target found for %s (Attempt %d/%d, total_since_offline=%.0fms)",
                     broadcaster_login,
                     attempt + 1,
                     max_attempts,
+                    (time.monotonic() - flow_start_ts) * 1000.0,
                 )
                 return None
 
             # 3. Raid ausführen
-            target_id = target["user_id"]
-            target_login = target["user_login"]
-            target_started_at = target.get("started_at", "")
+                target_id = target["user_id"]
+                target_login = target["user_login"]
+                target_started_at = target.get("started_at", "")
 
-            log.info(
-                "Executing raid attempt %d/%d: %s -> %s",
-                attempt + 1,
-                max_attempts,
-                broadcaster_login,
-                target_login,
-            )
+                selection_ms = (time.monotonic() - attempt_start_ts) * 1000.0
+                log.info(
+                    "Executing raid attempt %d/%d: %s -> %s (selection %.0fms, candidates=%d)",
+                    attempt + 1,
+                    max_attempts,
+                    broadcaster_login,
+                    target_login,
+                    selection_ms,
+                    candidates_count,
+                )
 
-            success, error = await self.raid_executor.start_raid(
-                from_broadcaster_id=broadcaster_id,
-                from_broadcaster_login=broadcaster_login,
-                to_broadcaster_id=target_id,
-                to_broadcaster_login=target_login,
-                viewer_count=viewer_count,
-                stream_duration_sec=stream_duration_sec,
-                target_stream_started_at=target_started_at,
-                candidates_count=candidates_count,
-                session=self.session,
-                reason="auto_raid_on_offline",
-            )
-
-            if success:
-                # Pending Raid registrieren (Nachricht wird erst nach EventSub gesendet)
-                # Funktioniert für Partner-Raids UND Non-Partner-Raids
-                await self._register_pending_raid(
+                api_call_start = time.monotonic()
+                success, error = await self.raid_executor.start_raid(
+                    from_broadcaster_id=broadcaster_id,
                     from_broadcaster_login=broadcaster_login,
                     to_broadcaster_id=target_id,
                     to_broadcaster_login=target_login,
-                    target_stream_data=target,
-                    is_partner_raid=is_partner_raid,
                     viewer_count=viewer_count,
+                stream_duration_sec=stream_duration_sec,
+                target_stream_started_at=target_started_at,
+                    candidates_count=candidates_count,
+                    session=self.session,
+                    reason="auto_raid_on_offline",
                 )
-                return target_login
+                api_call_ms = (time.monotonic() - api_call_start) * 1000.0
+                total_ms = (time.monotonic() - flow_start_ts) * 1000.0
 
-            # Fehler-Behandlung
-            exclude_ids.add(target_id)  # Diesen Kandidaten nicht nochmal versuchen
+                if success:
+                    # Pending Raid registrieren (Nachricht wird erst nach EventSub gesendet)
+                    # Funktioniert für Partner-Raids UND Non-Partner-Raids
+                    await self._register_pending_raid(
+                        from_broadcaster_login=broadcaster_login,
+                        to_broadcaster_id=target_id,
+                        to_broadcaster_login=target_login,
+                        target_stream_data=target,
+                        is_partner_raid=is_partner_raid,
+                        viewer_count=viewer_count,
+                        offline_trigger_ts=offline_trigger_ts,
+                    )
+                    log.info(
+                        "Raid attempt %d/%d succeeded (%s -> %s) api=%.0fms, total_since_offline=%.0fms",
+                        attempt + 1,
+                        max_attempts,
+                        broadcaster_login,
+                        target_login,
+                        api_call_ms,
+                        total_ms,
+                    )
+                    return target_login
+
+                # Fehler-Behandlung
+                exclude_ids.add(target_id)  # Diesen Kandidaten nicht nochmal versuchen
 
             # Check auf "Cannot be raided"/Raid-Settings (HTTP 400)
             if self._is_retryable_raid_error(error):
@@ -2738,7 +2787,14 @@ class RaidBot:
                 continue  # Nächster Versuch
 
             # Bei anderen Fehlern (z.B. API Down, Auth Error) brechen wir ab
-            log.error("Raid failed with non-retriable error: %s. Aborting.", error)
+            log.error(
+                "Raid failed with non-retriable error after %.0fms (api=%.0fms, attempt=%d/%d): %s",
+                total_ms,
+                api_call_ms,
+                attempt + 1,
+                max_attempts,
+                error,
+            )
             return None
 
         return None

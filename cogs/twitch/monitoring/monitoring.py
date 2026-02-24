@@ -743,6 +743,7 @@ class TwitchMonitoringMixin:
         """Direkter Auto-Raid-Trigger bei stream.offline EventSub."""
         if not broadcaster_id:
             return
+        trigger_ts = time.monotonic()
         login_lower = (broadcaster_login or "").lower()
         # Fallback-Dedupe-Guard zurücksetzen, damit beim nächsten Streamstart erneut erinnert werden kann.
         try:
@@ -771,12 +772,19 @@ class TwitchMonitoringMixin:
         tracked_logins = self._get_tracked_logins_for_eventsub()
         streams_by_login = await self._fetch_streams_by_logins_quick(tracked_logins)
 
+        log.info(
+            "EventSub stream.offline received for %s (id=%s) -> triggering auto-raid pipeline",
+            broadcaster_login or login_lower,
+            broadcaster_id,
+        )
+
         try:
             await self._handle_auto_raid_on_offline(
                 login=login_lower or broadcaster_login or "",
                 twitch_user_id=broadcaster_id,
                 previous_state=previous_state,
                 streams_by_login=streams_by_login,
+                offline_trigger_ts=trigger_ts,
             )
         except Exception:
             log.exception(
@@ -2020,6 +2028,7 @@ class TwitchMonitoringMixin:
 
             # Auto-Raid beim Offline-Gehen (Throttle gemeinsam mit EventSub-Pfad)
             if should_auto_raid:
+                trigger_ts = time.monotonic()
                 raid_uid = str(twitch_user_id or previous_state.get("twitch_user_id") or "")
                 throttle = getattr(self, "_eventsub_offline_throttle", None)
                 if throttle is None:
@@ -2033,6 +2042,7 @@ class TwitchMonitoringMixin:
                         twitch_user_id=raid_uid,
                         previous_state=previous_state,
                         streams_by_login=streams_by_login,
+                        offline_trigger_ts=trigger_ts,
                     )
 
             if ended_deadlock_posting:

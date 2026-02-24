@@ -2,6 +2,7 @@
 """Mixin für Auto-Raid-Integration in TwitchStreamCog."""
 
 import logging
+import time
 from datetime import UTC, datetime
 
 from ..constants import TWITCH_TARGET_GAME_NAME
@@ -19,11 +20,15 @@ class TwitchRaidMixin:
         twitch_user_id: str | None,
         previous_state: dict,
         streams_by_login: dict[str, dict],
+        offline_trigger_ts: float | None = None,
     ):
         """
         Wird aufgerufen, wenn ein Streamer offline geht.
         Versucht automatisch zu raiden, falls aktiviert.
         """
+        if offline_trigger_ts is None:
+            offline_trigger_ts = time.monotonic()
+
         now = datetime.now(UTC)
         recency_cap_seconds = 360  # Maximaler Abstand (10min), damit Deadlock noch relevant ist
 
@@ -166,6 +171,14 @@ class TwitchRaidMixin:
 
         # Viewer-Count
         viewer_count = int(previous_state.get("last_viewer_count", 0))
+
+        log.info(
+            "Auto-Raid Trigger gestartet: %s (id=%s) offline, viewers=%d, duration=%ds",
+            login,
+            twitch_user_id,
+            viewer_count,
+            stream_duration_sec,
+        )
 
         # Online-Partner finden (nur verifizierte Partner, die gerade live sind)
         online_partners = []
@@ -318,6 +331,7 @@ class TwitchRaidMixin:
                 online_partners=eligible_partners,
                 api=self.api if hasattr(self, "api") else None,
                 category_id=self._category_id if hasattr(self, "_category_id") else None,
+                offline_trigger_ts=offline_trigger_ts,
             )
             if target_login:
                 log.info("✅ Auto-Raid erfolgreich: %s -> %s", login, target_login)
