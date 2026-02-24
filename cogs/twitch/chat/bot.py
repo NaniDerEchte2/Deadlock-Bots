@@ -175,6 +175,8 @@ if TWITCHIO_AVAILABLE:
             self._last_invite_reply_user: dict[tuple[str, str], float] = {}
             self._fun_reply_cd: dict[str, float] = {}
             self._bot_promo_cd: dict[str, float] = {}
+            # Kurzantworten auf "Danke" vorerst deaktiviert (kann später wieder aktiviert werden).
+            self._fun_thanks_reply_enabled = False
             self._discord_bot: discord.Client | None = None
             self._discord_invite_channel_id: int | None = None
             self._promo_invite_cache: dict[str, str] = {}
@@ -241,16 +243,17 @@ if TWITCHIO_AVAILABLE:
                 return
 
             # Danke-Trigger
-            thanks_hits = any(word in low for word in ("danke", "thanks", "thx", "merci", "ty"))
-            if thanks_hits and "http" not in low:
-                if self._cooldown_ok(self._fun_reply_cd, channel_login, 90.0):
-                    reply = random.choice(
-                        [
-                            "Danke, ich wusste ja, dass ich gut bin. WiltedRose",
-                            "Oh stop it, you :relaxed:",
-                        ]
-                    )
-                    await self._send_chat_message(channel, reply)
+            if self._fun_thanks_reply_enabled:
+                thanks_hits = any(word in low for word in ("danke", "thanks", "thx", "merci", "ty"))
+                if thanks_hits and "http" not in low:
+                    if self._cooldown_ok(self._fun_reply_cd, channel_login, 90.0):
+                        reply = random.choice(
+                            [
+                                "Danke, ich wusste ja, dass ich gut bin. WiltedRose",
+                                "Oh stop it, you :relaxed:",
+                            ]
+                        )
+                        await self._send_chat_message(channel, reply)
 
             # Bot-Promo / Herkunft
             if self._looks_like_bot_question(low):
