@@ -29,7 +29,7 @@ _SERVICE_WARNING_ACCOUNT_MAX_DAYS = _env_int(
 )
 _SERVICE_WARNING_MAX_FOLLOWERS = _env_int(
     "TWITCH_SERVICE_WARNING_MAX_FOLLOWERS",
-    750,
+    400,
     minimum=1,
 )
 _SERVICE_WARNING_WINDOW_SEC = _env_int(
@@ -168,6 +168,14 @@ _SERVICE_PATTERNS = (
         ),
     ),
     (
+        "crew_threat",
+        5,
+        (
+            re.compile(r"\bpull\s+up\s+with\s+(?:my|the)\s+crew\b", re.IGNORECASE),
+            re.compile(r"\bpull\s+up\s+w(?:ith)?\s+my\s+crew\b", re.IGNORECASE),
+        ),
+    ),
+    (
         "design_pitch",
         4,
         (
@@ -194,6 +202,7 @@ _SERVICE_PATTERNS = (
         (
             re.compile(r"\bcan\s+i\s+dm\s+you\b", re.IGNORECASE),
             re.compile(r"\badd\s+me\s+on\s+(?:discord|instagram)\b", re.IGNORECASE),
+            re.compile(r"\badd\s+me\s+up\s+on\s+discord\b", re.IGNORECASE),
             re.compile(r"\badd\s+me\b", re.IGNORECASE),
             re.compile(r"\baccept\s+my\s+request\b", re.IGNORECASE),
             re.compile(r"\bcheck\s+your\s+whispers?\b", re.IGNORECASE),
@@ -563,16 +572,25 @@ class ServicePitchWarningMixin:
             log.debug("Konnte Service-Warnung nicht loggen", exc_info=True)
 
     @staticmethod
-    def _build_service_warning_text(*, chatter_login: str, strong: bool) -> str:
+    def _build_service_warning_text(
+        *, chatter_login: str, strong: bool, new_account: bool, account_age_days: int | None
+    ) -> str:
         mention = f"@{chatter_login} " if chatter_login else ""
+        age_hint = ""
+        if new_account:
+            age_hint = " zumal der Account unter <3 Monate alt ist"
+        elif account_age_days is None:
+            age_hint = " (Account-Alter unbekannt)"
+        else:
+            age_hint = ""
         if strong:
             return (
-                f"🛡️ {mention}wurde als potenzieller Service-Pitcher erkannt (verkauft oft Designs/Viewer/Scam). "
-                "Empfehlung an Streamer/Mods: Ignorieren & Bannen."
+                f"🛡️ {mention} wurde als potenzieller Pitcher erkannt{age_hint} "
+                "verkauft oft Designs/Viewer/Scam. "
+                "Unsere Empfehlung: Ignorieren & Bannen."
             )
         return (
-            f"[Hinweis] {mention}bitte keine Service-/Promo-Angebote im Chat "
-            "(inkl. DM/externen Link-Angeboten). Danke."
+            f"{mention}bitte keine Service-/Promo-Angebote {age_hint} "
         )
 
     async def _maybe_warn_service_pitch(self, message, *, channel_login: str) -> bool:
@@ -598,13 +616,20 @@ class ServicePitchWarningMixin:
         now = time.monotonic()
 
         account_age_days = await self._get_account_age_days(chatter_id, chatter_login)
-        if account_age_days is None or int(account_age_days) >= int(
-            _SERVICE_WARNING_ACCOUNT_MAX_DAYS
-        ):
-            return False
-        score += 2
-        reasons.append("account:newer_than_3_months")
-        features.add("new_account")
+        account_age_safe = -1 if account_age_days is None else int(account_age_days)
+        is_new_account = (
+            account_age_days is not None
+            and int(account_age_days) < int(_SERVICE_WARNING_ACCOUNT_MAX_DAYS)
+        )
+        if is_new_account:
+            score += 2
+            reasons.append("account:newer_than_3_months")
+            features.add("new_account")
+        else:
+            if account_age_days is None:
+                reasons.append("account:unknown_age")
+            else:
+                reasons.append("account:older_than_3_months")
 
         is_low_target, follower_count = self._is_low_follower_target(channel_login)
         if not is_low_target:
@@ -643,8 +668,9 @@ class ServicePitchWarningMixin:
 
         total_score = int(sum(int(item[1]) for item in bucket))
         msg_count = len(bucket)
-        if total_score < int(_SERVICE_WARNING_MIN_SCORE) or msg_count < int(
-            _SERVICE_WARNING_MIN_MESSAGES
+        force_single_warning = "crew_threat" in features
+        if total_score < int(_SERVICE_WARNING_MIN_SCORE) or (
+            msg_count < int(_SERVICE_WARNING_MIN_MESSAGES) and not force_single_warning
         ):
             return False
         if total_score < int(_SERVICE_WARNING_LIGHT_THRESHOLD):
@@ -701,7 +727,7 @@ class ServicePitchWarningMixin:
 
                             escalation_text = (
                                 f"🛡️ @{chatter_login} Timeout (10m) wegen wiederholter Service-Pitches/Spam. "
-                                "Empfehlung: User bannen, falls das Verhalten anhält."
+                                "Empfehlung: User bannen."
                             )
                             await self._send_chat_message(
                                 channel, escalation_text, source="service_warning"
@@ -714,7 +740,7 @@ class ServicePitchWarningMixin:
                                 channel_login=channel_login,
                                 chatter_login=chatter_login,
                                 chatter_id=chatter_id,
-                                account_age_days=int(account_age_days),
+                                account_age_days=int(account_age_safe),
                                 follower_count=follower_count,
                                 score=total_score,
                                 message_count=msg_count,
@@ -741,6 +767,8 @@ class ServicePitchWarningMixin:
             warning_text = self._build_service_warning_text(
                 chatter_login=chatter_login,
                 strong=(severity == "WARNING_STRONG"),
+                new_account=is_new_account,
+                account_age_days=account_age_days,
             )
             sent = await self._send_chat_message(channel, warning_text, source="service_warning")
             if not sent:
@@ -764,7 +792,7 @@ class ServicePitchWarningMixin:
             channel_login=channel_login,
             chatter_login=chatter_login,
             chatter_id=chatter_id,
-            account_age_days=int(account_age_days),
+            account_age_days=int(account_age_safe),
             follower_count=follower_count,
             score=total_score,
             message_count=msg_count,
