@@ -2018,32 +2018,8 @@ class TwitchMonitoringMixin:
             ended_deadlock_posting = (
                 notify_ch is not None and message_id_previous and (not is_live or not is_deadlock)
             )
-            should_auto_raid = (
-                notify_ch is not None
-                and was_live
-                and not is_live
-                and had_deadlock_in_session
-                and not is_archived
-            )
-
-            # Auto-Raid beim Offline-Gehen (Throttle gemeinsam mit EventSub-Pfad)
-            if should_auto_raid:
-                trigger_ts = time.monotonic()
-                raid_uid = str(twitch_user_id or previous_state.get("twitch_user_id") or "")
-                throttle = getattr(self, "_eventsub_offline_throttle", None)
-                if throttle is None:
-                    throttle = {}
-                    self._eventsub_offline_throttle = throttle
-                last_ts = throttle.get(raid_uid)
-                if not (last_ts and time.time() - last_ts < 90):
-                    throttle[raid_uid] = time.time()
-                    await self._handle_auto_raid_on_offline(
-                        login=login,
-                        twitch_user_id=raid_uid,
-                        previous_state=previous_state,
-                        streams_by_login=streams_by_login,
-                        offline_trigger_ts=trigger_ts,
-                    )
+            # Auto-Raid per Polling für Partner deaktiviert – EventSub ist Primärpfad
+            should_auto_raid = False
 
             if ended_deadlock_posting:
                 display_name = (
