@@ -512,6 +512,62 @@ async function isFriendViaWebApi(steamId64) {
   return { friend: false, source: 'webapi', refreshed: true };
 }
 
+async function isAlreadyFriend(steamId64) {
+  const sid = normalizeSteamId64(steamId64);
+  if (!sid) return false;
+
+  const nowMs = Date.now();
+  const cached = friendCheckCache.get(sid);
+  if (cached && nowMs - cached.ts < FRIEND_CHECK_CACHE_TTL_MS) {
+    return cached.friend;
+  }
+
+  // Persistent cache (DB) for restart safety
+  try {
+    const row = selectFriendCheckCacheStmt.get(sid);
+    if (row && Number.isFinite(row.checked_at)) {
+      const ageMs = nowMs - Number(row.checked_at) * 1000;
+      if (ageMs < FRIEND_CHECK_CACHE_TTL_MS) {
+        const isFriend = Boolean(row.friend);
+        friendCheckCache.set(sid, { friend: isFriend, ts: nowMs });
+        return isFriend;
+      }
+    }
+  } catch (err) {
+    log('debug', 'Friend cache DB lookup failed', {
+      steam_id64: sid,
+      error: err && err.message ? err.message : String(err),
+    });
+  }
+
+  const relMap = SteamUser.EFriendRelationship || {};
+  const friendCode = Number(relMap.Friend);
+
+  // Client cache
+  if (client && client.myFriends) {
+    const rel = client.myFriends[sid];
+    if (Number(rel) === friendCode) {
+      friendCheckCache.set(sid, { friend: true, ts: nowMs });
+      try { upsertFriendCheckCacheStmt.run(sid, 1, Math.floor(nowMs / 1000)); } catch (_) {}
+      return true;
+    }
+  }
+
+  // Web API fallback
+  try {
+    const viaWeb = await isFriendViaWebApi(sid);
+    if (viaWeb && viaWeb.friend) {
+      friendCheckCache.set(sid, { friend: true, ts: nowMs });
+      try { upsertFriendCheckCacheStmt.run(sid, 1, Math.floor(nowMs / 1000)); } catch (_) {}
+      return true;
+    }
+  } catch (_) {}
+
+  friendCheckCache.set(sid, { friend: false, ts: nowMs });
+  try { upsertFriendCheckCacheStmt.run(sid, 0, Math.floor(nowMs / 1000)); } catch (_) {}
+  return false;
+}
+
 function getWebApiFriendCacheAgeMs() {
   if (!webApiFriendCacheLastLoadedAt) return null;
   return Math.max(0, Date.now() - webApiFriendCacheLastLoadedAt);
@@ -1034,12 +1090,15 @@ const TASK_POLL_INTERVAL_MS = parseInt(process.env.STEAM_TASK_POLL_MS || '2000',
 const RECONNECT_DELAY_MS = parseInt(process.env.STEAM_RECONNECT_DELAY_MS || '5000', 10);
 const COMMAND_BOT_KEY = 'steam';
 const COMMAND_POLL_INTERVAL_MS = parseInt(process.env.STEAM_COMMAND_POLL_MS || '2000', 10);
-const STATE_PUBLISH_INTERVAL_MS = parseInt(process.env.STEAM_STATE_PUBLISH_MS || '15000', 10);
-const DB_BUSY_TIMEOUT_MS = Math.max(5000, parseInt(process.env.DEADLOCK_DB_BUSY_TIMEOUT_MS || '15000', 10));
-const FRIEND_SYNC_INTERVAL_MS = Math.max(60000, parseInt(process.env.STEAM_FRIEND_SYNC_MS || '300000', 10));
-const FRIEND_REQUEST_BATCH_SIZE = Math.max(1, parseInt(process.env.STEAM_FRIEND_REQUEST_BATCH || '10', 10));
-const FRIEND_REQUEST_RETRY_SECONDS = Math.max(60, parseInt(process.env.STEAM_FRIEND_REQUEST_RETRY_SEC || '900', 10));
-const STEAM_TASKS_MAX_ROWS = Math.max(1, parseInt(process.env.STEAM_TASKS_MAX_ROWS || '1000', 10));
+  const STATE_PUBLISH_INTERVAL_MS = parseInt(process.env.STEAM_STATE_PUBLISH_MS || '15000', 10);
+  const DB_BUSY_TIMEOUT_MS = Math.max(5000, parseInt(process.env.DEADLOCK_DB_BUSY_TIMEOUT_MS || '15000', 10));
+  const FRIEND_SYNC_INTERVAL_MS = Math.max(60000, parseInt(process.env.STEAM_FRIEND_SYNC_MS || '300000', 10));
+  const FRIEND_REQUEST_BATCH_SIZE = Math.max(1, parseInt(process.env.STEAM_FRIEND_REQUEST_BATCH || '10', 10));
+  const FRIEND_REQUEST_RETRY_SECONDS = Math.max(60, parseInt(process.env.STEAM_FRIEND_REQUEST_RETRY_SEC || '900', 10));
+  const FRIEND_REQUEST_DAILY_CAP = Math.max(0, parseInt(process.env.STEAM_FRIEND_REQUEST_DAILY_CAP || '10', 10));
+  const FRIEND_REQUEST_DAILY_WINDOW_SEC = 24 * 60 * 60; // rolling 24h window
+  const FRIEND_CHECK_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h cache for friendship pre-checks
+  const STEAM_TASKS_MAX_ROWS = Math.max(1, parseInt(process.env.STEAM_TASKS_MAX_ROWS || '1000', 10));
 
 const dbPath = resolveDbPath();
 ensureDir(path.dirname(dbPath));
@@ -1173,16 +1232,24 @@ for (const alterSql of [
 db.prepare(`CREATE INDEX IF NOT EXISTS idx_steam_links_user ON steam_links(user_id)`).run();
 db.prepare(`CREATE INDEX IF NOT EXISTS idx_steam_links_steam ON steam_links(steam_id)`).run();
 
-db.prepare(`
-  CREATE TABLE IF NOT EXISTS steam_friend_requests(
-    steam_id TEXT PRIMARY KEY,
-    status TEXT DEFAULT 'pending',
-    requested_at INTEGER DEFAULT (strftime('%s','now')),
-    last_attempt INTEGER,
-    attempts INTEGER DEFAULT 0,
-    error TEXT
-  )
-`).run();
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS steam_friend_requests(
+      steam_id TEXT PRIMARY KEY,
+      status TEXT DEFAULT 'pending',
+      requested_at INTEGER DEFAULT (strftime('%s','now')),
+      last_attempt INTEGER,
+      attempts INTEGER DEFAULT 0,
+      error TEXT
+    )
+  `).run();
+
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS steam_friend_check_cache(
+      steam_id TEXT PRIMARY KEY,
+      friend INTEGER NOT NULL,
+      checked_at INTEGER NOT NULL
+    )
+  `).run();
 
 const selectPendingTaskStmt = db.prepare(`
   SELECT id, type, payload FROM steam_tasks
@@ -1320,17 +1387,37 @@ const steamTaskRecentStmt = db.prepare(`
 ORDER BY updated_at DESC
    LIMIT 10
 `);
-const steamLinksForSyncStmt = db.prepare(`
-  SELECT steam_id, user_id, name, verified
-    FROM steam_links
-   WHERE steam_id IS NOT NULL
-     AND steam_id != ''
-`);
-const upsertPendingFriendRequestStmt = db.prepare(`
-  INSERT INTO steam_friend_requests(steam_id, status)
-  VALUES(?, 'pending')
-  ON CONFLICT(steam_id) DO UPDATE SET
-    status='pending',
+  const steamLinksForSyncStmt = db.prepare(`
+    SELECT steam_id, user_id, name, verified
+      FROM steam_links
+     WHERE steam_id IS NOT NULL
+       AND steam_id != ''
+  `);
+  const selectFriendCheckCacheStmt = db.prepare(`
+    SELECT friend, checked_at
+      FROM steam_friend_check_cache
+     WHERE steam_id=?
+  `);
+  const upsertFriendCheckCacheStmt = db.prepare(`
+    INSERT INTO steam_friend_check_cache(steam_id, friend, checked_at)
+    VALUES(?, ?, ?)
+    ON CONFLICT(steam_id) DO UPDATE SET
+      friend=excluded.friend,
+      checked_at=excluded.checked_at
+  `);
+  const countFriendRequestsSentSinceStmt = db.prepare(`
+    SELECT COUNT(*) AS c
+      FROM steam_friend_requests
+     WHERE status='sent'
+       AND error IS NULL
+       AND last_attempt IS NOT NULL
+       AND last_attempt >= ?
+  `);
+  const upsertPendingFriendRequestStmt = db.prepare(`
+    INSERT INTO steam_friend_requests(steam_id, status)
+    VALUES(?, 'pending')
+    ON CONFLICT(steam_id) DO UPDATE SET
+      status='pending',
     last_attempt=CASE WHEN steam_friend_requests.status='sent' THEN NULL ELSE steam_friend_requests.last_attempt END,
     attempts=CASE WHEN steam_friend_requests.status='sent' THEN 0 ELSE COALESCE(steam_friend_requests.attempts, 0) END,
     error=NULL,
@@ -1347,14 +1434,22 @@ const markFriendRequestSentStmt = db.prepare(`
   UPDATE steam_friend_requests
      SET status='sent',
          last_attempt=?,
-         attempts=COALESCE(attempts,0)+1,
-         error=NULL
-   WHERE steam_id=?
-`);
-const markFriendRequestFailedStmt = db.prepare(`
-  UPDATE steam_friend_requests
-      SET status='pending',
-          last_attempt=?,
+      attempts=COALESCE(attempts,0)+1,
+      error=NULL
+    WHERE steam_id=?
+  `);
+  const markFriendRequestSkippedStmt = db.prepare(`
+    UPDATE steam_friend_requests
+       SET status='sent',
+           last_attempt=?,
+           attempts=COALESCE(attempts,0),
+           error='already_friend'
+     WHERE steam_id=?
+  `);
+  const markFriendRequestFailedStmt = db.prepare(`
+    UPDATE steam_friend_requests
+       SET status='pending',
+           last_attempt=?,
           attempts=COALESCE(attempts,0)+1,
           error=?
     WHERE steam_id=?
@@ -1442,6 +1537,7 @@ let webApiFriendCacheIds = null;
 let webApiFriendCacheLastLoadedAt = 0;
 let webApiFriendCachePromise = null;
 let webApiFriendCacheWarned = false;
+const friendCheckCache = new Map(); // steam_id64 -> { friend: boolean, ts: ms }
 let friendSyncInProgress = false;
 
 // ---------- Steam Client ----------
@@ -1905,13 +2001,27 @@ function flushPendingPlaytestInvites(error) {
   }
 }
 
-function sendFriendRequest(steamId) {
+async function sendFriendRequest(steamId) {
+  const sid64 =
+    steamId && typeof steamId.getSteamID64 === 'function'
+      ? steamId.getSteamID64()
+      : normalizeSteamId64(steamId);
+
+  if (!sid64) throw new Error('Invalid SteamID');
+
+  // Pre-flight: skip if we are already friends
+  if (await isAlreadyFriend(sid64)) {
+    log('info', 'Friend request skipped (already friends)', { steam_id64: sid64 });
+    return true;
+  }
+
   return new Promise((resolve, reject) => {
     try {
       client.addFriend(steamId, (err) => {
         if (err) {
           // EResult.DuplicateName (29) usually means friend request already sent or already friends
           if (err.message && err.message.includes('DuplicateName')) {
+            log('debug', 'Friend request duplicate - treating as already friends', { steam_id64: sid64 });
             return resolve(true);
           }
           return reject(err);
@@ -2113,35 +2223,67 @@ async function fetchPersonaNames(steamIds) {
   return result;
 }
 
-async function processFriendRequestQueue(currentFriends, reason) {
-  const outcome = { sent: 0, failed: 0, skipped: 0 };
-  if (!runtimeState.logged_on) return outcome;
+  async function processFriendRequestQueue(currentFriends, reason) {
+    const outcome = { sent: 0, failed: 0, skipped: 0 };
+    if (!runtimeState.logged_on) return outcome;
 
-  const rows = selectFriendRequestBatchStmt.all(FRIEND_REQUEST_BATCH_SIZE);
-  const now = nowSeconds();
+    const rows = selectFriendRequestBatchStmt.all(FRIEND_REQUEST_BATCH_SIZE);
+    const now = nowSeconds();
+    let sentLast24h = 0;
+    try {
+      const row = countFriendRequestsSentSinceStmt.get(now - FRIEND_REQUEST_DAILY_WINDOW_SEC);
+      sentLast24h = row && typeof row.c === 'number' ? row.c : 0;
+    } catch (err) {
+      log('warn', 'Failed to count recent friend requests', {
+        error: err && err.message ? err.message : String(err),
+      });
+    }
 
-  for (const row of rows) {
-    const sid = normalizeSteamId64(row.steam_id);
-    if (!sid) continue;
+    for (const row of rows) {
+      if (FRIEND_REQUEST_DAILY_CAP > 0 && sentLast24h >= FRIEND_REQUEST_DAILY_CAP) {
+        log('info', 'Friend request daily cap reached - skipping remaining queue', {
+          cap: FRIEND_REQUEST_DAILY_CAP,
+          sent_last_24h: sentLast24h,
+          reason,
+        });
+        break;
+      }
 
-    if (currentFriends && currentFriends.has(sid)) {
+      const sid = normalizeSteamId64(row.steam_id);
+      if (!sid) continue;
+
+      if (currentFriends && currentFriends.has(sid)) {
+        try {
+          markFriendRequestSkippedStmt.run(now, sid);
+          outcome.skipped += 1;
+        } catch (err) {
+          log('debug', 'Friend sync: failed to mark existing friend request as sent', {
+            steam_id64: sid,
+            error: err && err.message ? err.message : String(err),
+          });
+      }
+        continue;
+      }
+
+      // Fresh check (client + WebAPI) in case currentFriends is stale
       try {
-        markFriendRequestSentStmt.run(now, sid);
-        outcome.skipped += 1;
+        if (await isAlreadyFriend(sid)) {
+          markFriendRequestSkippedStmt.run(now, sid);
+          outcome.skipped += 1;
+          continue;
+        }
       } catch (err) {
-        log('debug', 'Friend sync: failed to mark existing friend request as sent', {
+        log('debug', 'Friend pre-check failed', {
           steam_id64: sid,
           error: err && err.message ? err.message : String(err),
         });
       }
-      continue;
-    }
 
-    if (row.last_attempt && now - Number(row.last_attempt) < FRIEND_REQUEST_RETRY_SECONDS) {
-      continue;
-    }
+      if (row.last_attempt && now - Number(row.last_attempt) < FRIEND_REQUEST_RETRY_SECONDS) {
+        continue;
+      }
 
-    let parsed;
+      let parsed;
     try {
       parsed = parseSteamID(sid);
     } catch (err) {
@@ -2151,15 +2293,16 @@ async function processFriendRequestQueue(currentFriends, reason) {
       continue;
     }
 
-    try {
-      await sendFriendRequest(parsed);
-      markFriendRequestSentStmt.run(now, sid);
-      outcome.sent += 1;
-    } catch (err) {
-      const message = err && err.message ? err.message : String(err);
-      markFriendRequestFailedStmt.run(now, message, sid);
-      outcome.failed += 1;
-      log('warn', 'Friend request failed', { steam_id64: sid, error: message, reason });
+      try {
+        await sendFriendRequest(parsed);
+        markFriendRequestSentStmt.run(now, sid);
+        outcome.sent += 1;
+        sentLast24h += 1;
+      } catch (err) {
+        const message = err && err.message ? err.message : String(err);
+        markFriendRequestFailedStmt.run(now, message, sid);
+        outcome.failed += 1;
+        log('warn', 'Friend request failed', { steam_id64: sid, error: message, reason });
     }
   }
 
@@ -2194,9 +2337,8 @@ async function syncFriendsAndLinks(reason = 'interval') {
           missingNameIds.add(sid);
         }
       }
-      if (!friendIds.has(sid)) {
-        if (queueFriendRequestForId(sid)) queued += 1;
-      }
+      // Intentionally do NOT auto-queue friend requests for Steam IDs that are already in our DB
+      // to avoid spamming non-friends who haven't opted in.
     }
 
     const idsNeedingName = new Set();
@@ -2794,8 +2936,21 @@ function processNextTask() {
           if (!runtimeState.logged_on) throw new Error('Not logged in');
           const raw = payload?.steam_id ?? payload?.steam_id64;
           const sid = parseSteamID(raw);
-          await sendFriendRequest(sid);
           const sid64 = typeof sid.getSteamID64 === 'function' ? sid.getSteamID64() : String(sid);
+          if (await isAlreadyFriend(sid64)) {
+            log('info', 'AUTH_SEND_FRIEND_REQUEST skipped - already friends', { steam_id64: sid64 });
+            return {
+              ok: true,
+              data: {
+                steam_id64: sid64,
+                account_id: sid.accountid ?? null,
+                skipped: true,
+                reason: 'already_friend',
+              },
+            };
+          }
+
+          await sendFriendRequest(sid);
           return {
             ok: true,
             data: {
