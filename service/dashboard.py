@@ -36,20 +36,16 @@ DEFAULT_DASHBOARD_MODERATOR_ROLE_ID = 1337518124647579661
 TURNIER_MOD_ROLE_ID = 1401891955931222110  # Community-Moderator: nur Turnier-Zugriff
 DEFAULT_DASHBOARD_OWNER_USER_ID = 662995601738170389
 KEYRING_SERVICE_NAME = "DeadlockBot"
-MASTER_DASHBOARD_PUBLIC_URL = (
-    os.getenv("MASTER_DASHBOARD_PUBLIC_URL") or "https://admin.earlysalty.de"
-).strip()
-MASTER_DASHBOARD_DISCORD_REDIRECT_URI = (
-    os.getenv("MASTER_DASHBOARD_DISCORD_REDIRECT_URI")
-    or f"{MASTER_DASHBOARD_PUBLIC_URL.rstrip('/')}/auth/discord/callback"
-).strip()
-MASTER_DASHBOARD_STEAM_PUBLIC_URL = (
-    os.getenv("MASTER_DASHBOARD_STEAM_PUBLIC_URL") or os.getenv("PUBLIC_BASE_URL") or ""
-).strip()
-MASTER_DASHBOARD_STEAM_RETURN_URL = (os.getenv("MASTER_DASHBOARD_STEAM_RETURN_URL") or "").strip()
-MASTER_DASHBOARD_STEAM_RETURN_PATH = (
-    os.getenv("STEAM_RETURN_PATH") or "/steam/return"
-).strip() or "/steam/return"
+MASTER_DASHBOARD_PUBLIC_URL = "https://admin.earlysalty.de"
+MASTER_DASHBOARD_DISCORD_REDIRECT_URI = f"{MASTER_DASHBOARD_PUBLIC_URL.rstrip('/')}/auth/discord/callback"
+
+# Feste Steam-URLs (keine Ableitung/ENV mehr)
+MASTER_DASHBOARD_STEAM_PUBLIC_URL = "https://link.earlysalty.com"
+MASTER_DASHBOARD_STEAM_RETURN_URL = "https://link.earlysalty.com/steam/return"
+MASTER_DASHBOARD_STEAM_RETURN_PATH = "/steam/return"
+
+# Fester Twitch-Dashboard-Link
+MASTER_DASHBOARD_TWITCH_URL = "https://twitch.earlysalty.com/twitch/admin"
 MASTER_DASHBOARD_DEFAULT_SCHEME = "http"
 DISCORD_API_BASE_URL = "https://discord.com/api/v10"
 MASTER_DISCORD_ADMIN_LOGIN_URL = "/auth/discord/login?next=%2Fadmin"
@@ -1498,36 +1494,10 @@ class DashboardServer:
         return parsed if isinstance(parsed, dict) else {}
 
     def _resolve_twitch_dashboard_href(self) -> str:
-        public_base = (self._public_base_url or "").rstrip("/")
-        if public_base.lower().endswith("/admin"):
-            public_base = public_base[:-6]
-        if public_base and not self._is_loopback_host(urlparse(public_base).hostname or ""):
-            return f"{public_base}/twitch/admin"
-
-        base = self._format_base_url("127.0.0.1", 8765, self._scheme)
-        return f"{base.rstrip('/')}/twitch/admin"
+        return MASTER_DASHBOARD_TWITCH_URL
 
     def _derive_steam_return_url(self) -> str | None:
-        if MASTER_DASHBOARD_STEAM_RETURN_URL:
-            try:
-                return self._normalize_public_url(
-                    MASTER_DASHBOARD_STEAM_RETURN_URL,
-                    default_scheme="https",
-                )
-            except Exception as exc:
-                logging.warning(
-                    "Master dashboard Steam return URL '%s' invalid (%s) – falling back to derived URL",
-                    MASTER_DASHBOARD_STEAM_RETURN_URL,
-                    exc,
-                )
-
-        base = (
-            (MASTER_DASHBOARD_STEAM_PUBLIC_URL or (self._public_base_url or "")).strip().rstrip("/")
-        )
-        if not base:
-            return None
-        path = "/" + MASTER_DASHBOARD_STEAM_RETURN_PATH.lstrip("/")
-        return f"{base}{path}"
+        return MASTER_DASHBOARD_STEAM_RETURN_URL or None
 
     def _derive_raid_health_url(self) -> str | None:
         return "https://raid.earlysalty.com/health"
