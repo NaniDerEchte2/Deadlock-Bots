@@ -138,7 +138,13 @@ export function Comparison({ streamer, days }: ComparisonProps) {
                 rank={i + 1}
                 streamer={item.streamerB}
                 sharedChatters={item.sharedChatters}
-                percentage={item.overlapPercentage}
+                percentage={
+                  item.overlapPercentage
+                  ?? item.jaccard
+                  ?? item.overlapAtoB
+                  ?? item.overlapBtoA
+                  ?? 0
+                }
               />
             ))}
           </div>
@@ -156,11 +162,24 @@ export function Comparison({ streamer, days }: ComparisonProps) {
               <TrendingUp className="w-5 h-5 text-accent" />
               <span className="font-medium text-white">Raid-Empfehlung</span>
             </div>
-            <p className="text-text-secondary text-sm">
-              <span className="text-white font-medium">{overlap[0]?.streamerB}</span> hat die höchste
-              Viewer-Überschneidung ({overlap[0]?.overlapPercentage.toFixed(1)}%).
-              Ein Raid könnte für beide Communities wertvoll sein!
-            </p>
+            {(() => {
+              const top = overlap[0];
+              const topPct = top
+                ? top.overlapPercentage
+                  ?? top.jaccard
+                  ?? top.overlapAtoB
+                  ?? top.overlapBtoA
+                  ?? 0
+                : 0;
+
+              return (
+                <p className="text-text-secondary text-sm">
+                  <span className="text-white font-medium">{top?.streamerB}</span> hat die höchste
+                  Viewer-Überschneidung ({topPct.toFixed(1)}%).
+                  Ein Raid könnte für beide Communities wertvoll sein!
+                </p>
+              );
+            })()}
           </div>
         )}
       </motion.div>
@@ -291,6 +310,7 @@ interface OverlapBarProps {
 }
 
 function OverlapBar({ rank, streamer, sharedChatters, percentage }: OverlapBarProps) {
+  const pct = Number.isFinite(percentage) ? percentage : 0;
   return (
     <motion.div
       initial={{ opacity: 0, x: -20 }}
@@ -314,7 +334,7 @@ function OverlapBar({ rank, streamer, sharedChatters, percentage }: OverlapBarPr
         <div className="h-2 bg-border rounded-full overflow-hidden">
           <motion.div
             initial={{ width: 0 }}
-            animate={{ width: `${percentage}%` }}
+            animate={{ width: `${Math.max(0, Math.min(pct, 100))}%` }}
             transition={{ delay: 0.3 + rank * 0.05, duration: 0.5 }}
             className={`h-full ${rank <= 3 ? 'bg-gradient-to-r from-accent to-primary' : 'bg-primary/60'}`}
           />
@@ -322,7 +342,7 @@ function OverlapBar({ rank, streamer, sharedChatters, percentage }: OverlapBarPr
       </div>
 
       <div className="w-16 text-right">
-        <span className="text-sm font-medium text-white">{percentage.toFixed(1)}%</span>
+        <span className="text-sm font-medium text-white">{pct.toFixed(1)}%</span>
       </div>
     </motion.div>
   );

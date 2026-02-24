@@ -1741,6 +1741,7 @@ class AnalyticsV2Mixin:
                     shared = r[1]
                     total_b = totals_b.get(other.lower(), 1)
                     jaccard = shared / max(1, (total_a + total_b - shared))
+                    overlap_pct = round(jaccard * 100, 1)
                     data.append(
                         {
                             "streamerA": streamer,
@@ -1750,7 +1751,10 @@ class AnalyticsV2Mixin:
                             "totalChattersB": total_b,
                             "overlapAtoB": round(shared / total_a * 100, 1),
                             "overlapBtoA": round(shared / total_b * 100, 1),
-                            "jaccard": round(jaccard * 100, 1),
+                            "jaccard": overlap_pct,
+                            # Backwards compatible field expected by the React dashboard
+                            # (used for bar width + display). Uses the symmetric Jaccard percentage.
+                            "overlapPercentage": overlap_pct,
                         }
                     )
 

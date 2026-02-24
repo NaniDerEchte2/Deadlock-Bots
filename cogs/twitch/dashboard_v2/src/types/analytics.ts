@@ -108,7 +108,10 @@ export interface ViewerOverlap {
   sharedChatters: number;
   totalChattersA: number;
   totalChattersB: number;
-  overlapPercentage: number;
+  overlapPercentage?: number;
+  overlapAtoB?: number;
+  overlapBtoA?: number;
+  jaccard?: number;
 }
 
 export interface CategoryComparison {
