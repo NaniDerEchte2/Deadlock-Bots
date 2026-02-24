@@ -233,14 +233,15 @@ class DeadlockVoiceStatus(commands.Cog):
         if not ids:
             return {}
 
-        placeholders = ",".join("?" for _ in ids)
-        query = (  # noqa: S608
-            "SELECT user_id, steam_id, primary_account, verified, updated_at "
-            "FROM steam_links WHERE user_id IN (" + placeholders + ") "
-            "AND steam_id IS NOT NULL AND steam_id != '' "
-            "ORDER BY primary_account DESC, verified DESC, updated_at DESC"
-        )
-        rows = await db.query_all_async(query, tuple(ids))
+        ids_json = json.dumps(sorted(ids))
+        query = """
+            SELECT user_id, steam_id, primary_account, verified, updated_at
+            FROM steam_links
+            WHERE user_id IN (SELECT value FROM json_each(?))
+              AND steam_id IS NOT NULL AND steam_id != ''
+            ORDER BY primary_account DESC, verified DESC, updated_at DESC
+        """
+        rows = await db.query_all_async(query, (ids_json,))
 
         mapping: dict[int, list[str]] = {}
         for row in rows:
@@ -256,14 +257,15 @@ class DeadlockVoiceStatus(commands.Cog):
         if not ids:
             return {}
 
-        placeholders = ",".join("?" for _ in ids)
-        query = (  # noqa: S608
-            "SELECT steam_id, deadlock_stage, deadlock_minutes, deadlock_localized, "
-            "deadlock_updated_at, last_seen_ts, in_deadlock_now, in_match_now_strict, "
-            "last_server_id, deadlock_party_hint "
-            "FROM live_player_state WHERE steam_id IN (" + placeholders + ")"
-        )
-        rows = await db.query_all_async(query, tuple(ids))
+        ids_json = json.dumps(sorted(ids))
+        query = """
+            SELECT steam_id, deadlock_stage, deadlock_minutes, deadlock_localized,
+                   deadlock_updated_at, last_seen_ts, in_deadlock_now, in_match_now_strict,
+                   last_server_id, deadlock_party_hint
+            FROM live_player_state
+            WHERE steam_id IN (SELECT value FROM json_each(?))
+        """
+        rows = await db.query_all_async(query, (ids_json,))
 
         return {str(row["steam_id"]): row for row in rows}
 
@@ -289,12 +291,15 @@ class DeadlockVoiceStatus(commands.Cog):
                 """,
                 rows,
             )
-            placeholders = ",".join("?" for _ in entries)
             # Flat list for DELETE IN clause
             delete_ids = [steam_id for (steam_id, _, _) in entries]
+            delete_json = json.dumps(delete_ids)
             await db.execute_async(
-                "DELETE FROM deadlock_voice_watch WHERE steam_id NOT IN (" + placeholders + ")",  # noqa: S608
-                delete_ids,
+                """
+                DELETE FROM deadlock_voice_watch
+                WHERE steam_id NOT IN (SELECT value FROM json_each(?))
+                """,
+                (delete_json,),
             )
         except Exception as exc:
             log.warning("Failed to persist voice watch entries: %s", exc)

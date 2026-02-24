@@ -8,6 +8,7 @@ into the steam_links table, ensuring all bot friends are tracked in the database
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
 import discord
@@ -150,12 +151,16 @@ async def sync_all_friends(tasks: SteamTaskClient | None = None) -> dict:
         friend_steam_ids = [f.get("steam_id64") for f in friends if f.get("steam_id64")]
         cleared = 0
         if friend_steam_ids:
-            placeholders = ",".join("?" * len(friend_steam_ids))
+            ids_json = json.dumps(friend_steam_ids)
             with db.get_conn() as conn:
                 cleared = conn.execute(
-                    f"UPDATE steam_links SET is_steam_friend=0, updated_at=CURRENT_TIMESTAMP "
-                    f"WHERE is_steam_friend=1 AND steam_id NOT IN ({placeholders})",
-                    friend_steam_ids,
+                    """
+                    UPDATE steam_links
+                    SET is_steam_friend=0, updated_at=CURRENT_TIMESTAMP
+                    WHERE is_steam_friend=1
+                      AND steam_id NOT IN (SELECT value FROM json_each(?))
+                    """,
+                    (ids_json,),
                 ).rowcount
             if cleared:
                 log.info("Cleared is_steam_friend for %d removed friends", cleared)

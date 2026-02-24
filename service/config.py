@@ -75,7 +75,7 @@ class Settings(BaseSettings):
 
     # --- Steam Link UI & OAuth ---
     steam_return_path: str = Field("/steam/return", alias="STEAM_RETURN_PATH")
-    http_host: str = Field("0.0.0.0", alias="HTTP_HOST")
+    http_host: str = Field("127.0.0.1", alias="HTTP_HOST")
     http_port: int = Field(8888, alias="STEAM_OAUTH_PORT")
     link_cover_image: str = Field("", alias="LINK_COVER_IMAGE")
     link_cover_label: str = Field("link.earlysalty.com", alias="LINK_COVER_LABEL")

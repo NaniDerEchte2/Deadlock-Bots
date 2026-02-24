@@ -111,7 +111,9 @@ def pg_columns(pg_conn: psycopg.Connection, table: str) -> list[str]:
 def iter_sqlite_rows(
     conn: sqlite3.Connection, table: str, batch_size: int, select_cols: Sequence[str]
 ) -> Iterable[list[sqlite3.Row]]:
-    sql = f"SELECT {', '.join(select_cols)} FROM {table}"
+    if table not in TABLES:
+        raise ValueError(f"Unexpected table requested: {table}")
+    sql = f"SELECT {', '.join(select_cols)} FROM {table}"  # nosec B608: table names are whitelisted above
     cur = conn.execute(sql)
     while True:
         batch = cur.fetchmany(batch_size)

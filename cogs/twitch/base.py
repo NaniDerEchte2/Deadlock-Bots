@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import ipaddress
 import os
 import re
 import socket
@@ -114,13 +115,15 @@ class TwitchBaseCog(commands.Cog):
             bool(TWITCH_DASHBOARD_NOAUTH),
         )
         env_dashboard_host = (os.getenv("TWITCH_DASHBOARD_HOST") or "").strip()
-        self._dashboard_host = (
-            env_dashboard_host
-            or TWITCH_DASHBOARD_HOST
-            or (
-                "127.0.0.1" if self._dashboard_noauth else "0.0.0.0"  # noqa: S104
-            )
-        )
+        default_dashboard_host = TWITCH_DASHBOARD_HOST or "127.0.0.1"
+        self._dashboard_host = env_dashboard_host or default_dashboard_host
+        try:
+            if ipaddress.ip_address(self._dashboard_host).is_unspecified:
+                log.warning(
+                    "TWITCH_DASHBOARD_HOST resolves to an unspecified address; keep this behind auth/reverse proxy."
+                )
+        except ValueError:
+            log.warning("TWITCH_DASHBOARD_HOST is not a valid IP; using it as-is: %s", self._dashboard_host)
         self._dashboard_port = _parse_env_int("TWITCH_DASHBOARD_PORT", int(TWITCH_DASHBOARD_PORT))
         embedded_env = (os.getenv("TWITCH_DASHBOARD_EMBEDDED", "") or "").strip().lower()
         self._dashboard_embedded = embedded_env not in {"0", "false", "no", "off"}
