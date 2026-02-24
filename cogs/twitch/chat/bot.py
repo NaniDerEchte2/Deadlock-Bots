@@ -16,7 +16,6 @@ import logging
 import logging.handlers
 import os
 import random
-import re
 import time
 from collections import deque
 from datetime import UTC, datetime

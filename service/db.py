@@ -1021,7 +1021,9 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
             )
             c.commit()
         except sqlite3.Error as e:
-            logger.debug("Index-Erstellung für hero_build_clones übersprungen: %s", e, exc_info=True)
+            logger.debug(
+                "Index-Erstellung für hero_build_clones übersprungen: %s", e, exc_info=True
+            )
         # Update query planner statistics after index creation
         try:
             c.execute("ANALYZE")

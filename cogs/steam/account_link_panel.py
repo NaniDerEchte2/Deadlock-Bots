@@ -14,6 +14,7 @@ import logging
 import discord
 from discord import app_commands
 from discord.ext import commands
+
 from service.config import settings
 
 log = logging.getLogger(__name__)
@@ -116,7 +117,9 @@ class SteamLinkPanelView(discord.ui.View):
                 await interaction.followup.send("Kein valider Steam-Link gefunden.", ephemeral=True)
                 return
 
-            card, data, outcome = await rank_cog._fetch_profile_card({"steam_id": sid}, timeout=45.0)
+            card, data, outcome = await rank_cog._fetch_profile_card(
+                {"steam_id": sid}, timeout=45.0
+            )
             if outcome.timed_out or not outcome.ok or not isinstance(card, dict):
                 await interaction.followup.send(
                     f"Rank-Abfrage fehlgeschlagen ({outcome.error or 'no data'}).",

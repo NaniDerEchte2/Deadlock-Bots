@@ -38,6 +38,7 @@ VERIFICATION_SUCCESS_DM_MESSAGE = (
     "Bei Fragen kannst du dich gerne hier melden: https://discord.com/channels/1289721245281292288/1428062025145385111"
 )
 
+
 def _row_to_dict(row) -> dict:
     if row is None:
         return {}

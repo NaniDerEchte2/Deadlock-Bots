@@ -78,8 +78,12 @@ class TempVoiceInterface(commands.Cog):
 
     async def cog_load(self):
         # Persistente Views registrieren (superset, damit alle Custom IDs bekannt sind)
-        self.bot.add_view(MainView(self.core, self.util, include_minrank=True, include_presets=True))
-        self.bot.add_view(MainView(self.core, self.util, include_minrank=False, include_presets=False))
+        self.bot.add_view(
+            MainView(self.core, self.util, include_minrank=True, include_presets=True)
+        )
+        self.bot.add_view(
+            MainView(self.core, self.util, include_minrank=False, include_presets=False)
+        )
         asyncio.create_task(self._startup())
 
     async def _startup(self):
@@ -440,7 +444,9 @@ class TempVoiceInterface(commands.Cog):
                 continue
 
             try:
-                view = self._view_for_category(int(row["category_id"]) if row["category_id"] else None)
+                view = self._view_for_category(
+                    int(row["category_id"]) if row["category_id"] else None
+                )
                 await msg.edit(view=view)
                 await self._record_interface_message(
                     int(row["guild_id"]),
@@ -822,9 +828,11 @@ class SavePresetModal(discord.ui.Modal, title="Preset speichern"):
             await self.core.save_preset(self.lane, self.owner_id, name)
         except Exception as e:
             logger.debug("SavePresetModal failed: %r", e)
-            await itx.response.send_message("Preset konnte nicht gespeichert werden.", ephemeral=True)
+            await itx.response.send_message(
+                "Preset konnte nicht gespeichert werden.", ephemeral=True
+            )
             return
-        await itx.response.send_message(f"Preset \"{name}\" gespeichert.", ephemeral=True)
+        await itx.response.send_message(f'Preset "{name}" gespeichert.', ephemeral=True)
 
 
 class LoadPresetButton(discord.ui.Button):
@@ -844,7 +852,9 @@ class LoadPresetButton(discord.ui.Button):
             await itx.response.send_message("Tritt zuerst deiner Lane bei.", ephemeral=True)
             return
         if lane.category_id != RANKED_CATEGORY_ID:
-            await itx.response.send_message("Presets gibt es nur f\u00fcr Ranked Lanes.", ephemeral=True)
+            await itx.response.send_message(
+                "Presets gibt es nur f\u00fcr Ranked Lanes.", ephemeral=True
+            )
             return
         owner_id = self.core.lane_owner.get(lane.id, m.id)
         perms = lane.permissions_for(m)
@@ -855,7 +865,9 @@ class LoadPresetButton(discord.ui.Button):
             return
         presets = await self.core.list_presets(owner_id, int(lane.category_id or 0))
         if not presets:
-            await itx.response.send_message("Du hast noch keine Presets gespeichert.", ephemeral=True)
+            await itx.response.send_message(
+                "Du hast noch keine Presets gespeichert.", ephemeral=True
+            )
             return
         options = []
         for row in presets[:25]:  # Discord Select max 25 Optionen
@@ -867,9 +879,7 @@ class LoadPresetButton(discord.ui.Button):
             region_part = "DE" if region == "DE" else "EU"
             desc = f"{row['base_name']} • Limit {row['limit']} • {min_part} • {region_part}"
             options.append(
-                discord.SelectOption(
-                    label=label[:100], value=row["name"], description=desc[:100]
-                )
+                discord.SelectOption(label=label[:100], value=row["name"], description=desc[:100])
             )
         view = PresetSelectView(
             self.core,
@@ -885,7 +895,9 @@ class LoadPresetButton(discord.ui.Button):
 
 class PresetSelect(discord.ui.Select):
     def __init__(self, options):
-        super().__init__(min_values=1, max_values=1, options=options, row=0, custom_id="tv_preset_pick")
+        super().__init__(
+            min_values=1, max_values=1, options=options, row=0, custom_id="tv_preset_pick"
+        )
 
     async def callback(self, itx: discord.Interaction):
         view: PresetSelectView = self.view  # type: ignore
@@ -916,12 +928,12 @@ class PresetSelectView(discord.ui.View):
     async def apply(self, itx: discord.Interaction, preset_name: str):
         ok = await self.core.apply_preset(self.lane, self.owner_id, preset_name)
         if not ok:
-            await itx.response.send_message("Preset nicht gefunden oder Fehler beim Anwenden.", ephemeral=True)
+            await itx.response.send_message(
+                "Preset nicht gefunden oder Fehler beim Anwenden.", ephemeral=True
+            )
             return
         await self.core.refresh_name(self.lane)
-        await itx.response.send_message(f"Preset \"{preset_name}\" angewendet.", ephemeral=True)
-
-
+        await itx.response.send_message(f'Preset "{preset_name}" angewendet.', ephemeral=True)
 
 
 class MinRankSelect(discord.ui.Select):
@@ -1075,7 +1087,9 @@ class SubRankSelectView(discord.ui.View):
         owner_id = self.core.lane_owner.get(self.lane.id, m.id)
         perms = self.lane.permissions_for(m)
         if not (m.id == self.requester.id or perms.manage_channels or perms.administrator):
-            await itx.response.send_message("Nur der ursprüngliche Auslöser oder Mods dürfen bestätigen.", ephemeral=True)
+            await itx.response.send_message(
+                "Nur der ursprüngliche Auslöser oder Mods dürfen bestätigen.", ephemeral=True
+            )
             return
 
         rank_label = self.base_rank

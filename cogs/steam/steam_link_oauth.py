@@ -80,12 +80,16 @@ class LinkPanelView(discord.ui.View):
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             if interaction.user.id != self.user_id:
-                await interaction.followup.send("Nur der ursprüngliche Nutzer kann das verwenden.", ephemeral=True)
+                await interaction.followup.send(
+                    "Nur der ursprüngliche Nutzer kann das verwenden.", ephemeral=True
+                )
                 return
 
             rank_cog = self.link_cog.bot.get_cog("DeadlockFriendRank")
             if rank_cog is None or not hasattr(rank_cog, "_fetch_profile_card"):
-                await interaction.followup.send("Rank-Modul nicht geladen. Bitte Admin informieren.", ephemeral=True)
+                await interaction.followup.send(
+                    "Rank-Modul nicht geladen. Bitte Admin informieren.", ephemeral=True
+                )
                 return
 
             steam_ids = (
@@ -94,14 +98,19 @@ class LinkPanelView(discord.ui.View):
                 else None
             )
             if not steam_ids:
-                await interaction.followup.send("Kein verknüpfter Steam-Account gefunden. Bitte zuerst verknüpfen.", ephemeral=True)
+                await interaction.followup.send(
+                    "Kein verknüpfter Steam-Account gefunden. Bitte zuerst verknüpfen.",
+                    ephemeral=True,
+                )
                 return
             sid = str(steam_ids[0]).strip()
             if not sid:
                 await interaction.followup.send("Kein valider Steam-Link gefunden.", ephemeral=True)
                 return
 
-            card, data, outcome = await rank_cog._fetch_profile_card({"steam_id": sid}, timeout=45.0)
+            card, data, outcome = await rank_cog._fetch_profile_card(
+                {"steam_id": sid}, timeout=45.0
+            )
             if outcome.timed_out or not outcome.ok or not isinstance(card, dict):
                 await interaction.followup.send(
                     f"Rank-Abfrage fehlgeschlagen ({outcome.error or 'no data'}).",
@@ -111,7 +120,9 @@ class LinkPanelView(discord.ui.View):
 
             snap = rank_cog._snapshot_from_profile_card(sid, card, data)
             if not snap:
-                await interaction.followup.send("Keine Rank-Daten in der PlayerCard gefunden.", ephemeral=True)
+                await interaction.followup.send(
+                    "Keine Rank-Daten in der PlayerCard gefunden.", ephemeral=True
+                )
                 return
 
             text = (
