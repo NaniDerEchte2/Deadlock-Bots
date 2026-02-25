@@ -5,12 +5,14 @@ import datetime as _dt
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 
 import discord
 import pytz
 from discord.ext import commands
 
+from bot_core.boot_profile import log_event, measure
 from bot_core.bootstrap import _init_db_if_available, _log_secret_present
 from bot_core.cog_loader import CogLoaderMixin
 from bot_core.logging_setup import LoggingMixin
@@ -61,6 +63,7 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
 
         self.lifecycle = lifecycle
         self.root_dir = Path(__file__).resolve().parent.parent
+        self._boot_started_at = time.perf_counter()
 
         self.setup_logging()
 
@@ -175,16 +178,30 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
             mode=secret_mode,
         )
 
+        db_span = measure("db.init")
         _init_db_if_available()
+        db_span.finish()
+
+        load_span = measure("cogs.load", detail=f"planned={len(self.cogs_list)}")
         await self.load_all_cogs()
+        loaded_now = len([ext for ext in self.extensions.keys() if ext.startswith("cogs.")])
+        load_span.finish(detail=f"loaded={loaded_now}")
+        logging.info("Cogs geladen in %.2fs", time.perf_counter() - self._boot_started_at)
 
         try:
+            sync_span = measure("slash.sync")
             synced = await self.tree.sync()
-            logging.info(f"Synced {len(synced)} slash commands")
+            sync_span.finish(detail=f"commands={len(synced)}")
+            logging.info(
+                "Synced %d slash commands in %.2fs",
+                len(synced),
+                time.perf_counter() - self._boot_started_at,
+            )
         except Exception as e:
             logging.error(f"Failed to sync slash commands: {e}")
 
         logging.info("Master Bot setup completed")
+        log_event("bot.setup_hook", time.perf_counter() - self._boot_started_at, "completed")
 
     async def close(self):
         logging.info("Master Bot shutting down...")

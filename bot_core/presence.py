@@ -8,6 +8,8 @@ import time
 
 import discord
 
+from bot_core.boot_profile import log_event
+
 _STEAM_LOG_CHANNEL_ID = 1374364800817303632
 
 
@@ -80,6 +82,17 @@ class PresenceMixin:
     async def on_ready(self):
         logging.info(f"Bot logged in as {self.user} (ID: {self.user.id})")
         logging.info(f"Connected to {len(self.guilds)} guilds")
+
+        try:
+            started = getattr(self, "_boot_started_at", None)
+            if started is not None:
+                log_event(
+                    "discord.ready",
+                    time.perf_counter() - started,
+                    f"guilds={len(self.guilds)}",
+                )
+        except Exception:
+            logging.getLogger(__name__).debug("BootProfile ready log failed", exc_info=True)
 
         await self.update_presence()
 
