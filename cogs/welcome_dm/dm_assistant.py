@@ -281,7 +281,9 @@ class BotDMAssistant(commands.Cog):
                     "So verknüpfst du deinen Steam-Account:\n\n"
                     "**1.** Betritt unseren Discord-Server\n"
                     "**2.** Nutze den Befehl `/steamlink`\n"
-                    "**3.** Folge den Anweisungen\n\n"
+                    "**3.** Folge den Anweisungen\n"
+                    "**4.** Sende dem Steam-Bot eine Freundschaftsanfrage "
+                    "(Freundescode **820142646**) und nimm sie an\n\n"
                     'Nach der Verknüpfung erhältst du die Rolle **"Steam Verifiziert"**.'
                 ),
                 color=discord.Color.green(),
