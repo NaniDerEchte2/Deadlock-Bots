@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 try:
@@ -48,7 +49,16 @@ class StandaloneMixin:
                 "yes",
                 "on",
             }
-            steam_dir = repo_root / "cogs" / "steam" / "steam_presence"
+            steam_bridge_env = (os.getenv("STEAM_BRIDGE_DIR") or "").strip()
+            if steam_bridge_env:
+                steam_dir = Path(steam_bridge_env).expanduser()
+            else:
+                steam_bot_default = (
+                    Path(os.path.expandvars("%USERPROFILE%"))
+                    / "Documents" / "Deadlock-Steam-Bot"
+                    / "cogs" / "steam" / "steam_presence"
+                )
+                steam_dir = steam_bot_default if steam_bot_default.exists() else repo_root / "cogs" / "steam" / "steam_presence"
             steam_script = steam_dir / "index.js"
             if steam_script.exists():
                 steam_env: dict[str, str] = {}

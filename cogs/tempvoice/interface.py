@@ -383,9 +383,15 @@ class TempVoiceInterface(commands.Cog):
 
             owner_id = self.core.lane_owner.get(lane_id)
             try:
+                is_ranked = bool(lane and lane.category_id in MINRANK_CATEGORY_IDS)
                 await msg.edit(
                     embed=self._lane_embed(lane, owner_id),
-                    view=MainView(self.core, self.util),
+                    view=MainView(
+                        self.core,
+                        self.util,
+                        include_minrank=is_ranked,
+                        include_presets=is_ranked,
+                    ),
                 )
                 await self._record_interface_message(
                     int(lane.guild.id),
