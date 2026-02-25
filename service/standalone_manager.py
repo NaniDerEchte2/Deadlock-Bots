@@ -232,6 +232,36 @@ class StandaloneBotManager:
             except StandaloneManagerError as exc:
                 log.error("Failed to autostart %s: %s", config.key, exc)
 
+    async def restart_all(
+        self,
+        *,
+        autostart_only: bool = False,
+        restart_running: bool = True,
+    ) -> list[dict[str, Any]]:
+        """
+        Restart all registered standalone bots.
+
+        Args:
+            autostart_only: limit to configs with autostart=True.
+            restart_running: if False, only start bots that are not running.
+        """
+        results: list[dict[str, Any]] = []
+        for config in self.all_configs():
+            if autostart_only and not config.autostart:
+                continue
+            try:
+                if restart_running:
+                    status = await self.restart(config.key)
+                else:
+                    status = await self.ensure_running(config.key)
+            except StandaloneNotRunning:
+                status = await self.start(config.key)
+            except StandaloneManagerError as exc:
+                status = {"key": config.key, "error": str(exc)}
+                log.error("Restart for %s failed: %s", config.key, exc)
+            results.append(status)
+        return results
+
     async def _maybe_restart_on_daily_schedule(self, config: StandaloneBotConfig) -> None:
         schedule = config.daily_restart_at
         if not schedule:

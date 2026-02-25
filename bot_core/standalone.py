@@ -113,8 +113,18 @@ class StandaloneMixin:
         if not self.standalone_manager:
             return
         try:
-            await self.standalone_manager.ensure_autostart()
-        except Exception as exc:
+            manager = self.standalone_manager
+            if hasattr(manager, "restart_all"):
+                try:
+                    await manager.restart_all(autostart_only=True, restart_running=True)
+                except Exception:
+                    logging.getLogger(__name__).debug(
+                        "Standalone restart_all failed, falling back to ensure_autostart",
+                        exc_info=True,
+                    )
+
+            await manager.ensure_autostart()
+        except Exception as exc:  # pragma: no cover - defensive
             logging.getLogger(__name__).error(
                 "Standalone Manager Autostart fehlgeschlagen: %s", exc
             )
