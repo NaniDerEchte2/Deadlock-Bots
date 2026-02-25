@@ -21,37 +21,41 @@ class SteamVerifiedRole(commands.Cog):
         self.verified_role_id = settings.verified_role_id
         self.log_channel_id = settings.verified_log_channel_id
         self.db_path = central_db.db_path()
-        self.dry_run = os.getenv("DRY_RUN", "0") == "1"
+        self.dry_run = False
         # Fester Intervall: 1h für den regulären Lauf
         self._interval_seconds = 3600
-        # Fetch-Rate-Limit: kurz halten, um zeitnah zuzuweisen
-        self._member_fetch_min_interval = 0.6
+        # Optional: bulk member lookup via gateway chunks statt vieler REST-Calls
+        self._use_member_chunks = True
+        self._prefetch_limit = 400  # 0 = unlimited
+        # Fetch-Rate-Limit: vorsichtiger, damit Discord 429 vermieden werden
+        self._member_fetch_min_interval = 1.1
         # Sofort-Retry-Einstellungen für frische Verifizierungen (fest verdrahtet)
         self._immediate_retry_attempts = 3
         self._immediate_retry_interval = 30.0
         # Fast-Lane: prüft frisch aktualisierte steam_links zeitnah
         self._fast_lane_window_seconds = 180  # 3 Minuten
         self._member_fetch_lock = asyncio.Lock()
+        self._member_fetch_backoff_until = 0.0
         self._last_member_fetch_started_at = 0.0
         # Nach einem NotFound 5 min pausieren
         self._missing_member_retry_seconds = 300
-        self._transient_member_retry_seconds = max(
-            5.0, float(os.getenv("VERIFIED_MEMBER_TRANSIENT_RETRY_SECONDS", "300"))
-        )
+        self._transient_member_retry_seconds = 300
         self._missing_member_retry_until: dict[int, float] = {}
         self._transient_member_retry_until: dict[int, float] = {}
         self._task = None
         self._fast_lane_task = None
-        self._assign_concurrency = max(1, int(os.getenv("VERIFIED_ASSIGN_CONCURRENCY", "3")))
+        # Gleichzeitige Rollenvergaben begrenzen (Fetch & Add haben eigene Rate-Limits)
+        self._assign_concurrency = 2
         self._assign_semaphore = asyncio.Semaphore(self._assign_concurrency)
         self._guild_resolve_lock = asyncio.Lock()
         self._cached_guild: discord.Guild | None = None
         self._cached_role: discord.Role | None = None
-        self._guild_cache_ttl = float(os.getenv("VERIFIED_GUILD_CACHE_TTL_SECONDS", "600"))
+        self._guild_cache_ttl = 600.0
         self._guild_cache_expires_at = 0.0
         self._guild_resolve_backoff_until = 0.0
-        self._fast_lane_max = max(1, int(os.getenv("VERIFIED_FAST_LANE_MAX", "60")))
-        self._post_assign_delay = max(0.0, float(os.getenv("VERIFIED_ASSIGN_DELAY_SECONDS", "0.2")))
+        # Fast-Lane capped to avoid bursty fetch_member calls
+        self._fast_lane_max = 30
+        self._post_assign_delay = 0.2
         log.info(
             "SteamVerifiedRole init: guild=%s role=%s db=%s every=%ss dry_run=%s log_ch=%s fetch_delay=%ss missing_retry=%ss transient_retry=%ss assign_conc=%s fast_lane_max=%s",
             self.guild_id,
@@ -176,20 +180,83 @@ class SteamVerifiedRole(commands.Cog):
                 uid: ts for uid, ts in self._transient_member_retry_until.items() if ts > now
             }
 
+    async def _prefetch_members(
+        self,
+        guild: discord.Guild,
+        user_ids: list[int],
+        *,
+        batch_size: int = 90,
+    ) -> dict[int, discord.Member]:
+        """
+        Try to populate the member cache via gateway chunks to avoid many REST fetches.
+        Requires the Members intent to be enabled for the bot.
+        """
+        if not self._use_member_chunks:
+            return {}
+        intents = getattr(self.bot, "intents", None)
+        if not intents or not getattr(intents, "members", False):
+            return {}
+        # Discord allows up to 100 user_ids per chunk request; stay below to be safe.
+        batch_size = max(1, min(batch_size, 100))
+        remaining: list[int] = list(dict.fromkeys(user_ids))  # preserve order, dedupe
+        fetched: dict[int, discord.Member] = {}
+
+        while remaining:
+            batch = remaining[:batch_size]
+            remaining = remaining[batch_size:]
+            try:
+                members = await guild.query_members(user_ids=batch, cache=True)
+            except (discord.Forbidden, discord.HTTPException, asyncio.TimeoutError) as exc:
+                log.debug("Member-Chunk request failed (%s): %s", guild.id, exc)
+                break
+            for m in members:
+                fetched[m.id] = m
+            # small pause to avoid flooding gateway
+            await asyncio.sleep(0.2)
+        return fetched
+
     async def _fetch_member_rate_limited(
         self, guild: discord.Guild, user_id: int
     ) -> discord.Member:
         async with self._member_fetch_lock:
+            loop = asyncio.get_running_loop()
+
+            # Honour backoff from previous 429 responses
+            now = loop.time()
+            if self._member_fetch_backoff_until > now:
+                await asyncio.sleep(self._member_fetch_backoff_until - now)
+
+            # Small spacing between requests to stay under per-route limits
             if self._member_fetch_min_interval > 0:
-                loop = asyncio.get_running_loop()
-                now = loop.time()
                 remaining = self._member_fetch_min_interval - (
-                    now - self._last_member_fetch_started_at
+                    loop.time() - self._last_member_fetch_started_at
                 )
                 if remaining > 0:
                     await asyncio.sleep(remaining)
-                self._last_member_fetch_started_at = loop.time()
-            return await guild.fetch_member(user_id)
+
+            self._last_member_fetch_started_at = loop.time()
+
+            try:
+                return await guild.fetch_member(user_id)
+            except discord.HTTPException as exc:
+                # If Discord tells us to slow down, respect retry_after
+                if exc.status == 429:
+                    retry_after = getattr(exc, "retry_after", None)
+                    if retry_after is None:
+                        # Try headers on the raw response if available
+                        try:
+                            retry_after = float(exc.response.headers.get("Retry-After", "1.5"))
+                        except Exception:
+                            retry_after = 1.5
+                    self._member_fetch_backoff_until = loop.time() + float(retry_after) + 0.25
+                    log.warning(
+                        "Rate-Limit beim fetch_member (uid=%s). Pausiere %.2fs.",
+                        user_id,
+                        float(retry_after),
+                    )
+                    await asyncio.sleep(float(retry_after))
+                # Re-raise so callers can mark retry state
+                raise
 
     async def _resolve_guild_and_role(self) -> tuple[discord.Guild | None, discord.Role | None]:
         now = self._monotonic_now()
@@ -439,6 +506,17 @@ class SteamVerifiedRole(commands.Cog):
         if not verified_ids:
             return 0
 
+        if self._use_member_chunks and verified_ids:
+            try:
+                prefetch_ids = (
+                    list(verified_ids)
+                    if self._prefetch_limit == 0
+                    else list(verified_ids)[: self._prefetch_limit]
+                )
+                await self._prefetch_members(guild, prefetch_ids)
+            except Exception as exc:  # noqa: PERF203
+                log.debug("Prefetch (chunk) übersprungen: %s", exc)
+
         self._prune_retry_caches()
         changes, lines = 0, []
         not_found = 0
@@ -583,6 +661,13 @@ class SteamVerifiedRole(commands.Cog):
                 self._fast_lane_max,
             )
             ids = ids[: self._fast_lane_max]
+
+        # Bulk-prefetch via gateway chunks to avoid many REST fetch_member calls
+        try:
+            prefetch_ids = ids if not self._prefetch_limit else ids[: self._prefetch_limit]
+            await self._prefetch_members(guild, prefetch_ids)
+        except Exception as exc:  # noqa: PERF203
+            log.debug("Fast-Lane prefetch fehlgeschlagen: %s", exc)
 
         async def handle(uid: int):
             member = guild.get_member(uid)
