@@ -28,6 +28,7 @@ Konfiguration (ENV optional):
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import textwrap
@@ -968,7 +969,7 @@ class StreamerOnboarding(commands.Cog):
         self.bot.add_view(StreamerRequirementsView())
         log.info("StreamerOnboarding Views registriert (persistent).")
         # Sicherstellen, dass der Slash-Command in der Haupt-Guild sofort verfügbar ist
-        await self._sync_slash_commands()
+        asyncio.create_task(self._sync_slash_commands())
 
     @app_commands.command(name="streamer", description="Streamer-Partner werden (2 Schritte).")
     async def streamer_cmd(self, interaction: discord.Interaction):
@@ -1031,15 +1032,24 @@ class StreamerOnboarding(commands.Cog):
             return
 
         try:
-            synced = await self.bot.tree.sync(guild=discord.Object(id=MAIN_GUILD_ID))
+            synced = await asyncio.wait_for(
+                self.bot.tree.sync(guild=discord.Object(id=MAIN_GUILD_ID)),
+                timeout=20.0,
+            )
             log.info(
                 "StreamerOnboarding: Slash-Command sync abgeschlossen (Guild %s, %d Commands)",
                 MAIN_GUILD_ID,
                 len(synced),
             )
+        except asyncio.TimeoutError:
+            log.warning(
+                "StreamerOnboarding: Slash-Command sync Timeout (>20s) für Guild %s",
+                MAIN_GUILD_ID,
+            )
         except Exception as exc:
             log.warning(
-                "StreamerOnboarding: Slash-Command sync fehlgeschlagen: %s",
+                "StreamerOnboarding: Slash-Command sync fehlgeschlagen (Guild %s): %s",
+                MAIN_GUILD_ID,
                 exc,
                 exc_info=True,
             )

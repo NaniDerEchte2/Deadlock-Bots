@@ -6,10 +6,24 @@ import json
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 from discord.ext import commands
+
+try:
+    from bot_core.boot_profile import log_event, measure
+except Exception:  # pragma: no cover - fallback if boot_profile missing
+    def log_event(step: str, duration: float, detail: str | None = None):  # type: ignore
+        return
+
+    class _NullSpan:
+        def finish(self, detail: str | None = None):
+            return
+
+    def measure(step: str, detail: str | None = None):  # type: ignore
+        return _NullSpan()
 
 
 class CogLoaderMixin:
@@ -161,11 +175,13 @@ class CogLoaderMixin:
         return False
 
     def auto_discover_cogs(self):
+        span = measure("cogs.discover")
         try:
             importlib.invalidate_caches()
             cogs_dirs = self._iter_cogs_dirs()
             if not cogs_dirs:
                 logging.warning("Cogs directories not configured; discovery skipped")
+                span.finish(detail="roots=0")
                 return
 
             discovered: set[str] = set()
@@ -232,6 +248,7 @@ class CogLoaderMixin:
             logging.info(
                 f"✅ Auto-discovery complete: {len(self.cogs_list)} cogs found across {len(cogs_dirs)} roots"
             )
+            span.finish(detail=f"found={len(self.cogs_list)} roots={len(cogs_dirs)}")
 
             for key in list(self.cog_status.keys()):
                 if self.is_namespace_blocked(key, assume_normalized=True):
@@ -241,6 +258,7 @@ class CogLoaderMixin:
             logging.error(f"❌ Error during cog auto-discovery: {e}")
             logging.error("❌ CRITICAL: No cogs will be loaded! Check cogs/ directory")
             self.cogs_list = []
+            span.finish(detail="error")
 
     def resolve_cog_identifier(self, identifier: str | None) -> tuple[str | None, list[str]]:
         if not identifier:
@@ -273,15 +291,23 @@ class CogLoaderMixin:
         logging.info("Loading all cogs in parallel...")
 
         async def load_single_cog(cog_name: str):
+            start = time.perf_counter()
+            span = measure("cog.load", detail=cog_name)
             try:
                 self._purge_namespace_modules(cog_name)
                 await self.load_extension(cog_name)
                 self.cog_status[cog_name] = "loaded"
                 logging.info(f"✅ Loaded cog: {cog_name}")
+                duration = time.perf_counter() - start
+                log_event("cog.loaded", duration, cog_name)
+                span.finish()
                 return True, cog_name, None
             except Exception as e:
                 self.cog_status[cog_name] = f"error: {str(e)[:100]}"
                 logging.error(f"❌ Failed to load cog {cog_name}: {e}")
+                duration = time.perf_counter() - start
+                log_event("cog.error", duration, f"{cog_name} | {str(e)[:80]}")
+                span.finish(detail="error")
                 return False, cog_name, e
 
         tasks = [load_single_cog(c) for c in self.cogs_list]
