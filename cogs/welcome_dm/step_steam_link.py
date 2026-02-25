@@ -91,7 +91,8 @@ _STEAM_LINK_DETAILED_DESC = dedent(
     • **Direkt bei Steam anmelden** – Öffnet Steam, damit du deinen Account bestätigst (wir speichern nur die **SteamID64**).
 
 
-    • Sobald du dich authentifizierst, kann dir unser Bot automatisch eine Freundschaftsanfrage schicken.
+    • Nach der Authentifizierung musst du dem Steam-Bot eine Freundschaftsanfrage senden
+      Freundescode: **820142646**. Der Bot nimmt sie automatisch an.
 
 
     **Hinweis:** Automatische Status-Anzeigen über Steam sind aktuell deaktiviert – die Verknüpfung ist freiwillig.
@@ -188,7 +189,7 @@ class SteamLinkStepView(discord.ui.View):
         if not _LINKS_ENABLED or _oauth is None:
             message = (
                 "ℹ️ Die automatische Steam-Verknüpfung ist derzeit deaktiviert. "
-                "Bitte sende dem Bot direkt eine Anfrage."
+                "Bitte sende dem Steam-Bot direkt eine Freundschaftsanfrage (Freundescode 820142646)."
             )
             if interaction.response.is_done():
                 await interaction.followup.send(message, ephemeral=True)

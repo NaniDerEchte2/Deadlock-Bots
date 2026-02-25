@@ -421,7 +421,8 @@ class OnboardingAccountLinkView(discord.ui.View):
         else:
             await interaction.response.send_message(
                 "Du hast die **Verified**-Rolle noch nicht. Bitte stelle sicher, dass du deinen Account verknüpft hast "
-                "und die Freundschaftsanfrage vom Steam-Bot angenommen hast. (Es kann ein paar Minuten dauern)",
+                "und dem Steam-Bot (Freundescode 820142646) eine Freundschaftsanfrage geschickt und angenommen hast. "
+                "(Es kann ein paar Minuten dauern)",
                 ephemeral=True,
             )
 
