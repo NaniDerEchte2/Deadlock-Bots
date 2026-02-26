@@ -132,7 +132,7 @@ jobs:
           category: kics
       - name: Ansible Lint (SARIF)
         if: hashFiles('**/ansible/**/*.yml', '**/ansible/**/*.yaml', '**/playbook*.yml', '**/playbook*.yaml') != ''
-        uses: ansible/ansible-lint@ab4190674c046dbb11685c2b35feaf822dc1259e # main
+        uses: ansible/ansible-lint@19f673a091111d07688352cd2f19f0460055feba # main
         with:
           args: "--sarif-file ansible-lint.sarif"
       - name: Upload Ansible Lint SARIF
