@@ -395,7 +395,7 @@ class TempVoiceCore(commands.Cog):
         return self.category_to_staging.get(int(category.id))
 
     def _average_rank_prefix_for_lane(self, lane: discord.VoiceChannel) -> str | None:
-        """Berechnet den Durchschnittsrang der Lane-Mitglieder (Minimum Initiate=1)."""
+        """Berechnet den Durchschnittsrang der Lane-Mitglieder (nur bekannte Ränge)."""
         members = [m for m in getattr(lane, "members", []) if isinstance(m, discord.Member)]
         if not members:
             return None
@@ -403,8 +403,10 @@ class TempVoiceCore(commands.Cog):
         count = 0
         for member in members:
             idx = _member_rank_index(member)
-            # Unknown (0) soll den Schnitt nicht unter Initiate (1) ziehen.
-            total += max(1, idx)
+            # Unknown (0) ignorieren: in Chill/Casual soll ohne Rangrolle auf "Lane X" zurückgefallen werden.
+            if idx <= 0:
+                continue
+            total += idx
             count += 1
         if count <= 0:
             return None
