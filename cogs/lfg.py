@@ -46,19 +46,19 @@ MIN_ACTIVITY_SCORE_SESSIONS = 3
 MIN_TIME_MATCH_SCORE = 0.5
 
 # Scoring Weights (angepasst auf neues Schema)
-WEIGHT_RANK = 10
-WEIGHT_TIME = 10
-WEIGHT_LANE = 30
+WEIGHT_RANK = 20
+WEIGHT_TIME = 15
+WEIGHT_LANE = 20
 WEIGHT_COPLAY = 20
-WEIGHT_PRESENCE = 25  # präsenz höher gewichtet, v. a. bei Pattern-Match
-WEIGHT_ACTIVITY = 20
+WEIGHT_PRESENCE = 30  # stärkstes Signal: echter Online-Status
+WEIGHT_ACTIVITY = 15
 
 # Spezielle Channel / Kategorien
 NEW_PLAYER_LANE_ID = 1465839460485697556
 STREET_BRAWL_LANE_ID = 1357422958544420944
 # Vorgabe des Users: Casual & Ranked Kategorien
 CASUAL_CATEGORY_ID = 1289721245281292290
-RANKED_CATEGORY_ID = 1357422957017698478
+RANKED_CATEGORY_ID = 1412804540994162789
 STREET_BRAWL_CATEGORY_ID = 1357422957017698478
 
 # Rollen & Ranks
@@ -598,7 +598,9 @@ class SmartLFGAgent(commands.Cog):
                     continue
                 rank_score = self._rank_score(target_rank, target_sub, rank_value, rank_sub)
             elif rank_strict and target_rank > 0 and rank_value == 0:
-                continue
+                if target_rank >= 8:  # High Elo (Oracle+) matched nicht mit Unbekannt
+                    continue
+                rank_score = 0.3  # Soft-Score: möglich aber nicht priorisiert
             else:
                 rank_score = 0.5
 
@@ -608,9 +610,10 @@ class SmartLFGAgent(commands.Cog):
             activity_sessions = pattern[2] if pattern else 0
 
             time_score = self._time_match_score(typical_hours, typical_days, now)
-            activity_score = max(
-                time_score, min(1.0, activity_sessions / 8.0) if activity_sessions > 0 else 0.0
-            )
+            if activity_sessions > 0:
+                activity_score = min(1.0, activity_sessions / 8.0)
+            else:
+                activity_score = 0.3  # neutral statt 0.0 (neue User ohne History)
 
             lane_score = 1.0 if discord_id in lane_active_users else 0.0
 
@@ -631,14 +634,9 @@ class SmartLFGAgent(commands.Cog):
                     presence_score = 0.7
 
             if stage is None:
-                if (
-                    activity_sessions < MIN_ACTIVITY_SCORE_SESSIONS
-                    and time_score < MIN_TIME_MATCH_SCORE
-                ):
+                if activity_sessions == 0 and time_score < MIN_TIME_MATCH_SCORE:
                     continue
-                # Muster passt zur aktuellen Uhrzeit -> Presence virtuell hochstufen
-                if time_score >= MIN_TIME_MATCH_SCORE:
-                    presence_score = max(presence_score, 0.8)
+                # kein virtual boost – presence_score bleibt 0.0 für echte Offline-User
 
             score = (
                 rank_score * WEIGHT_RANK
