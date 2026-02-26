@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import shlex
+from pathlib import Path
 from textwrap import dedent
 
 import discord
@@ -18,7 +20,20 @@ log = logging.getLogger(__name__)
 PRIMARY_MODEL = "gpt-4o-mini"
 FALLBACK_MODEL = "gemini-2.0-flash"
 MAX_OUTPUT_TOKENS = 700
-LOCAL_CODEX_CMD = "powershell -NoProfile -ExecutionPolicy Bypass -File codex.ps1"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+CODEX_BIN = "codex.cmd" if os.name == "nt" else "codex"
+DEFAULT_LOCAL_CODEX_ARGV = [
+    CODEX_BIN,
+    "exec",
+    "--color",
+    "never",
+    "--skip-git-repo-check",
+    "--dangerously-bypass-approvals-and-sandbox",
+    "-C",
+    str(PROJECT_ROOT),
+    "-",
+]
+LOCAL_CODEX_CMD_OVERRIDE = os.getenv("CODEX_LOCAL_CMD", "").strip()
 REMOTE_FALLBACK_ENABLED = False  # Lokal only; kein Remote-Fallback
 CODEX_TIMEOUT_SEC = 300
 CODEX_ALLOWED_CATEGORIES = {
@@ -550,19 +565,21 @@ class BugReporter(commands.Cog):
         )
 
     async def _run_local_codex(self, prompt: str) -> tuple[str | None, str | None]:
-        """Startet den lokalen Codex-Prozess über CODEX_LOCAL_CMD und gibt (stdout|None, error|None) zurück."""
-        cmd_text = LOCAL_CODEX_CMD.strip()
-        if not cmd_text:
-            return None, "CODEX_LOCAL_CMD leer"
-
-        try:
-            argv = shlex.split(cmd_text)
-        except Exception as exc:  # pragma: no cover - defensive
-            return None, f"cmd parse: {exc}"
+        """Startet den lokalen Codex-Prozess und gibt (stdout|None, error|None) zurück."""
+        if LOCAL_CODEX_CMD_OVERRIDE:
+            try:
+                argv = shlex.split(LOCAL_CODEX_CMD_OVERRIDE, posix=True)
+            except Exception as exc:  # pragma: no cover - defensive
+                return None, f"CODEX_LOCAL_CMD parse error: {exc}"
+            if not argv:
+                return None, "CODEX_LOCAL_CMD leer"
+        else:
+            argv = list(DEFAULT_LOCAL_CODEX_ARGV)
 
         try:
             proc = await asyncio.create_subprocess_exec(
                 *argv,
+                cwd=str(PROJECT_ROOT),
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
