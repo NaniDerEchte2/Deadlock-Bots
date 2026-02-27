@@ -331,6 +331,7 @@ class DashboardServer:
                     web.get("/api/deadlock/heroes", self._handle_deadlock_heroes),
                     web.post("/api/deadlock/heroes", self._handle_deadlock_upsert_hero),
                     web.delete("/api/deadlock/heroes/{hero_id}", self._handle_deadlock_delete_hero),
+                    web.post("/api/deadlock/heroes/{hero_id}/sync", self._handle_deadlock_sync_hero),
                     web.get("/api/tournament/overview", self._handle_tournament_overview),
                     web.post("/api/tournament/team", self._handle_tournament_team_create),
                     web.post("/api/tournament/assign", self._handle_tournament_assign),
@@ -3769,39 +3770,535 @@ class DashboardServer:
                 except Exception:
                     return None
 
+        origin_raw = _get("origin_build_id", 3)
+        origin_build_id: int | None
+        if origin_raw in (None, ""):
+            origin_build_id = None
+        else:
+            try:
+                origin_build_id = int(origin_raw)
+            except Exception:
+                origin_build_id = None
+
         return {
             "id": int(_get("id", 0) or 0),
             "hero_id": int(_get("hero_id", 1) or 0),
             "name": str(_get("name", 2) or ""),
-            "origin_build_id": _get("origin_build_id", 3),
+            "origin_build_id": origin_build_id,
             "is_active": bool(int(_get("is_active", 4) or 0)),
             "created_at": _get("created_at", 5),
             "updated_at": _get("updated_at", 6),
         }
 
+    @staticmethod
+    def _map_deadlock_hero_build_row(row: Any) -> dict[str, Any]:
+        """Normalize hero-build row to JSON-friendly dict."""
+
+        def _get(key: str, idx: int | None = None) -> Any:
+            try:
+                return row[key]  # type: ignore[index]
+            except Exception:
+                if idx is None:
+                    return None
+                try:
+                    return row[idx]  # type: ignore[index]
+                except Exception:
+                    return None
+
+        return {
+            "id": int(_get("id", 0) or 0),
+            "hero_id": int(_get("hero_id", 1) or 0),
+            "build_id": int(_get("build_id", 2) or 0),
+            "build_name": str(_get("build_name", 3) or ""),
+            "author_name": str(_get("author_name", 4) or ""),
+            "is_active": bool(int(_get("is_active", 5) or 0)),
+            "sort_order": int(_get("sort_order", 6) or 100),
+            "created_at": _get("created_at", 7),
+            "updated_at": _get("updated_at", 8),
+        }
+
+    @staticmethod
+    def _build_deadlock_legacy_suggestion(hero: dict[str, Any]) -> dict[str, Any] | None:
+        origin_build_id = hero.get("origin_build_id")
+        if origin_build_id in (None, "", False):
+            return None
+        try:
+            legacy_build_id = int(origin_build_id)
+        except Exception:
+            return None
+        return {
+            "build_id": legacy_build_id,
+            "build_name": f"Legacy Build {legacy_build_id}",
+            "author_name": "Legacy",
+            "is_active": bool(hero.get("is_active", True)),
+            "sort_order": 100,
+            "suggested": True,
+        }
+
+    def _coerce_request_bool(self, raw_value: Any, *, default: bool, field_name: str) -> bool:
+        if raw_value is None:
+            return default
+        if isinstance(raw_value, bool):
+            return raw_value
+        if isinstance(raw_value, int):
+            if raw_value in (0, 1):
+                return bool(raw_value)
+            raise web.HTTPBadRequest(text=f"{field_name} must be boolean")
+        parsed = self._coerce_bool(raw_value)
+        if parsed is None:
+            raise web.HTTPBadRequest(text=f"{field_name} must be boolean")
+        return parsed
+
+    def _parse_deadlock_build_payload_row(self, raw_build: Any, *, index: int) -> dict[str, Any]:
+        if not isinstance(raw_build, dict):
+            raise web.HTTPBadRequest(text=f"builds[{index}] must be an object")
+
+        build_id = self._coerce_int(raw_build.get("build_id", raw_build.get("buildId")), None)
+        if build_id is None:
+            raise web.HTTPBadRequest(text=f"builds[{index}].build_id must be integer")
+
+        build_name = str(raw_build.get("build_name", raw_build.get("buildName")) or "").strip()
+        if not build_name:
+            raise web.HTTPBadRequest(text=f"builds[{index}].build_name is required")
+
+        author_name = str(raw_build.get("author_name", raw_build.get("authorName")) or "").strip()
+        if not author_name:
+            raise web.HTTPBadRequest(text=f"builds[{index}].author_name is required")
+
+        is_active = self._coerce_request_bool(
+            raw_build.get("is_active", raw_build.get("isActive", True)),
+            default=True,
+            field_name=f"builds[{index}].is_active",
+        )
+
+        raw_sort_order = raw_build.get("sort_order", raw_build.get("sortOrder", 100))
+        if raw_sort_order in (None, ""):
+            sort_order = 100
+        else:
+            sort_order = self._coerce_int(raw_sort_order, None)
+            if sort_order is None:
+                raise web.HTTPBadRequest(text=f"builds[{index}].sort_order must be integer")
+
+        return {
+            "build_id": int(build_id),
+            "build_name": build_name,
+            "author_name": author_name,
+            "is_active": bool(is_active),
+            "sort_order": int(sort_order),
+        }
+
+    def _extract_deadlock_builds_payload(self, payload: dict[str, Any]) -> list[dict[str, Any]] | None:
+        has_builds_payload = "builds" in payload or "hero_builds" in payload or "heroBuilds" in payload
+        if not has_builds_payload:
+            return None
+
+        raw_builds = payload.get("builds", payload.get("hero_builds", payload.get("heroBuilds")))
+        if raw_builds is None:
+            return []
+        if not isinstance(raw_builds, list):
+            raise web.HTTPBadRequest(text="builds must be an array")
+
+        seen_build_ids: set[int] = set()
+        builds: list[dict[str, Any]] = []
+        for index, raw_build in enumerate(raw_builds, start=1):
+            parsed = self._parse_deadlock_build_payload_row(raw_build, index=index)
+            build_id = int(parsed["build_id"])
+            if build_id in seen_build_ids:
+                raise web.HTTPBadRequest(text=f"Duplicate build_id in builds: {build_id}")
+            seen_build_ids.add(build_id)
+            builds.append(parsed)
+        return builds
+
+    def _load_deadlock_hero_payload(
+        self,
+        hero_id: int,
+        *,
+        conn: Any | None = None,
+    ) -> dict[str, Any] | None:
+        select_hero_sql = """
+            SELECT id, hero_id, name, origin_build_id, is_active, created_at, updated_at
+              FROM deadlock_heroes
+             WHERE hero_id = ?
+        """
+        select_builds_sql = """
+            SELECT id, hero_id, build_id, build_name, author_name, is_active, sort_order, created_at, updated_at
+              FROM deadlock_hero_builds
+             WHERE hero_id = ?
+             ORDER BY sort_order ASC, build_id ASC
+        """
+
+        if conn is None:
+            hero_row = db.query_one(select_hero_sql, (hero_id,))
+            build_rows = db.query_all(select_builds_sql, (hero_id,))
+        else:
+            hero_row = conn.execute(select_hero_sql, (hero_id,)).fetchone()
+            build_rows = conn.execute(select_builds_sql, (hero_id,)).fetchall()
+
+        if hero_row is None:
+            return None
+
+        hero_payload = self._map_deadlock_hero_row(hero_row)
+        hero_payload["builds"] = [self._map_deadlock_hero_build_row(row) for row in build_rows]
+        if not hero_payload["builds"]:
+            suggestion = self._build_deadlock_legacy_suggestion(hero_payload)
+            if suggestion:
+                hero_payload["legacy_build_suggestion"] = suggestion
+        return hero_payload
+
+    def _apply_deadlock_build_snapshot(
+        self,
+        conn: Any,
+        *,
+        hero_id: int,
+        builds: list[dict[str, Any]],
+        ts: int,
+    ) -> None:
+        for build in builds:
+            conn.execute(
+                """
+                INSERT INTO deadlock_hero_builds (
+                    hero_id, build_id, build_name, author_name, is_active, sort_order, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(hero_id, build_id) DO UPDATE SET
+                    build_name = excluded.build_name,
+                    author_name = excluded.author_name,
+                    is_active = excluded.is_active,
+                    sort_order = excluded.sort_order,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    hero_id,
+                    int(build["build_id"]),
+                    str(build["build_name"]),
+                    str(build["author_name"]),
+                    1 if bool(build["is_active"]) else 0,
+                    int(build["sort_order"]),
+                    ts,
+                    ts,
+                ),
+            )
+
+        if builds:
+            submitted_build_ids = [int(build["build_id"]) for build in builds]
+            placeholders = ", ".join("?" for _ in submitted_build_ids)
+            conn.execute(
+                f"DELETE FROM deadlock_hero_builds WHERE hero_id = ? AND build_id NOT IN ({placeholders})",
+                (hero_id, *submitted_build_ids),
+            )
+        else:
+            conn.execute("DELETE FROM deadlock_hero_builds WHERE hero_id = ?", (hero_id,))
+
+    def _sync_deadlock_hero_builds_conn(self, conn: Any, *, hero_id: int) -> dict[str, Any]:
+        summary: dict[str, Any] = {
+            "hero_id": int(hero_id),
+            "checked": 0,
+            "queued": 0,
+            "skipped_missing_source": 0,
+            "errors": 0,
+            "unavailable_target_schema": False,
+            "details": [],
+        }
+
+        missing_tables: list[str] = []
+        for table_name in ("hero_build_sources", "hero_build_clones"):
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+                (table_name,),
+            ).fetchone()
+            if not exists:
+                missing_tables.append(table_name)
+        if missing_tables:
+            summary["unavailable_target_schema"] = True
+            summary["details"].append(
+                {
+                    "status": "unavailable_target_schema",
+                    "tables": missing_tables,
+                }
+            )
+            logger.warning(
+                "Deadlock sync skipped (hero_id=%s): missing target tables %s",
+                hero_id,
+                ", ".join(missing_tables),
+            )
+            return summary
+
+        clone_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(hero_build_clones)").fetchall()
+        }
+        source_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(hero_build_sources)").fetchall()
+        }
+
+        required_clone_cols = {"origin_hero_build_id", "hero_id", "target_language"}
+        missing_clone_cols = sorted(required_clone_cols - clone_cols)
+        if missing_clone_cols:
+            summary["unavailable_target_schema"] = True
+            summary["details"].append(
+                {
+                    "status": "unavailable_target_schema",
+                    "table": "hero_build_clones",
+                    "missing_columns": missing_clone_cols,
+                }
+            )
+            logger.warning(
+                "Deadlock sync skipped (hero_id=%s): hero_build_clones missing columns %s",
+                hero_id,
+                ", ".join(missing_clone_cols),
+            )
+            return summary
+
+        source_ordering: list[str] = []
+        if "last_seen_at" in source_cols:
+            source_ordering.append("COALESCE(last_seen_at, 0) DESC")
+        if "fetched_at" in source_cols:
+            source_ordering.append("COALESCE(fetched_at, 0) DESC")
+        if "publish_ts" in source_cols:
+            source_ordering.append("COALESCE(publish_ts, 0) DESC")
+        if not source_ordering:
+            source_ordering.append("hero_build_id DESC")
+        source_order_clause = ", ".join(source_ordering)
+
+        active_build_rows = conn.execute(
+            """
+            SELECT id, hero_id, build_id, build_name, author_name, is_active, sort_order, created_at, updated_at
+              FROM deadlock_hero_builds
+             WHERE hero_id = ?
+               AND is_active = 1
+             ORDER BY sort_order ASC, build_id ASC
+            """,
+            (hero_id,),
+        ).fetchall()
+        summary["checked"] = len(active_build_rows)
+        now_ts = int(time.time())
+
+        for row in active_build_rows:
+            build = self._map_deadlock_hero_build_row(row)
+            build_id = int(build["build_id"])
+            build_name = str(build["build_name"])
+            author_name = str(build["author_name"])
+
+            source_row = conn.execute(
+                f"""
+                SELECT *
+                  FROM hero_build_sources
+                 WHERE hero_build_id = ?
+                 ORDER BY {source_order_clause}
+                 LIMIT 1
+                """,
+                (build_id,),
+            ).fetchone()
+            if source_row is None:
+                summary["skipped_missing_source"] += 1
+                summary["details"].append(
+                    {
+                        "build_id": build_id,
+                        "build_name": build_name,
+                        "status": "skipped",
+                        "reason": "missing_source",
+                    }
+                )
+                logger.warning(
+                    "Deadlock sync skipped build (hero_id=%s, build_id=%s): source missing",
+                    hero_id,
+                    build_id,
+                )
+                continue
+
+            def _source_value(name: str, default: Any = None) -> Any:
+                if name not in source_cols:
+                    return default
+                try:
+                    return source_row[name]
+                except Exception:
+                    return default
+
+            target_language = self._coerce_int(_source_value("language"), 0) or 0
+            target_description = _source_value("description")
+            if not target_description:
+                target_description = f"Author: {author_name}"
+
+            clone_payload: dict[str, Any] = {
+                "origin_hero_build_id": build_id,
+                "hero_id": int(hero_id),
+                "target_language": int(target_language),
+                "target_name": build_name,
+                "target_description": str(target_description),
+                "status": "pending",
+                "status_info": "Queued by dashboard sync",
+                "updated_at": now_ts,
+                "attempts": 0,
+                "last_attempt_at": None,
+                "uploaded_build_id": None,
+                "uploaded_version": None,
+                "created_at": now_ts,
+            }
+
+            if "origin_build_id" in clone_cols:
+                clone_payload["origin_build_id"] = _source_value("origin_build_id")
+            if "author_account_id" in clone_cols:
+                clone_payload["author_account_id"] = _source_value("author_account_id")
+            if "source_language" in clone_cols:
+                clone_payload["source_language"] = _source_value("language")
+            if "source_version" in clone_cols:
+                clone_payload["source_version"] = _source_value("version")
+            if "source_last_updated_ts" in clone_cols:
+                clone_payload["source_last_updated_ts"] = _source_value("last_updated_ts")
+
+            clone_payload = {
+                key: value for key, value in clone_payload.items() if key in clone_cols
+            }
+
+            try:
+                updatable_payload = {
+                    key: value
+                    for key, value in clone_payload.items()
+                    if key not in {"origin_hero_build_id", "target_language", "created_at"}
+                }
+                updated_rows = 0
+                if updatable_payload:
+                    set_sql = ", ".join(f"{key} = ?" for key in updatable_payload)
+                    update_params = [
+                        *updatable_payload.values(),
+                        build_id,
+                        int(target_language),
+                    ]
+                    updated_rows = int(
+                        conn.execute(
+                            f"""
+                            UPDATE hero_build_clones
+                               SET {set_sql}
+                             WHERE origin_hero_build_id = ?
+                               AND target_language = ?
+                            """,
+                            update_params,
+                        ).rowcount
+                        or 0
+                    )
+
+                if updated_rows == 0:
+                    insert_payload = dict(clone_payload)
+                    insert_payload["origin_hero_build_id"] = build_id
+                    insert_payload["target_language"] = int(target_language)
+                    if "created_at" in clone_cols and "created_at" not in insert_payload:
+                        insert_payload["created_at"] = now_ts
+                    columns = ", ".join(insert_payload.keys())
+                    placeholders = ", ".join("?" for _ in insert_payload)
+                    conn.execute(
+                        f"INSERT INTO hero_build_clones ({columns}) VALUES ({placeholders})",
+                        tuple(insert_payload.values()),
+                    )
+
+                summary["queued"] += 1
+                summary["details"].append(
+                    {
+                        "build_id": build_id,
+                        "build_name": build_name,
+                        "status": "queued",
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                summary["errors"] += 1
+                summary["details"].append(
+                    {
+                        "build_id": build_id,
+                        "build_name": build_name,
+                        "status": "error",
+                        "reason": "queue_write_failed",
+                        "error": str(exc),
+                    }
+                )
+                logger.error(
+                    "Deadlock sync queue write failed (hero_id=%s, build_id=%s): %s",
+                    hero_id,
+                    build_id,
+                    exc,
+                    exc_info=True,
+                )
+
+        logger.info(
+            "Deadlock sync finished (hero_id=%s): queued=%s missing_source=%s errors=%s checked=%s",
+            hero_id,
+            summary["queued"],
+            summary["skipped_missing_source"],
+            summary["errors"],
+            summary["checked"],
+        )
+        return summary
+
+    async def _sync_deadlock_hero_builds(self, *, hero_id: int) -> dict[str, Any]:
+        fallback_summary: dict[str, Any] = {
+            "hero_id": int(hero_id),
+            "checked": 0,
+            "queued": 0,
+            "skipped_missing_source": 0,
+            "errors": 1,
+            "unavailable_target_schema": False,
+            "details": [
+                {
+                    "status": "error",
+                    "reason": "sync_exception",
+                }
+            ],
+        }
+        try:
+            async with db.transaction() as conn:
+                return self._sync_deadlock_hero_builds_conn(conn, hero_id=hero_id)
+        except Exception as exc:  # noqa: BLE001
+            fallback_summary["details"][0]["error"] = str(exc)
+            logger.exception("Deadlock sync failed (hero_id=%s): %s", hero_id, exc)
+            return fallback_summary
+
     async def _handle_deadlock_heroes(self, request: web.Request) -> web.Response:
-        """List all Deadlock heroes with mapped origin build IDs."""
+        """List all Deadlock heroes including their build snapshots."""
         self._check_auth(request, required=True)
         try:
-            rows = db.query_all(
+            hero_rows = db.query_all(
                 """
                 SELECT id, hero_id, name, origin_build_id, is_active, created_at, updated_at
                   FROM deadlock_heroes
                  ORDER BY hero_id
                 """
             )
-            heroes = [self._map_deadlock_hero_row(row) for row in rows]
+            build_rows = db.query_all(
+                """
+                SELECT id, hero_id, build_id, build_name, author_name, is_active, sort_order, created_at, updated_at
+                  FROM deadlock_hero_builds
+                 ORDER BY hero_id ASC, sort_order ASC, build_id ASC
+                """
+            )
+
+            builds_by_hero: dict[int, list[dict[str, Any]]] = {}
+            for row in build_rows:
+                mapped = self._map_deadlock_hero_build_row(row)
+                builds_by_hero.setdefault(int(mapped["hero_id"]), []).append(mapped)
+
+            heroes: list[dict[str, Any]] = []
+            for row in hero_rows:
+                hero = self._map_deadlock_hero_row(row)
+                hero_builds = builds_by_hero.get(int(hero["hero_id"]), [])
+                hero["builds"] = hero_builds
+                if not hero_builds:
+                    suggestion = self._build_deadlock_legacy_suggestion(hero)
+                    if suggestion:
+                        hero["legacy_build_suggestion"] = suggestion
+                heroes.append(hero)
+
             return self._json({"heroes": heroes})
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to load deadlock heroes: %s", exc)
             raise web.HTTPInternalServerError(text="Deadlock heroes unavailable") from exc
 
     async def _handle_deadlock_upsert_hero(self, request: web.Request) -> web.Response:
-        """Create or update a Deadlock hero entry (identified by hero_id)."""
+        """Create or update a Deadlock hero entry, optionally replacing its build snapshot and syncing."""
         self._check_auth(request, required=True)
         try:
             payload = await request.json()
         except Exception:
+            raise web.HTTPBadRequest(text="Invalid JSON body")
+        if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Invalid JSON body")
 
         try:
@@ -3814,41 +4311,80 @@ class DashboardServer:
         if not name:
             raise web.HTTPBadRequest(text="name is required")
 
-        origin_raw = payload.get("origin_build_id", payload.get("originBuildId"))
-        origin_build_id: int | None
-        if origin_raw in (None, "", False):
-            origin_build_id = None
-        else:
-            try:
-                origin_build_id = int(origin_raw)
-            except Exception:
-                raise web.HTTPBadRequest(text="origin_build_id must be integer or null")
+        has_origin_build = "origin_build_id" in payload or "originBuildId" in payload
+        parsed_origin_build_id: int | None = None
+        if has_origin_build:
+            origin_raw = payload.get("origin_build_id", payload.get("originBuildId"))
+            if origin_raw in (None, "", False):
+                parsed_origin_build_id = None
+            else:
+                parsed_origin_build_id = self._coerce_int(origin_raw, None)
+                if parsed_origin_build_id is None:
+                    raise web.HTTPBadRequest(text="origin_build_id must be integer or null")
 
-        is_active = bool(payload.get("is_active", payload.get("isActive", True)))
+        has_is_active = "is_active" in payload or "isActive" in payload
+        parsed_is_active: bool | None = None
+        if has_is_active:
+            parsed_is_active = self._coerce_request_bool(
+                payload.get("is_active", payload.get("isActive")),
+                default=True,
+                field_name="is_active",
+            )
+
+        builds_snapshot = self._extract_deadlock_builds_payload(payload)
+        sync_on_save = self._coerce_request_bool(
+            payload.get("sync_on_save", payload.get("syncOnSave", True)),
+            default=True,
+            field_name="sync_on_save",
+        )
+
         ts = int(time.time())
+        saved_hero: dict[str, Any] | None = None
 
         try:
-            db.execute(
-                """
-                INSERT INTO deadlock_heroes (hero_id, name, origin_build_id, is_active, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(hero_id) DO UPDATE SET
-                    name = excluded.name,
-                    origin_build_id = excluded.origin_build_id,
-                    is_active = excluded.is_active,
-                    updated_at = excluded.updated_at
-                """,
-                (hero_id, name, origin_build_id, 1 if is_active else 0, ts, ts),
-            )
-            row = db.query_one(
-                """
-                SELECT id, hero_id, name, origin_build_id, is_active, created_at, updated_at
-                  FROM deadlock_heroes
-                 WHERE hero_id = ?
-                """,
-                (hero_id,),
-            )
-            return self._json({"hero": self._map_deadlock_hero_row(row) if row else None})
+            async with db.transaction() as conn:
+                existing = conn.execute(
+                    """
+                    SELECT origin_build_id, is_active
+                      FROM deadlock_heroes
+                     WHERE hero_id = ?
+                    """,
+                    (hero_id,),
+                ).fetchone()
+
+                origin_build_id = (
+                    parsed_origin_build_id
+                    if has_origin_build
+                    else (existing["origin_build_id"] if existing else None)
+                )
+                is_active = (
+                    bool(parsed_is_active)
+                    if has_is_active and parsed_is_active is not None
+                    else bool(int(existing["is_active"])) if existing else True
+                )
+
+                conn.execute(
+                    """
+                    INSERT INTO deadlock_heroes (hero_id, name, origin_build_id, is_active, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(hero_id) DO UPDATE SET
+                        name = excluded.name,
+                        origin_build_id = excluded.origin_build_id,
+                        is_active = excluded.is_active,
+                        updated_at = excluded.updated_at
+                    """,
+                    (hero_id, name, origin_build_id, 1 if is_active else 0, ts, ts),
+                )
+
+                if builds_snapshot is not None:
+                    self._apply_deadlock_build_snapshot(
+                        conn,
+                        hero_id=hero_id,
+                        builds=builds_snapshot,
+                        ts=ts,
+                    )
+
+                saved_hero = self._load_deadlock_hero_payload(hero_id, conn=conn)
         except sqlite3.IntegrityError as exc:  # noqa: BLE001
             logger.warning("Deadlock hero upsert conflict: %s", exc)
             raise web.HTTPConflict(text="Hero with same ID or name already exists") from exc
@@ -3856,8 +4392,23 @@ class DashboardServer:
             logger.exception("Failed to upsert deadlock hero: %s", exc)
             raise web.HTTPInternalServerError(text="Saving hero failed") from exc
 
+        sync_summary: dict[str, Any] | None = None
+        if sync_on_save:
+            sync_summary = await self._sync_deadlock_hero_builds(hero_id=hero_id)
+            logger.info(
+                "Deadlock hero saved+synced (hero_id=%s): queued=%s missing_source=%s errors=%s",
+                hero_id,
+                sync_summary.get("queued"),
+                sync_summary.get("skipped_missing_source"),
+                sync_summary.get("errors"),
+            )
+        else:
+            logger.info("Deadlock hero saved without sync (hero_id=%s)", hero_id)
+
+        return self._json({"hero": saved_hero, "sync_summary": sync_summary})
+
     async def _handle_deadlock_delete_hero(self, request: web.Request) -> web.Response:
-        """Delete a hero by hero_id."""
+        """Delete a hero and its associated build snapshot by hero_id."""
         self._check_auth(request, required=True)
         try:
             hero_id = int(request.match_info.get("hero_id", "0"))
@@ -3865,13 +4416,30 @@ class DashboardServer:
             raise web.HTTPBadRequest(text="hero_id must be integer")
 
         try:
-            conn = db.connect_proxy()
-            cur = conn.execute("DELETE FROM deadlock_heroes WHERE hero_id = ?", (hero_id,))
-            deleted = int(cur.rowcount or 0)
+            async with db.transaction() as conn:
+                conn.execute("DELETE FROM deadlock_hero_builds WHERE hero_id = ?", (hero_id,))
+                cur = conn.execute("DELETE FROM deadlock_heroes WHERE hero_id = ?", (hero_id,))
+                deleted = int(cur.rowcount or 0)
+            logger.info("Deadlock hero deleted (hero_id=%s, deleted=%s)", hero_id, bool(deleted))
             return self._json({"deleted": bool(deleted)})
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to delete deadlock hero: %s", exc)
             raise web.HTTPInternalServerError(text="Delete hero failed") from exc
+
+    async def _handle_deadlock_sync_hero(self, request: web.Request) -> web.Response:
+        """Run manual sync/copy for one hero without changing admin fields."""
+        self._check_auth(request, required=True)
+        try:
+            hero_id = int(request.match_info.get("hero_id", "0"))
+        except ValueError:
+            raise web.HTTPBadRequest(text="hero_id must be integer")
+
+        hero_exists = db.query_one("SELECT 1 FROM deadlock_heroes WHERE hero_id = ?", (hero_id,))
+        if hero_exists is None:
+            raise web.HTTPNotFound(text="Hero not found")
+
+        sync_summary = await self._sync_deadlock_hero_builds(hero_id=hero_id)
+        return self._json({"hero_id": hero_id, "sync_summary": sync_summary})
 
     def _resolve_tournament_guild_id(self, raw_value: Any) -> int:
         parsed = self._coerce_int(raw_value, None)

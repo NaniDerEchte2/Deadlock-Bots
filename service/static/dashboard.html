@@ -660,6 +660,10 @@
             color: #9aa0a6;
             font-size: 12px;
         }
+        .dl-hero-meta .hint {
+            color: #7dd3fc;
+            font-size: 11px;
+        }
         .dl-hero-pill {
             padding: 0.2rem 0.55rem;
             border-radius: 999px;
@@ -698,6 +702,70 @@
             display: flex;
             gap: 0.6rem;
             flex-wrap: wrap;
+        }
+        .dl-build-section {
+            margin-top: 1rem;
+            border-top: 1px solid rgba(255,255,255,0.08);
+            padding-top: 0.9rem;
+        }
+        .dl-build-section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 0.6rem;
+            margin-bottom: 0.6rem;
+            flex-wrap: wrap;
+        }
+        .dl-build-section-header h4 {
+            margin: 0;
+        }
+        .dl-build-table-wrap {
+            overflow-x: auto;
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 10px;
+            background: rgba(255,255,255,0.015);
+        }
+        .dl-build-table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 680px;
+        }
+        .dl-build-table th,
+        .dl-build-table td {
+            padding: 0.55rem 0.45rem;
+            border-bottom: 1px solid rgba(255,255,255,0.06);
+            text-align: left;
+            vertical-align: middle;
+            font-size: 13px;
+        }
+        .dl-build-table th {
+            color: #9aa0a6;
+            font-weight: 600;
+            background: rgba(255,255,255,0.03);
+        }
+        .dl-build-table tr:last-child td {
+            border-bottom: none;
+        }
+        .dl-build-table input[type="text"],
+        .dl-build-table input[type="number"] {
+            width: 100%;
+            min-width: 110px;
+            padding: 0.5rem 0.55rem;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.12);
+            background: rgba(255,255,255,0.04);
+            color: #fff;
+            font-size: 13px;
+        }
+        .dl-build-table .toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+        .dl-build-empty {
+            color: #9aa0a6;
+            padding: 0.75rem 0.85rem;
+            font-size: 13px;
         }
         .dl-hero-message {
             padding: 0.6rem 0.75rem;
@@ -1594,7 +1662,7 @@
             <div class="section-header">
                 <div>
                     <h2>Deadlock Heroes</h2>
-                    <small>Hero-ID (Game) + Original-Build-ID hinterlegen, damit der Build-Bot sie spiegeln kann.</small>
+                    <small>Hero-Stammdaten plus mehrere Builds verwalten und beim Speichern manuell synchronisieren.</small>
                 </div>
                 <div class="section-actions">
                     <button id="deadlock-hero-refresh">Aktualisieren</button>
@@ -1622,17 +1690,34 @@
                             <input type="text" id="deadlock-hero-name" placeholder="z.B. Lady Geist">
                         </label>
                         <label>
-                            Original Build-ID (Quelle)
-                            <input type="number" id="deadlock-hero-build" placeholder="z.B. 123456">
-                            <small>Wird als Quelle gespiegelt; bleibt mit dem Original-Build synchron.</small>
-                        </label>
-                        <label>
                             Status
                             <div class="switch-row">
                                 <input type="checkbox" id="deadlock-hero-active" checked>
                                 <span>Aktiv</span>
                             </div>
                         </label>
+                    </div>
+                    <div class="dl-build-section">
+                        <div class="dl-build-section-header">
+                            <h4>Builds für diesen Hero</h4>
+                            <button id="deadlock-build-add" type="button">Build hinzufügen</button>
+                        </div>
+                        <div class="dl-build-table-wrap">
+                            <table class="dl-build-table">
+                                <thead>
+                                    <tr>
+                                        <th>Build-ID</th>
+                                        <th>Build-Name</th>
+                                        <th>Autor</th>
+                                        <th>Aktiv</th>
+                                        <th>Sortierung</th>
+                                        <th>Aktion</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="deadlock-build-rows"></tbody>
+                            </table>
+                            <div class="dl-build-empty" id="deadlock-build-empty">Keine Builds hinterlegt.</div>
+                        </div>
                     </div>
                     <div class="dl-hero-form btn-row" style="margin-top:0.6rem;">
                         <button id="deadlock-hero-save" style="background:#1c7ed6;color:#fff;">Speichern</button>
@@ -1742,11 +1827,13 @@
     const heroMsg = document.getElementById('deadlock-hero-message');
     const heroIdInput = document.getElementById('deadlock-hero-id');
     const heroNameInput = document.getElementById('deadlock-hero-name');
-    const heroBuildInput = document.getElementById('deadlock-hero-build');
     const heroActiveInput = document.getElementById('deadlock-hero-active');
     const heroSaveBtn = document.getElementById('deadlock-hero-save');
     const heroDeleteBtn = document.getElementById('deadlock-hero-delete');
     const heroResetBtn = document.getElementById('deadlock-hero-reset');
+    const heroBuildRows = document.getElementById('deadlock-build-rows');
+    const heroBuildAddBtn = document.getElementById('deadlock-build-add');
+    const heroBuildEmpty = document.getElementById('deadlock-build-empty');
     const voiceHistoryUser = document.getElementById('voice-history-user');
     const voiceUserApply = document.getElementById('voice-user-apply');
     const voiceUserSummary = document.getElementById('voice-user-summary');
@@ -1843,6 +1930,7 @@
     let deadlockHeroes = [];
     let selectedHeroId = null;
     let heroesLoading = false;
+    let heroBuildDraftRows = [];
     if (authLogoutLink) {
         authLogoutLink.style.display = 'none';
     }
@@ -1895,13 +1983,181 @@
         heroMsg.className = 'dl-hero-message ' + (type === 'error' ? 'error' : 'success');
     }
 
+    function normalizeBuildDraftRow(raw = {}) {
+        return {
+            build_id: raw.build_id ?? raw.buildId ?? '',
+            build_name: raw.build_name ?? raw.buildName ?? '',
+            author_name: raw.author_name ?? raw.authorName ?? '',
+            is_active: Boolean(raw.is_active ?? raw.isActive ?? true),
+            sort_order: raw.sort_order ?? raw.sortOrder ?? 100,
+            suggested: Boolean(raw.suggested),
+        };
+    }
+
+    function setHeroBuildDraftRows(rows) {
+        heroBuildDraftRows = Array.isArray(rows) ? rows.map((row) => normalizeBuildDraftRow(row)) : [];
+        renderHeroBuildRows();
+    }
+
+    function renderHeroBuildRows() {
+        if (!heroBuildRows) return;
+        heroBuildRows.innerHTML = '';
+
+        if (!heroBuildDraftRows.length) {
+            if (heroBuildEmpty) heroBuildEmpty.style.display = 'block';
+            return;
+        }
+
+        if (heroBuildEmpty) heroBuildEmpty.style.display = 'none';
+        heroBuildDraftRows.forEach((row, idx) => {
+            const tr = document.createElement('tr');
+
+            const tdBuildId = document.createElement('td');
+            const buildIdInput = document.createElement('input');
+            buildIdInput.type = 'number';
+            buildIdInput.value = row.build_id === '' ? '' : String(row.build_id);
+            buildIdInput.placeholder = 'z.B. 123456';
+            buildIdInput.addEventListener('input', () => {
+                heroBuildDraftRows[idx].build_id = buildIdInput.value;
+            });
+            tdBuildId.appendChild(buildIdInput);
+
+            const tdBuildName = document.createElement('td');
+            const buildNameInput = document.createElement('input');
+            buildNameInput.type = 'text';
+            buildNameInput.value = row.build_name || '';
+            buildNameInput.placeholder = 'Build-Name';
+            buildNameInput.addEventListener('input', () => {
+                heroBuildDraftRows[idx].build_name = buildNameInput.value;
+            });
+            tdBuildName.appendChild(buildNameInput);
+
+            const tdAuthor = document.createElement('td');
+            const authorInput = document.createElement('input');
+            authorInput.type = 'text';
+            authorInput.value = row.author_name || '';
+            authorInput.placeholder = 'Autor';
+            authorInput.addEventListener('input', () => {
+                heroBuildDraftRows[idx].author_name = authorInput.value;
+            });
+            tdAuthor.appendChild(authorInput);
+
+            const tdActive = document.createElement('td');
+            const activeWrap = document.createElement('label');
+            activeWrap.className = 'toggle';
+            const activeInput = document.createElement('input');
+            activeInput.type = 'checkbox';
+            activeInput.checked = Boolean(row.is_active);
+            activeInput.addEventListener('change', () => {
+                heroBuildDraftRows[idx].is_active = !!activeInput.checked;
+            });
+            activeWrap.appendChild(activeInput);
+            activeWrap.appendChild(document.createTextNode('Aktiv'));
+            tdActive.appendChild(activeWrap);
+
+            const tdSort = document.createElement('td');
+            const sortInput = document.createElement('input');
+            sortInput.type = 'number';
+            sortInput.value = row.sort_order === '' ? '' : String(row.sort_order);
+            sortInput.placeholder = '100';
+            sortInput.addEventListener('input', () => {
+                heroBuildDraftRows[idx].sort_order = sortInput.value;
+            });
+            tdSort.appendChild(sortInput);
+
+            const tdAction = document.createElement('td');
+            const removeBtn = document.createElement('button');
+            removeBtn.type = 'button';
+            removeBtn.textContent = 'Entfernen';
+            removeBtn.style.background = '#7f1d1d';
+            removeBtn.style.color = '#fff';
+            removeBtn.addEventListener('click', () => {
+                heroBuildDraftRows.splice(idx, 1);
+                renderHeroBuildRows();
+            });
+            tdAction.appendChild(removeBtn);
+
+            tr.appendChild(tdBuildId);
+            tr.appendChild(tdBuildName);
+            tr.appendChild(tdAuthor);
+            tr.appendChild(tdActive);
+            tr.appendChild(tdSort);
+            tr.appendChild(tdAction);
+            heroBuildRows.appendChild(tr);
+        });
+    }
+
+    function addHeroBuildDraftRow(initial = null) {
+        heroBuildDraftRows.push(
+            normalizeBuildDraftRow(initial || {
+                build_id: '',
+                build_name: '',
+                author_name: '',
+                is_active: true,
+                sort_order: 100,
+            })
+        );
+        renderHeroBuildRows();
+    }
+
+    function collectHeroBuildPayload() {
+        const builds = [];
+        const seenBuildIds = new Set();
+
+        heroBuildDraftRows.forEach((row, index) => {
+            const rowNo = index + 1;
+            const rawBuildId = String(row.build_id ?? '').trim();
+            const rawName = String(row.build_name ?? '').trim();
+            const rawAuthor = String(row.author_name ?? '').trim();
+            const rawSort = String(row.sort_order ?? '').trim();
+
+            const blankRow =
+                rawBuildId === '' &&
+                rawName === '' &&
+                rawAuthor === '' &&
+                (rawSort === '' || rawSort === '100');
+            if (blankRow) {
+                return;
+            }
+
+            const buildId = parseInt(rawBuildId, 10);
+            if (!Number.isFinite(buildId)) {
+                throw new Error(`Build-ID in Zeile ${rowNo} ist ungültig.`);
+            }
+            if (!rawName) {
+                throw new Error(`Build-Name in Zeile ${rowNo} fehlt.`);
+            }
+            if (!rawAuthor) {
+                throw new Error(`Autor in Zeile ${rowNo} fehlt.`);
+            }
+            const sortOrder = rawSort === '' ? 100 : parseInt(rawSort, 10);
+            if (!Number.isFinite(sortOrder)) {
+                throw new Error(`Sortierung in Zeile ${rowNo} ist ungültig.`);
+            }
+            if (seenBuildIds.has(buildId)) {
+                throw new Error(`Doppelte Build-ID: ${buildId}.`);
+            }
+            seenBuildIds.add(buildId);
+
+            builds.push({
+                build_id: buildId,
+                build_name: rawName,
+                author_name: rawAuthor,
+                is_active: Boolean(row.is_active),
+                sort_order: sortOrder,
+            });
+        });
+
+        return builds;
+    }
+
     function clearHeroForm() {
-        if (!heroIdInput || !heroNameInput || !heroBuildInput || !heroActiveInput) return;
+        if (!heroIdInput || !heroNameInput || !heroActiveInput) return;
         selectedHeroId = null;
         heroIdInput.value = '';
         heroNameInput.value = '';
-        heroBuildInput.value = '';
         heroActiveInput.checked = true;
+        setHeroBuildDraftRows([]);
         setHeroMessage('', 'success');
         if (heroDeleteBtn) heroDeleteBtn.disabled = true;
     }
@@ -1914,8 +2170,19 @@
         selectedHeroId = hero.hero_id || hero.heroId || hero.id || null;
         heroIdInput.value = hero.hero_id ?? hero.heroId ?? '';
         heroNameInput.value = hero.name || '';
-        heroBuildInput.value = hero.origin_build_id ?? hero.originBuildId ?? '';
         heroActiveInput.checked = Boolean(hero.is_active ?? hero.isActive ?? true);
+        let builds = Array.isArray(hero.builds) ? hero.builds : [];
+        if ((!builds || builds.length === 0) && hero.legacy_build_suggestion) {
+            builds = [hero.legacy_build_suggestion];
+            const legacyBuildId = hero.legacy_build_suggestion.build_id;
+            setHeroMessage(
+                `Legacy-Hinweis: origin_build_id ${legacyBuildId} gefunden. Vorschlag wurde als unsaved Build vorgeladen.`,
+                'success'
+            );
+        } else {
+            setHeroMessage('', 'success');
+        }
+        setHeroBuildDraftRows(builds);
         if (heroDeleteBtn) heroDeleteBtn.disabled = false;
     }
 
@@ -1939,13 +2206,20 @@
             name.textContent = hero.name || 'Unbenannt';
             const sub = document.createElement('div');
             sub.className = 'sub';
-            sub.textContent = `Hero-ID: ${hero.hero_id}`;
+            sub.textContent = `Hero-ID: ${hero.hero_id} · ${hero.is_active ? 'Aktiv' : 'Inaktiv'}`;
             meta.appendChild(name);
             meta.appendChild(sub);
+            if (hero.legacy_build_suggestion && (!hero.builds || hero.builds.length === 0)) {
+                const hint = document.createElement('div');
+                hint.className = 'hint';
+                hint.textContent = `Legacy: Build ${hero.legacy_build_suggestion.build_id}`;
+                meta.appendChild(hint);
+            }
             item.appendChild(meta);
             const pill = document.createElement('div');
-            pill.className = 'dl-hero-pill' + (hero.origin_build_id ? '' : ' muted');
-            pill.textContent = hero.origin_build_id ? `Build ${hero.origin_build_id}` : 'Kein Build';
+            const buildCount = Array.isArray(hero.builds) ? hero.builds.length : 0;
+            pill.className = 'dl-hero-pill' + (buildCount > 0 ? '' : ' muted');
+            pill.textContent = buildCount > 0 ? `${buildCount} Build${buildCount === 1 ? '' : 's'}` : 'Keine Builds';
             item.appendChild(pill);
             item.addEventListener('click', () => {
                 selectedHeroId = hero.hero_id;
@@ -1987,8 +2261,6 @@
         if (!heroIdInput || !heroNameInput) return;
         const heroId = parseInt(heroIdInput.value, 10);
         const name = (heroNameInput.value || '').trim();
-        const originRaw = heroBuildInput ? heroBuildInput.value : '';
-        const originBuildId = originRaw === '' ? null : parseInt(originRaw, 10);
         const isActive = heroActiveInput ? !!heroActiveInput.checked : true;
 
         if (!Number.isFinite(heroId)) {
@@ -2000,18 +2272,28 @@
             return;
         }
         try {
+            const builds = collectHeroBuildPayload();
             const payload = {
                 hero_id: heroId,
                 name,
-                origin_build_id: Number.isFinite(originBuildId) ? originBuildId : null,
                 is_active: isActive,
+                builds,
+                sync_on_save: true,
             };
             const res = await fetchJSON('/api/deadlock/heroes', {
                 method: 'POST',
                 body: JSON.stringify(payload),
             });
             selectedHeroId = res.hero?.hero_id || heroId;
-            setHeroMessage('Gespeichert.', 'success');
+            const sync = res.sync_summary || null;
+            if (sync && sync.unavailable_target_schema) {
+                setHeroMessage('Gespeichert. Sync nicht möglich: Ziel-Schema fehlt.', 'error');
+            } else if (sync) {
+                const msg = `Gespeichert. ${sync.queued || 0} synchronisiert, ${sync.skipped_missing_source || 0} Quelle fehlt, ${sync.errors || 0} Fehler.`;
+                setHeroMessage(msg, (sync.errors || 0) > 0 ? 'error' : 'success');
+            } else {
+                setHeroMessage('Gespeichert.', 'success');
+            }
             await loadDeadlockHeroes();
         } catch (err) {
             setHeroMessage(err.message || 'Speichern fehlgeschlagen', 'error');
@@ -2243,7 +2525,14 @@
         heroNewBtn.addEventListener('click', (ev) => {
             ev.preventDefault();
             clearHeroForm();
+            addHeroBuildDraftRow();
             renderHeroList();
+        });
+    }
+    if (heroBuildAddBtn) {
+        heroBuildAddBtn.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            addHeroBuildDraftRow();
         });
     }
     if (heroSaveBtn) {
@@ -2255,7 +2544,16 @@
     if (heroResetBtn) {
         heroResetBtn.addEventListener('click', (ev) => {
             ev.preventDefault();
-            clearHeroForm();
+            if (selectedHeroId) {
+                const match = deadlockHeroes.find((hero) => hero.hero_id === selectedHeroId);
+                if (match) {
+                    fillHeroForm(match);
+                } else {
+                    clearHeroForm();
+                }
+            } else {
+                clearHeroForm();
+            }
             renderHeroList();
         });
     }
