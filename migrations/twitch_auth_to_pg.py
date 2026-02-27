@@ -24,13 +24,14 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import sqlite3
 
+from cogs.twitch.storage_pg import ensure_schema
+from cogs.twitch.storage_pg import get_conn as pg_get_conn
 from service import db as central_db
-from cogs.twitch.storage_pg import get_conn as pg_get_conn, ensure_schema
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _sqlite_rows(sql: str, params=()) -> list[sqlite3.Row]:
     with central_db.get_conn() as conn:
@@ -62,6 +63,7 @@ def _to_bytea(val) -> bytes | None:
 # ---------------------------------------------------------------------------
 # Per-table migration
 # ---------------------------------------------------------------------------
+
 
 def migrate_twitch_raid_auth(pg_conn, dry_run: bool) -> int:
     if not _sqlite_table_exists("twitch_raid_auth"):
@@ -121,17 +123,27 @@ def migrate_twitch_raid_auth(pg_conn, dry_run: bool) -> int:
                 enc_migrated_at      = EXCLUDED.enc_migrated_at
             """,
             (
-                r["twitch_user_id"], r["twitch_login"],
-                r["access_token"], r["refresh_token"],
-                r["token_expires_at"], r["scopes"],
-                r["authorized_at"], r["last_refreshed_at"],
-                bool(r["raid_enabled"]), r["created_at"],
-                r["legacy_access_token"], r["legacy_refresh_token"],
-                r["legacy_scopes"], r["legacy_saved_at"],
+                r["twitch_user_id"],
+                r["twitch_login"],
+                r["access_token"],
+                r["refresh_token"],
+                r["token_expires_at"],
+                r["scopes"],
+                r["authorized_at"],
+                r["last_refreshed_at"],
+                bool(r["raid_enabled"]),
+                r["created_at"],
+                r["legacy_access_token"],
+                r["legacy_refresh_token"],
+                r["legacy_scopes"],
+                r["legacy_saved_at"],
                 bool(r["needs_reauth"]) if r["needs_reauth"] is not None else False,
                 r["reauth_notified_at"],
-                _to_bytea(r["access_token_enc"]), _to_bytea(r["refresh_token_enc"]),
-                r["enc_version"], r["enc_kid"], r["enc_migrated_at"],
+                _to_bytea(r["access_token_enc"]),
+                _to_bytea(r["refresh_token_enc"]),
+                r["enc_version"],
+                r["enc_kid"],
+                r["enc_migrated_at"],
             ),
         )
     return len(rows)
@@ -183,13 +195,21 @@ def migrate_social_media_platform_auth(pg_conn, dry_run: bool) -> int:
                 enabled           = EXCLUDED.enabled
             """,
             (
-                r["platform"], r["streamer_login"],
-                _to_bytea(r["access_token_enc"]), _to_bytea(r["refresh_token_enc"]),
-                r["client_id"], _to_bytea(r["client_secret_enc"]),
-                r["token_expires_at"], r["scopes"],
-                r["platform_user_id"], r["platform_username"],
-                r["enc_version"], r["enc_kid"],
-                r["authorized_at"], r["last_refreshed_at"], r["enabled"],
+                r["platform"],
+                r["streamer_login"],
+                _to_bytea(r["access_token_enc"]),
+                _to_bytea(r["refresh_token_enc"]),
+                r["client_id"],
+                _to_bytea(r["client_secret_enc"]),
+                r["token_expires_at"],
+                r["scopes"],
+                r["platform_user_id"],
+                r["platform_username"],
+                r["enc_version"],
+                r["enc_kid"],
+                r["authorized_at"],
+                r["last_refreshed_at"],
+                r["enabled"],
             ),
         )
     return len(rows)
@@ -216,9 +236,13 @@ def migrate_oauth_state_tokens(pg_conn, dry_run: bool) -> int:
             ON CONFLICT (state_token) DO NOTHING
             """,
             (
-                r["state_token"], r["platform"], r["streamer_login"],
-                r["redirect_uri"], r["pkce_verifier"],
-                r["created_at"], r["expires_at"],
+                r["state_token"],
+                r["platform"],
+                r["streamer_login"],
+                r["redirect_uri"],
+                r["pkce_verifier"],
+                r["created_at"],
+                r["expires_at"],
             ),
         )
     return len(rows)
@@ -227,6 +251,7 @@ def migrate_oauth_state_tokens(pg_conn, dry_run: bool) -> int:
 # ---------------------------------------------------------------------------
 # Drop SQLite tables (optional, run after verification)
 # ---------------------------------------------------------------------------
+
 
 def drop_sqlite_auth_tables() -> None:
     drop_sql_by_table = {
@@ -246,10 +271,13 @@ def drop_sqlite_auth_tables() -> None:
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Migrate Twitch auth tables SQLite → PostgreSQL")
     parser.add_argument("--dry-run", action="store_true", help="Only show what would be migrated")
-    parser.add_argument("--no-drop", action="store_true", help="Skip dropping SQLite tables after migration")
+    parser.add_argument(
+        "--no-drop", action="store_true", help="Skip dropping SQLite tables after migration"
+    )
     args = parser.parse_args()
 
     if args.dry_run:

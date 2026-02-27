@@ -37,7 +37,9 @@ TURNIER_MOD_ROLE_ID = 1401891955931222110  # Community-Moderator: nur Turnier-Zu
 DEFAULT_DASHBOARD_OWNER_USER_ID = 662995601738170389
 KEYRING_SERVICE_NAME = "DeadlockBot"
 MASTER_DASHBOARD_PUBLIC_URL = "https://admin.earlysalty.de"
-MASTER_DASHBOARD_DISCORD_REDIRECT_URI = f"{MASTER_DASHBOARD_PUBLIC_URL.rstrip('/')}/auth/discord/callback"
+MASTER_DASHBOARD_DISCORD_REDIRECT_URI = (
+    f"{MASTER_DASHBOARD_PUBLIC_URL.rstrip('/')}/auth/discord/callback"
+)
 
 # Feste Steam-URLs (keine Ableitung/ENV mehr)
 MASTER_DASHBOARD_STEAM_PUBLIC_URL = "https://link.earlysalty.com"

@@ -48,10 +48,17 @@ class StandaloneMixin:
             else:
                 steam_bot_default = (
                     Path(os.path.expandvars("%USERPROFILE%"))
-                    / "Documents" / "Deadlock-Steam-Bot"
-                    / "cogs" / "steam" / "steam_presence"
+                    / "Documents"
+                    / "Deadlock-Steam-Bot"
+                    / "cogs"
+                    / "steam"
+                    / "steam_presence"
                 )
-                steam_dir = steam_bot_default if steam_bot_default.exists() else repo_root / "cogs" / "steam" / "steam_presence"
+                steam_dir = (
+                    steam_bot_default
+                    if steam_bot_default.exists()
+                    else repo_root / "cogs" / "steam" / "steam_presence"
+                )
             steam_script = steam_dir / "index.js"
             if steam_script.exists():
                 steam_env: dict[str, str] = {}

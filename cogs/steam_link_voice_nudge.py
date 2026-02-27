@@ -36,6 +36,7 @@ EXEMPT_ROLE_IDS = {
     if x.strip().isdigit()
 }
 
+
 def _today_str() -> str:
     return datetime.utcnow().date().isoformat()
 

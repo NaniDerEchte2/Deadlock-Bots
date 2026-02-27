@@ -163,13 +163,20 @@ def _migrate_table(sqlite_conn, pg_conn, table: str, dry_run: bool) -> tuple[int
             log.debug("  ROW   %s insert failed: %s", table, exc)
             skipped += 1
 
-    log.info("  OK    %s: %d inserted, %d skipped (sqlite had %d)", table, inserted, skipped, sqlite_count)
+    log.info(
+        "  OK    %s: %d inserted, %d skipped (sqlite had %d)",
+        table,
+        inserted,
+        skipped,
+        sqlite_count,
+    )
     return sqlite_count, inserted
 
 
 def run_migration(dry_run: bool = False, no_drop: bool = False) -> None:
+    from cogs.twitch.storage_pg import ensure_schema
+    from cogs.twitch.storage_pg import get_conn as pg_get_conn
     from service import db as central_db
-    from cogs.twitch.storage_pg import ensure_schema, get_conn as pg_get_conn
 
     log.info("=== Twitch Tables Migration: SQLite → PostgreSQL ===")
     if dry_run:
@@ -225,7 +232,9 @@ def run_migration(dry_run: bool = False, no_drop: bool = False) -> None:
                 if p_count < s_count:
                     log.error(
                         "  FAIL  %s: sqlite=%d pg=%d — WILL NOT DROP",
-                        table, s_count, p_count,
+                        table,
+                        s_count,
+                        p_count,
                     )
                     ok = False
                 else:
@@ -243,12 +252,18 @@ def run_migration(dry_run: bool = False, no_drop: bool = False) -> None:
                 sqlite_conn.execute(f"DROP TABLE IF EXISTS {table}")  # noqa: S608
                 log.info("  DROPPED %s", table)
         sqlite_conn.commit()
-        log.info("Done. Auth tables (twitch_raid_auth, social_media_platform_auth, oauth_state_tokens) remain in SQLite.")
+        log.info(
+            "Done. Auth tables (twitch_raid_auth, social_media_platform_auth, oauth_state_tokens) remain in SQLite."
+        )
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Migrate Twitch tables from SQLite to PostgreSQL")
-    parser.add_argument("--dry-run", action="store_true", help="Show what would happen, don't write anything")
-    parser.add_argument("--no-drop", action="store_true", help="Migrate data but keep SQLite tables")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Show what would happen, don't write anything"
+    )
+    parser.add_argument(
+        "--no-drop", action="store_true", help="Migrate data but keep SQLite tables"
+    )
     args = parser.parse_args()
     run_migration(dry_run=args.dry_run, no_drop=args.no_drop)
