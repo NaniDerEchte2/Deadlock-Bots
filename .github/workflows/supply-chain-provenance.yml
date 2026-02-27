@@ -29,7 +29,7 @@ jobs:
           git archive --format=tar.gz --output "dist/source-${GITHUB_SHA}.tar.gz" HEAD
 
       - name: Generate SPDX SBOM + Submit Dependency Snapshot
-        uses: anchore/sbom-action@28d71544de8eaf1b958d335707167c5f783590ad # v0.22.2
+        uses: anchore/sbom-action@17ae1740179002c89186b61233e0f892c3118b11 # v0.23.0
         with:
           path: .
           format: spdx-json
