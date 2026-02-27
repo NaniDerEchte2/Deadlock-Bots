@@ -6,7 +6,6 @@ import os
 import sqlite3
 from collections.abc import Iterable
 from datetime import datetime
-from urllib.parse import urlparse, urlunparse
 
 import discord
 from discord.ext import commands
@@ -36,42 +35,6 @@ EXEMPT_ROLE_IDS = {
     for x in os.getenv("NUDGE_EXEMPT_ROLE_IDS", _EXEMPT_DEFAULT).split(",")
     if x.strip().isdigit()
 }
-
-# Deep-Link Toggle für Discord OAuth
-_DEEPLINK_EN = str(os.getenv("DISCORD_OAUTH_DEEPLINK", "0")).strip().lower() not in (
-    "",
-    "0",
-    "false",
-    "no",
-)
-
-
-def _prefer_discord_deeplink(
-    browser_url: str | None,
-) -> tuple[str | None, str | None]:
-    """
-    (primary_url, browser_fallback).
-    Aktiviert 'discord://-/oauth2/authorize?...' als primary, wenn möglich.
-    """
-    if not browser_url:
-        return None, None
-    try:
-        u = urlparse(browser_url)
-        hostname = (u.hostname or "").lower()
-        path = u.path or ""
-        if (
-            _DEEPLINK_EN
-            and u.scheme in {"http", "https"}
-            and hostname
-            and (hostname == "discord.com" or hostname.endswith(".discord.com"))
-            and (path == "/oauth2/authorize" or path.startswith("/oauth2/authorize/"))
-        ):
-            deeplink = urlunparse(("discord", "-/oauth2/authorize", "", "", u.query, ""))
-            return deeplink, browser_url
-    except Exception as exc:
-        log.debug("[nudge] Deeplink-Erkennung schlug fehl für %r: %s", browser_url, exc)
-    return browser_url, None
-
 
 def _today_str() -> str:
     return datetime.utcnow().date().isoformat()
@@ -266,20 +229,11 @@ async def _fetch_oauth_urls(
     bot: commands.Bot, user: discord.User | discord.Member
 ) -> tuple[str | None, str | None]:
     """
-    Holt gültige (server-registrierte) Start-URLs vom SteamLink-OAuth-Cog.
-    Bevorzugt Lazy-Start (state wird erst beim Klick erzeugt).
-    Gibt (discord_start_url, steam_start_url) zurück oder (None, None) als Fallback.
+    Holt die gültige Steam-Start-URL vom SteamLink-OAuth-Cog.
+    Gibt (None, steam_start_url) zurück oder (None, None) als Fallback.
     """
     cog = _find_steamlink_cog(bot)
     if cog:
-        try:
-            if hasattr(cog, "discord_start_url_for"):
-                d = cog.discord_start_url_for(int(user.id))
-            else:
-                d = cog.build_discord_link_for(int(user.id))  # falls vorhanden
-        except Exception:
-            log.exception("fetch discord oauth url failed")
-            d = None
         try:
             if hasattr(cog, "steam_start_url_for"):
                 s = cog.steam_start_url_for(int(user.id))
@@ -289,7 +243,7 @@ async def _fetch_oauth_urls(
         except Exception:
             log.exception("fetch steam openid url failed")
             s = None
-        return d or None, s or None
+        return None, s or None
     return None, None
 
 
@@ -321,31 +275,10 @@ class _CloseButton(discord.ui.Button):
 
 
 class _OptionsView(discord.ui.View):
-    """Nicht-persistente Instanz mit den aktuellen Verknüpfungsoptionen."""
+    """Nicht-persistente Instanz mit der aktuellen Steam-Verknüpfungsoption."""
 
-    def __init__(self, *, discord_url: str | None, steam_url: str | None):
+    def __init__(self, *, steam_url: str | None):
         super().__init__(timeout=None)
-
-        if discord_url:
-            self.add_item(
-                discord.ui.Button(
-                    label="Via Discord verknüpfen",
-                    style=discord.ButtonStyle.link,
-                    url=discord_url,
-                    emoji="🔗",
-                    row=0,
-                )
-            )
-        else:
-            self.add_item(
-                discord.ui.Button(
-                    label="ia Discord verknüpfen",
-                    style=discord.ButtonStyle.secondary,
-                    disabled=True,
-                    emoji="🔗",
-                    row=0,
-                )
-            )
 
         if steam_url:
             self.add_item(
@@ -491,13 +424,10 @@ class SteamLinkVoiceNudge(commands.Cog):
     async def _build_dm_payload(
         self, user: discord.User | discord.Member
     ) -> tuple[discord.Embed, _OptionsView]:
-        discord_url, steam_url = await _fetch_oauth_urls(self.bot, user)
-        primary_discord, browser_fallback = _prefer_discord_deeplink(discord_url)
+        _, steam_url = await _fetch_oauth_urls(self.bot, user)
 
         desc = steam_link_detailed_description()
-        if browser_fallback and (primary_discord or "").startswith("discord://"):
-            desc += f"\n\n_Falls sich nichts öffnet:_ [Browser-Variante]({browser_fallback})"
-        if not primary_discord and not steam_url:
+        if not steam_url:
             desc += "\n\n_Heads-up:_ Der Link-Dienst ist gerade nicht verfügbar. Nutze vorerst **/account_verknüpfen**."
 
         embed = discord.Embed(
@@ -509,7 +439,7 @@ class SteamLinkVoiceNudge(commands.Cog):
             text="Kurzbefehle: /account_verknüpfen · /steam unlink · /steam setprimary"
         )
 
-        view = _OptionsView(discord_url=primary_discord, steam_url=steam_url)
+        view = _OptionsView(steam_url=steam_url)
         return embed, view
 
     async def _fetch_nudge_message(

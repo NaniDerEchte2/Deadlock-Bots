@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime
 from textwrap import dedent
 from typing import Any
-from urllib.parse import urlparse, urlunparse
 
 import discord
 
@@ -36,43 +34,6 @@ if _oauth is not None and not hasattr(_oauth, "start_urls_for"):
 
 _LINKS_ENABLED: bool = _oauth is not None
 
-# --- ENV: Discord OAuth Deep-Link (in-App Dialog) ---
-_DEEPLINK_EN = str(os.getenv("DISCORD_OAUTH_DEEPLINK", "0")).strip().lower() not in (
-    "",
-    "0",
-    "false",
-    "no",
-)
-
-
-def _prefer_discord_deeplink(
-    browser_url: str | None,
-) -> tuple[str | None, str | None]:
-    """
-    Liefert (primary_url, browser_fallback). Wenn Deep-Link aktiv und erkennbar,
-    wird 'discord://-/oauth2/authorize?...' als primary geliefert, sonst (url, None).
-    """
-    if not browser_url:
-        return None, None
-    try:
-        u = urlparse(browser_url)
-        hostname = (u.hostname or "").lower()
-        path = u.path or ""
-        # akzeptiere /oauth2/authorize sowohl mit/ohne /api
-        if (
-            u.scheme in {"http", "https"}
-            and hostname
-            and (hostname == "discord.com" or hostname.endswith(".discord.com"))
-            and (path == "/oauth2/authorize" or path.startswith("/oauth2/authorize/"))
-        ):
-            if _DEEPLINK_EN:
-                deeplink = urlunparse(("discord", "-/oauth2/authorize", "", "", u.query, ""))
-                return deeplink, browser_url
-    except Exception as exc:
-        _LOGGER.debug("Konnte Deep-Link URL nicht parsen (%s): %s", browser_url, exc)
-    return browser_url, None
-
-
 _STEAM_LINK_DM_DESC = dedent(
     """
     **Verknüpfe deinen Steam Account**
@@ -86,13 +47,21 @@ _STEAM_LINK_DETAILED_DESC = dedent(
       und Einladungen schneller koordinieren.
 
 
-    **Ablauf & Optionen:**
-    • **Via Discord bei Steam anmelden** – Offizieller Login über unser Portal (kein Passwort, wir lesen nur die **SteamID64**).
-    • **Direkt bei Steam anmelden** – Öffnet Steam, damit du deinen Account bestätigst (wir speichern nur die **SteamID64**).
+    **Ablauf:**
+    • **Direkt bei Steam anmelden** – Öffnet Steam OpenID, damit du deinen Account bestätigst (wir speichern nur die **SteamID64**).
 
 
     • Nach der Authentifizierung musst du dem Steam-Bot eine Freundschaftsanfrage senden
       Freundescode: **820142646**. Der Bot nimmt sie automatisch an.
+
+    **Datenschutz-Kurzinfo:**
+    • Discord erhält aus diesem Schritt keine zusätzlichen Daten.
+    • Wir speichern nur die technisch nötigen IDs (Discord-ID und SteamID64).
+    • Wir erhalten keine Passwörter oder sonstige Zugangsdaten.
+    • Es werden keine Daten an Dritte weitergegeben.
+
+    **Open Source:**
+    • <https://github.com/NaniDerEchte2/Deadlock-Bots>
 
 
     **Hinweis:** Automatische Status-Anzeigen über Steam sind aktuell deaktiviert – die Verknüpfung ist freiwillig.
@@ -120,18 +89,10 @@ def build_steam_intro_embed() -> discord.Embed:
 
 
 class _LinkSheet(discord.ui.View):
-    """Ephemere Mini-View mit den aktuellen Login-Optionen."""
+    """Ephemere Mini-View mit Steam-Login."""
 
-    def __init__(self, *, discord_url: str, steam_url: str):
+    def __init__(self, *, steam_url: str):
         super().__init__(timeout=120)
-        self.add_item(
-            discord.ui.Button(
-                label="Via Discord bei Steam anmelden",
-                style=discord.ButtonStyle.link,
-                url=discord_url,
-                emoji="🔗",
-            )
-        )
         self.add_item(
             discord.ui.Button(
                 label="Direkt bei Steam anmelden",
@@ -169,20 +130,20 @@ class SteamLinkStepView(discord.ui.View):
 
         if not _LINKS_ENABLED:
             for child in self.children:
-                if isinstance(child, discord.ui.Button) and child.custom_id == "steam:discord":
+                if isinstance(child, discord.ui.Button) and child.custom_id == "steam:openid":
                     child.disabled = True
                     child.label = "Verknüpfung deaktiviert"
 
     # --- Buttons (nur custom_id, keine URLs – dadurch persistent-fähig) ---
 
     @discord.ui.button(
-        label="Via Discord bei Steam anmelden",
+        label="Steam Account verknüpfen",
         style=discord.ButtonStyle.success,
-        custom_id="steam:discord",
+        custom_id="steam:openid",
         row=0,
-        emoji="🔗",
+        emoji="🎮",
     )
-    async def _start_discord(self, interaction: discord.Interaction, _button: discord.ui.Button):
+    async def _start_openid(self, interaction: discord.Interaction, _button: discord.ui.Button):
         await self._present_link_sheet(interaction)
 
     async def _present_link_sheet(self, interaction: discord.Interaction) -> None:
@@ -201,7 +162,7 @@ class SteamLinkStepView(discord.ui.View):
             urls = _oauth.start_urls_for(uid)
         except Exception:
             urls = {}
-        if not urls.get("discord_start"):
+        if not urls.get("steam_openid_start"):
             if interaction.response.is_done():
                 await interaction.followup.send(
                     "❌ Start-Link nicht konfiguriert. Bitte später erneut versuchen.",
@@ -214,33 +175,13 @@ class SteamLinkStepView(discord.ui.View):
                 )
             return
 
-        # Deep-Link bevorzugen (falls aktiviert) + Browser-Fallback anfügen
-        primary, browser_fallback = _prefer_discord_deeplink(urls["discord_start"])
-        discord_link = primary or urls["discord_start"]
-
-        sheet = _LinkSheet(
-            discord_url=discord_link,
-            steam_url=urls["steam_openid_start"],
-        )
-
-        msg = "🔐 Wähle den Link:"
-        if browser_fallback and discord_link.startswith("discord://"):
-            msg += f" _(Falls sich nichts öffnet: [Browser-Variante]({browser_fallback}))_"
+        sheet = _LinkSheet(steam_url=urls["steam_openid_start"])
+        msg = "🔐 Öffne den Steam-Login:"
 
         if interaction.response.is_done():
             await interaction.followup.send(msg, view=sheet, ephemeral=True)
         else:
             await interaction.response.send_message(msg, view=sheet, ephemeral=True)
-
-    @discord.ui.button(
-        label="Direkt bei Steam anmelden",
-        style=discord.ButtonStyle.primary,
-        custom_id="steam:openid",
-        row=0,
-        emoji="🎮",
-    )
-    async def _start_openid(self, interaction: discord.Interaction, _button: discord.ui.Button):
-        await self._present_link_sheet(interaction)
 
     @discord.ui.button(
         label="Weiter",

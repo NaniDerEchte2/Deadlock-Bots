@@ -200,6 +200,7 @@ STEPS: list[dict] = [
             "nur mit verknüpften Accounts richtig.\n\n"
             "**So geht's:**\n"
             "Nutze einfach die **Buttons unten**, um deinen Steam-Account zu verknüpfen.\n"
+            "Open Source: <https://github.com/NaniDerEchte2/Deadlock-Bots>\n"
             "Sobald der Bot dich verifiziert hat, ist dein Onboarding **abgeschlossen**.\n"
             "> Mehrere Accounts? Kein Problem – einfach mehrfach `/account_verknüpfen` ausführen.\n\n"
             "⚠️ **Wichtig:** Funktioniert nur korrekt wenn **alle im Call** ihren Account verknüpft haben – "
@@ -374,18 +375,8 @@ class OnboardingAccountLinkView(discord.ui.View):
 
         base = settings.public_base_url.rstrip("/")
         uid = int(user_id)
-        discord_url = f"{base}/discord/login?uid={uid}"
         steam_url = f"{base}/steam/login?uid={uid}"
 
-        self.add_item(
-            discord.ui.Button(
-                label="Via Discord verknüpfen",
-                style=discord.ButtonStyle.link,
-                url=discord_url,
-                emoji="🔗",
-                row=0,
-            )
-        )
         self.add_item(
             discord.ui.Button(
                 label="Via Steam verknüpfen",
