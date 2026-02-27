@@ -263,8 +263,6 @@ def connect() -> sqlite3.Connection:
         timeout=DB_CONNECT_TIMEOUT,
     )
     _CONN.row_factory = sqlite3.Row
-    busy_timeout_ms = max(0, int(DB_BUSY_TIMEOUT_MS))
-    _CONN.execute(f"PRAGMA busy_timeout={busy_timeout_ms};")  # nosemgrep
 
     with _LOCK:
         # PRAGMAs: stabil & praxiserprobt

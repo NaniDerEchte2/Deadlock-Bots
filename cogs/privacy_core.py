@@ -348,27 +348,8 @@ def _purge_steam_side(
     conn: sqlite3.Connection, steam_ids: Iterable[str], summary: dict[str, int]
 ) -> None:
     for sid in steam_ids:
-        summary[f"live_player_state:{sid}"] = _delete_where(
-            conn, "live_player_state", "steam_id", sid
-        )
-        summary[f"deadlock_voice_watch:{sid}"] = _delete_where(
-            conn, "deadlock_voice_watch", "steam_id", sid
-        )
-        summary[f"steam_rich_presence:{sid}"] = _delete_where(
-            conn, "steam_rich_presence", "steam_id", sid
-        )
-        summary[f"steam_presence_watchlist:{sid}"] = _delete_where(
-            conn, "steam_presence_watchlist", "steam_id", sid
-        )
-        summary[f"steam_friend_requests:{sid}"] = _delete_where(
-            conn, "steam_friend_requests", "steam_id", sid
-        )
-        summary[f"steam_beta_invites:{sid}"] = _delete_where(
-            conn, "steam_beta_invites", "steam_id64", sid
-        )
-        summary[f"beta_invite_audit:{sid}"] = _delete_where(
-            conn, "beta_invite_audit", "steam_id64", sid
-        )
+        for table, column in _STEAM_SIDE_TABLES:
+            summary[f"{table}:{sid}"] = _delete_where(conn, table, column, sid)
 
 
 def export_user_data(user_id: int) -> dict[str, object]:
@@ -395,27 +376,8 @@ def export_user_data(user_id: int) -> dict[str, object]:
         steam_ids = _fetch_steam_ids(conn, uid)
         snapshot["steam_ids"] = steam_ids
         for sid in steam_ids:
-            tables[f"live_player_state:{sid}"] = _fetch_rows(
-                conn, "live_player_state", "steam_id", sid
-            )
-            tables[f"deadlock_voice_watch:{sid}"] = _fetch_rows(
-                conn, "deadlock_voice_watch", "steam_id", sid
-            )
-            tables[f"steam_rich_presence:{sid}"] = _fetch_rows(
-                conn, "steam_rich_presence", "steam_id", sid
-            )
-            tables[f"steam_presence_watchlist:{sid}"] = _fetch_rows(
-                conn, "steam_presence_watchlist", "steam_id", sid
-            )
-            tables[f"steam_friend_requests:{sid}"] = _fetch_rows(
-                conn, "steam_friend_requests", "steam_id", sid
-            )
-            tables[f"steam_beta_invites:{sid}"] = _fetch_rows(
-                conn, "steam_beta_invites", "steam_id64", sid
-            )
-            tables[f"beta_invite_audit:{sid}"] = _fetch_rows(
-                conn, "beta_invite_audit", "steam_id64", sid
-            )
+            for table, column in _STEAM_SIDE_TABLES:
+                tables[f"{table}:{sid}"] = _fetch_rows(conn, table, column, sid)
 
         snapshot["tables"] = tables
 
