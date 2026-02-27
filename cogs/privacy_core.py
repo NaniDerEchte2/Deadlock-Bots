@@ -62,10 +62,6 @@ _STEAM_SIDE_TABLES: tuple[tuple[str, str], ...] = (
     ("beta_invite_audit", "steam_id64"),
 )
 
-_SINGLE_COLUMN_TARGETS: tuple[tuple[str, str], ...] = tuple(
-    dict.fromkeys(_USER_TABLES + _STEAM_SIDE_TABLES)
-)
-
 # Delete SQL mapping
 _DELETE_SQL_BY_TARGET: dict[tuple[str, str], str] = {
     ("voice_stats", "user_id"): "DELETE FROM voice_stats WHERE user_id=?",

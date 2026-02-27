@@ -5,15 +5,16 @@ import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-_logger: logging.Logger | None = None
-
 
 def _get_logger() -> logging.Logger:
-    global _logger
-    if _logger is not None:
-        return _logger
-
     logger = logging.getLogger("BootProfile")
+    if any(
+        isinstance(handler, RotatingFileHandler)
+        and Path(getattr(handler, "baseFilename", "")).name == "boot_profile.log"
+        for handler in logger.handlers
+    ):
+        return logger
+
     logger.setLevel(logging.INFO)
 
     log_dir = Path("logs")
@@ -30,7 +31,6 @@ def _get_logger() -> logging.Logger:
     logger.addHandler(handler)
     logger.propagate = False
 
-    _logger = logger
     return logger
 
 

@@ -229,12 +229,16 @@ def migrate_oauth_state_tokens(pg_conn, dry_run: bool) -> int:
 # ---------------------------------------------------------------------------
 
 def drop_sqlite_auth_tables() -> None:
-    tables = ["oauth_state_tokens", "social_media_platform_auth", "twitch_raid_auth"]
+    drop_sql_by_table = {
+        "oauth_state_tokens": "DROP TABLE IF EXISTS oauth_state_tokens",
+        "social_media_platform_auth": "DROP TABLE IF EXISTS social_media_platform_auth",
+        "twitch_raid_auth": "DROP TABLE IF EXISTS twitch_raid_auth",
+    }
     with central_db.get_conn() as conn:
-        for t in tables:
-            if _sqlite_table_exists(t):
-                conn.execute(f"DROP TABLE IF EXISTS {t}")
-                print(f"  Dropped SQLite table: {t}")
+        for table, drop_sql in drop_sql_by_table.items():
+            if _sqlite_table_exists(table):
+                conn.execute(drop_sql)
+                print(f"  Dropped SQLite table: {table}")
         conn.commit()
 
 
@@ -259,18 +263,17 @@ def main() -> None:
 
     # Migrate
     print("\n[2/2] Migrating rows...")
-    total = 0
     with pg_get_conn() as pg_conn:
-        total += migrate_twitch_raid_auth(pg_conn, args.dry_run)
-        total += migrate_social_media_platform_auth(pg_conn, args.dry_run)
-        total += migrate_oauth_state_tokens(pg_conn, args.dry_run)
+        migrate_twitch_raid_auth(pg_conn, args.dry_run)
+        migrate_social_media_platform_auth(pg_conn, args.dry_run)
+        migrate_oauth_state_tokens(pg_conn, args.dry_run)
 
     if args.dry_run:
-        print(f"\nDry-run complete. Would migrate {total} rows total.")
+        print("\nDry-run complete.")
         print("Run without --dry-run to apply.")
         return
 
-    print(f"\nMigrated {total} rows total.")
+    print("\nMigration complete.")
 
     if not args.no_drop:
         print("\n[3/3] Dropping SQLite auth tables...")

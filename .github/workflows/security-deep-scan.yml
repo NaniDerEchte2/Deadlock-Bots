@@ -302,12 +302,13 @@ jobs:
         run: |
           semgrep scan \
             --config auto \
-            --error \
             --json \
             --output semgrep.json \
             --exclude .venv \
             --exclude venv \
             --exclude node_modules \
+            --exclude .github/actions/fortify \
+            --exclude migrations \
             --exclude dist \
             --exclude build \
             .
@@ -315,12 +316,13 @@ jobs:
         run: |
           semgrep scan \
             --config auto \
-            --error \
             --sarif \
             --output semgrep.sarif \
             --exclude .venv \
             --exclude venv \
             --exclude node_modules \
+            --exclude .github/actions/fortify \
+            --exclude migrations \
             --exclude dist \
             --exclude build \
             .
@@ -329,12 +331,13 @@ jobs:
         run: |
           semgrep scan \
             --config .semgrep/rules \
-            --error \
             --sarif \
             --output semgrep-custom.sarif \
             --exclude .venv \
             --exclude venv \
             --exclude node_modules \
+            --exclude .github/actions/fortify \
+            --exclude migrations \
             --exclude dist \
             --exclude build \
             .

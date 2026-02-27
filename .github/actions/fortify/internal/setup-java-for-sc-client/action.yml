@@ -6,7 +6,7 @@ runs:
   steps:
     - name: Store original JAVA_HOME
       run: |
-        echo "ORG_JAVA_HOME=${{ env.JAVA_HOME }}" >> ${GITHUB_ENV}
+        printf 'ORG_JAVA_HOME=%s\n' "${JAVA_HOME:-}" >> "${GITHUB_ENV}"
       shell: bash
     - name: Setup required Java version for ScanCentral Client
       uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654
@@ -16,13 +16,13 @@ runs:
         overwrite-settings: false
     - name: Set SCANCENTRAL_JAVA_HOME
       run: |
-        echo "SCANCENTRAL_JAVA_HOME=${{ env.JAVA_HOME }}" >> ${GITHUB_ENV}
+        printf 'SCANCENTRAL_JAVA_HOME=%s\n' "${JAVA_HOME:-}" >> "${GITHUB_ENV}"
       shell: bash
     - name: Restore original JAVA_HOME and update PATH
       if: ${{ env.ORG_JAVA_HOME }}
       run: |
-        echo "JAVA_HOME=${{ env.ORG_JAVA_HOME }}" >> ${GITHUB_ENV}
-        echo "${{ env.ORG_JAVA_HOME }}/bin" >> ${GITHUB_PATH}
+        printf 'JAVA_HOME=%s\n' "${ORG_JAVA_HOME}" >> "${GITHUB_ENV}"
+        printf '%s/bin\n' "${ORG_JAVA_HOME}" >> "${GITHUB_PATH}"
       shell: bash
                 
 branding:

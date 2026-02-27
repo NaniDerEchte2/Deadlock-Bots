@@ -822,8 +822,8 @@ class SavePresetModal(discord.ui.Modal, title="Preset speichern"):
         # Vorbelegen (nur visuell)
         try:
             self.preset_name.default = preset_name_hint[:64]
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("SavePresetModal default value konnte nicht gesetzt werden: %r", exc)
 
     async def on_submit(self, itx: discord.Interaction):
         name = str(self.preset_name.value).strip()
@@ -1090,7 +1090,6 @@ class SubRankSelectView(discord.ui.View):
     async def apply(self, itx: discord.Interaction, subrank: int):
         # Safety: only requester or mods/admins can finalize
         m: discord.Member = itx.user  # type: ignore
-        owner_id = self.core.lane_owner.get(self.lane.id, m.id)
         perms = self.lane.permissions_for(m)
         if not (m.id == self.requester.id or perms.manage_channels or perms.administrator):
             await itx.response.send_message(
@@ -1104,8 +1103,8 @@ class SubRankSelectView(discord.ui.View):
 
         try:
             await itx.response.defer(ephemeral=True, thinking=False)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("SubRankSelect defer fehlgeschlagen: %r", exc)
 
         self.core.lane_min_rank[self.lane.id] = rank_label
         await self.core._apply_min_rank(self.lane, rank_label)  # type: ignore[attr-defined]

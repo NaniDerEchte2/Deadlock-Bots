@@ -31,7 +31,6 @@ class StandaloneMixin:
 
         try:
             repo_root = self.root_dir
-            standalone_dir = repo_root / "standalone"
             custom_env: dict[str, str] = {}
             pythonpath_entries: list[str] = []
             existing_pythonpath = os.environ.get("PYTHONPATH")
@@ -43,12 +42,6 @@ class StandaloneMixin:
 
             self.standalone_manager = StandaloneBotManager()
             manager = self.standalone_manager
-            enable_rank_bot = os.getenv("ENABLE_STANDALONE_RANK_BOT", "").lower() in {
-                "1",
-                "true",
-                "yes",
-                "on",
-            }
             steam_bridge_env = (os.getenv("STEAM_BRIDGE_DIR") or "").strip()
             if steam_bridge_env:
                 steam_dir = Path(steam_bridge_env).expanduser()

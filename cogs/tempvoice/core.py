@@ -1349,8 +1349,8 @@ class TempVoiceCore(commands.Cog):
             applied += 1
             try:
                 await self.refresh_name(lane)
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("apply_preset_batch: refresh_name failed for lane %s: %r", lane.id, exc)
         return applied, skipped
 
     async def _persist_lane_base(self, lane_id: int, base_name: str) -> None:
