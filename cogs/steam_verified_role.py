@@ -206,7 +206,7 @@ class SteamVerifiedRole(commands.Cog):
             remaining = remaining[batch_size:]
             try:
                 members = await guild.query_members(user_ids=batch, cache=True)
-            except (discord.Forbidden, discord.HTTPException, asyncio.TimeoutError) as exc:
+            except (TimeoutError, discord.Forbidden, discord.HTTPException) as exc:
                 log.debug("Member-Chunk request failed (%s): %s", guild.id, exc)
                 break
             for m in members:

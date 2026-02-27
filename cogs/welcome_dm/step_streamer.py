@@ -1041,7 +1041,7 @@ class StreamerOnboarding(commands.Cog):
                 MAIN_GUILD_ID,
                 len(synced),
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.warning(
                 "StreamerOnboarding: Slash-Command sync Timeout (>20s) für Guild %s",
                 MAIN_GUILD_ID,

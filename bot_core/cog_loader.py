@@ -15,6 +15,7 @@ from discord.ext import commands
 try:
     from bot_core.boot_profile import log_event, measure
 except Exception:  # pragma: no cover - fallback if boot_profile missing
+
     def log_event(step: str, duration: float, detail: str | None = None):  # type: ignore
         return
 

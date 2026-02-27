@@ -13,9 +13,7 @@ import sys
 from pathlib import Path
 
 # Prefer an explicit override via env, otherwise fall back to the sibling repo.
-_DEFAULT_PATH = (
-    Path(os.path.expandvars(r"%USERPROFILE%")) / "Documents" / "Deadlock-Twitch-Bot"
-)
+_DEFAULT_PATH = Path(os.path.expandvars(r"%USERPROFILE%")) / "Documents" / "Deadlock-Twitch-Bot"
 _CUSTOM_PATH = os.getenv("TWITCH_COG_PATH")
 
 _BASE_PATH = Path(_CUSTOM_PATH).expanduser() if _CUSTOM_PATH else _DEFAULT_PATH
@@ -43,6 +41,7 @@ async def setup(bot):
 async def teardown(bot):
     """Unload hook mirroring the external cog teardown."""
     await twitch_cog.teardown(bot)
+
 
 # Optional convenience export: allow `from cogs.twitch import storage`
 # so existing onboarding/views keep working after the repo split.
