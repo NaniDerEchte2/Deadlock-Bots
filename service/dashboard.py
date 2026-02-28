@@ -331,7 +331,9 @@ class DashboardServer:
                     web.get("/api/deadlock/heroes", self._handle_deadlock_heroes),
                     web.post("/api/deadlock/heroes", self._handle_deadlock_upsert_hero),
                     web.delete("/api/deadlock/heroes/{hero_id}", self._handle_deadlock_delete_hero),
-                    web.post("/api/deadlock/heroes/{hero_id}/sync", self._handle_deadlock_sync_hero),
+                    web.post(
+                        "/api/deadlock/heroes/{hero_id}/sync", self._handle_deadlock_sync_hero
+                    ),
                     web.get("/api/tournament/overview", self._handle_tournament_overview),
                     web.post("/api/tournament/team", self._handle_tournament_team_create),
                     web.post("/api/tournament/assign", self._handle_tournament_assign),
@@ -3887,8 +3889,12 @@ class DashboardServer:
             "sort_order": int(sort_order),
         }
 
-    def _extract_deadlock_builds_payload(self, payload: dict[str, Any]) -> list[dict[str, Any]] | None:
-        has_builds_payload = "builds" in payload or "hero_builds" in payload or "heroBuilds" in payload
+    def _extract_deadlock_builds_payload(
+        self, payload: dict[str, Any]
+    ) -> list[dict[str, Any]] | None:
+        has_builds_payload = (
+            "builds" in payload or "hero_builds" in payload or "heroBuilds" in payload
+        )
         if not has_builds_payload:
             return None
 
@@ -4024,12 +4030,10 @@ class DashboardServer:
             return summary
 
         clone_cols = {
-            row["name"]
-            for row in conn.execute("PRAGMA table_info(hero_build_clones)").fetchall()
+            row["name"] for row in conn.execute("PRAGMA table_info(hero_build_clones)").fetchall()
         }
         source_cols = {
-            row["name"]
-            for row in conn.execute("PRAGMA table_info(hero_build_sources)").fetchall()
+            row["name"] for row in conn.execute("PRAGMA table_info(hero_build_sources)").fetchall()
         }
 
         required_clone_cols = {"origin_hero_build_id", "hero_id", "target_language"}
@@ -4360,7 +4364,9 @@ class DashboardServer:
                 is_active = (
                     bool(parsed_is_active)
                     if has_is_active and parsed_is_active is not None
-                    else bool(int(existing["is_active"])) if existing else True
+                    else bool(int(existing["is_active"]))
+                    if existing
+                    else True
                 )
 
                 conn.execute(
