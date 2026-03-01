@@ -2449,6 +2449,7 @@ class DashboardServer:
         self._check_auth(request)
         range_raw = request.query.get("range")
         top_raw = request.query.get("top")
+        sessions_raw = request.query.get("sessions")
         mode_raw = request.query.get("mode") or "hour"
         user_raw = request.query.get("user_id")
         try:
@@ -2465,6 +2466,13 @@ class DashboardServer:
             top_limit = min(top_limit, 50)
         except ValueError:
             raise web.HTTPBadRequest(text="top must be a positive integer (max 50)")
+        try:
+            recent_limit = int(sessions_raw) if sessions_raw else 12
+            if recent_limit <= 0:
+                raise ValueError
+            recent_limit = min(recent_limit, 50)
+        except ValueError:
+            raise web.HTTPBadRequest(text="sessions must be a positive integer (max 50)")
         mode = mode_raw.strip().lower()
         if mode not in {"hour", "day", "week", "month"}:
             raise web.HTTPBadRequest(text="mode must be one of hour, day, week, month")
@@ -2626,6 +2634,7 @@ class DashboardServer:
                 )
 
         user_summary: dict[str, Any] | None = None
+        recent_sessions: list[dict[str, Any]] = []
         if user_id is not None:
             try:
                 range_stats = db.query_one(
@@ -2658,6 +2667,17 @@ class DashboardServer:
                     """,
                     (user_id,),
                 )
+                recent_rows = db.query_all(
+                    """
+                    SELECT id, guild_id, channel_id, channel_name, started_at, ended_at,
+                           duration_seconds, points, peak_users, co_player_ids
+                    FROM voice_session_log
+                    WHERE user_id = ?
+                    ORDER BY datetime(ended_at) DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (user_id, recent_limit),
+                )
             except Exception as exc:  # noqa: BLE001
                 logging.exception("Failed to build user voice summary: %s", exc)
                 raise web.HTTPInternalServerError(text="Voice history unavailable") from exc
@@ -2682,6 +2702,56 @@ class DashboardServer:
                 last_session = range_stats["last_session"]
             if not last_session and lifetime_sessions_row:
                 last_session = lifetime_sessions_row["last_session"]
+
+            co_ids_per_session: list[list[int]] = []
+            co_ids_all: set[int] = set()
+            for row in recent_rows:
+                parsed_ids: list[int] = []
+                raw_ids = row["co_player_ids"]
+                decoded: Any = []
+                if raw_ids:
+                    try:
+                        decoded = json.loads(raw_ids)
+                    except Exception:
+                        decoded = []
+                if isinstance(decoded, list):
+                    seen_ids: set[int] = set()
+                    for value in decoded:
+                        try:
+                            co_id = int(value)
+                        except (TypeError, ValueError):
+                            continue
+                        if co_id <= 0 or co_id == user_id or co_id in seen_ids:
+                            continue
+                        seen_ids.add(co_id)
+                        parsed_ids.append(co_id)
+                        co_ids_all.add(co_id)
+                co_ids_per_session.append(parsed_ids)
+
+            co_name_map = self._resolve_display_names(co_ids_all) if co_ids_all else {}
+            for idx, row in enumerate(recent_rows):
+                co_player_ids = co_ids_per_session[idx] if idx < len(co_ids_per_session) else []
+                recent_sessions.append(
+                    {
+                        "id": int(row["id"]),
+                        "guild_id": int(row["guild_id"]) if row["guild_id"] else None,
+                        "channel_id": int(row["channel_id"]) if row["channel_id"] else None,
+                        "channel_name": row["channel_name"] or None,
+                        "started_at": row["started_at"],
+                        "ended_at": row["ended_at"],
+                        "duration_seconds": int(row["duration_seconds"] or 0),
+                        "points": int(row["points"] or 0),
+                        "peak_users": int(row["peak_users"] or 0),
+                        "co_player_count": len(co_player_ids),
+                        "co_players": [
+                            {
+                                "user_id": co_id,
+                                "display_name": co_name_map.get(co_id, f"User {co_id}"),
+                            }
+                            for co_id in co_player_ids
+                        ],
+                    }
+                )
 
             user_summary = {
                 "user_id": user_id,
@@ -2714,6 +2784,8 @@ class DashboardServer:
             "top_users": [_map_top_user(r) for r in top_users_rows],
             "buckets": buckets,
             "user_summary": user_summary,
+            "recent_sessions_limit": recent_limit,
+            "recent_sessions": recent_sessions,
         }
         return self._json(payload)
 

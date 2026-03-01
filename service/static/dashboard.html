@@ -1020,6 +1020,13 @@
             width: 100%;
             min-height: 420px;
         }
+        .voice-recent-wrap {
+            margin-top: 1rem;
+        }
+        .voice-recent-wrap h3 {
+            margin: 0 0 0.45rem 0;
+            font-size: 1rem;
+        }
         .bar-row {
             display: flex;
             align-items: center;
@@ -1534,6 +1541,11 @@
                     <div class="chart-container">
                         <canvas id="voice-hourly-chart"></canvas>
                     </div>
+                    <div class="voice-recent-wrap">
+                        <h3>Letzte Sessions &amp; Co-Player</h3>
+                        <div id="voice-recent-meta" class="voice-meta">User-ID eingeben und auf Anzeigen klicken.</div>
+                        <div id="voice-recent-sessions" class="voice-table"></div>
+                    </div>
                 </div>
             </div>
         </section>
@@ -1837,6 +1849,8 @@
     const voiceHistoryUser = document.getElementById('voice-history-user');
     const voiceUserApply = document.getElementById('voice-user-apply');
     const voiceUserSummary = document.getElementById('voice-user-summary');
+    const voiceRecentMeta = document.getElementById('voice-recent-meta');
+    const voiceRecentSessions = document.getElementById('voice-recent-sessions');
     const voiceModeButtons = document.querySelectorAll('.voice-mode-btn');
 
     // Server Stats & User Activity
@@ -2505,6 +2519,16 @@
     if (voiceUserApply) {
         voiceUserApply.addEventListener('click', () => {
             currentVoiceUser = voiceHistoryUser ? voiceHistoryUser.value.trim() : '';
+            loadVoiceHistory();
+        });
+    }
+    if (voiceHistoryUser) {
+        voiceHistoryUser.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter') {
+                return;
+            }
+            event.preventDefault();
+            currentVoiceUser = voiceHistoryUser.value.trim();
             loadVoiceHistory();
         });
     }
@@ -3410,11 +3434,101 @@ function renderVoiceUserSummary(summary) {
     });
 }
 
+function renderVoiceRecentSessions(data) {
+    if (!voiceRecentSessions) {
+        return;
+    }
+    voiceRecentSessions.innerHTML = '';
+
+    const userInfo = data && data.user ? data.user : null;
+    const hasUser = !!(userInfo && userInfo.user_id);
+    const sessions = Array.isArray(data && data.recent_sessions) ? data.recent_sessions : [];
+
+    if (voiceRecentMeta) {
+        if (!hasUser) {
+            voiceRecentMeta.textContent = 'User-ID eingeben und auf Anzeigen klicken.';
+        } else {
+            const label = userInfo.display_name || `User ${userInfo.user_id}`;
+            const suffix = sessions.length === 1 ? '' : 's';
+            const limit = safeNumber(data && data.recent_sessions_limit, sessions.length || 0);
+            voiceRecentMeta.textContent = `${label} • ${sessions.length} letzte Session${suffix} (max ${limit})`;
+        }
+    }
+
+    if (!hasUser) {
+        return;
+    }
+    if (!sessions.length) {
+        const empty = document.createElement('div');
+        empty.className = 'voice-meta';
+        empty.textContent = 'Keine Sessions für diesen User gefunden.';
+        voiceRecentSessions.appendChild(empty);
+        return;
+    }
+
+    const table = document.createElement('table');
+    const thead = document.createElement('thead');
+    thead.innerHTML = '<tr><th>Ende</th><th>Dauer</th><th>Channel</th><th>Co-Player</th><th>Peak</th></tr>';
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+
+    sessions.forEach((session) => {
+        const tr = document.createElement('tr');
+
+        const ended = document.createElement('td');
+        ended.textContent = formatTimestamp(session.ended_at);
+
+        const duration = document.createElement('td');
+        duration.textContent = formatSeconds(session.duration_seconds);
+
+        const channel = document.createElement('td');
+        channel.textContent = session.channel_name || session.channel_id || '-';
+        if (session.started_at) {
+            const startMeta = document.createElement('div');
+            startMeta.className = 'stat-sub';
+            startMeta.textContent = 'Start: ' + formatTimestamp(session.started_at);
+            channel.appendChild(startMeta);
+        }
+
+        const coPlayersCell = document.createElement('td');
+        const coPlayers = Array.isArray(session.co_players) ? session.co_players : [];
+        if (!coPlayers.length) {
+            coPlayersCell.textContent = 'Alleine';
+        } else {
+            const names = coPlayers.map((co) => co.display_name || `User ${co.user_id}`);
+            coPlayersCell.textContent = names.join(', ');
+            const ids = coPlayers
+                .map((co) => co.user_id)
+                .filter((id) => id !== null && id !== undefined);
+            if (ids.length) {
+                const idMeta = document.createElement('div');
+                idMeta.className = 'stat-sub';
+                idMeta.textContent = 'IDs: ' + ids.join(', ');
+                coPlayersCell.appendChild(idMeta);
+            }
+        }
+
+        const peak = document.createElement('td');
+        peak.textContent = safeNumber(session.peak_users) || '-';
+
+        tr.appendChild(ended);
+        tr.appendChild(duration);
+        tr.appendChild(channel);
+        tr.appendChild(coPlayersCell);
+        tr.appendChild(peak);
+        tbody.appendChild(tr);
+    });
+
+    table.appendChild(tbody);
+    voiceRecentSessions.appendChild(table);
+}
+
 function renderVoiceHistory(data) {
     if (!data) {
         return;
     }
     renderVoiceUserSummary(data.user_summary || null);
+    renderVoiceRecentSessions(data);
     renderVoiceHourlyChart(data.buckets || [], data.mode || 'hour', data.user || null);
     if (voiceHistoryUpdated) {
         const now = new Date().toLocaleTimeString();
@@ -3433,7 +3547,7 @@ async function loadVoiceHistory() {
         if (mode === 'day') range = 60;
         if (mode === 'week') range = 180;
         if (mode === 'month') range = 365;
-        const params = new URLSearchParams({ mode, range: range.toString(), top: '10' });
+        const params = new URLSearchParams({ mode, range: range.toString(), top: '10', sessions: '12' });
         if (userId) {
             params.set('user_id', userId);
         }
