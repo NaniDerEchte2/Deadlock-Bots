@@ -195,9 +195,9 @@ STEPS: list[dict] = [
         "title": "🔗 Account verknüpfen & Rang-System",
         "description": (
             "**Warum verknüpfen?**\n"
-            "Dein In-Game Rang wird automatisch hier auf dem Server angezeigt und immer aktuell gehalten – "
-            "ganz ohne manuelles Updaten. Außerdem funktioniert der Live-Status in den Voice Lanes "
-            "nur mit verknüpften Accounts richtig.\n\n"
+            "Mit verknüpftem Steam-Account wird dein Rang korrekt angezeigt und immer aktuell gehalten. "
+            "Der Live-Status in den Voice Lanes funktioniert zuverlässig "
+            "und die Spielersuche kann dich sauber einstufen.\n\n"
             "**So geht's:**\n"
             "Nutze einfach die **Buttons unten**, um deinen Steam-Account zu verknüpfen.\n"
             "Open Source: <https://github.com/NaniDerEchte2/Deadlock-Bots>\n"

@@ -135,7 +135,7 @@ class FallbackView(discord.ui.View):
     async def btn_steam(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(
             "Verknüpfe deinen Steam-Account mit **/steamlink** im Server.\n"
-            'So erhältst du die Rolle **"Steam Verifiziert"**.',
+            "Das ist wichtig für Rang, Live-Status in den Voice Lanes und Spielersuche.",
             ephemeral=True,
         )
 
@@ -278,6 +278,10 @@ class BotDMAssistant(commands.Cog):
             embed = discord.Embed(
                 title="🔗 Steam-Account verknüpfen",
                 description=(
+                    "Das bringt dir die Verknüpfung:\n"
+                    "• korrekter Rang auf dem Server\n"
+                    "• zuverlässiger Live-Status in den Voice Lanes\n"
+                    "• bessere Einstufung in der Spielersuche\n\n"
                     "So verknüpfst du deinen Steam-Account:\n\n"
                     "**1.** Betritt unseren Discord-Server\n"
                     "**2.** Nutze den Befehl `/steamlink`\n"

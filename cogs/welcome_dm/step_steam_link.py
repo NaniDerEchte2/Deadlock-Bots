@@ -36,23 +36,23 @@ _LINKS_ENABLED: bool = _oauth is not None
 
 _STEAM_LINK_DM_DESC = dedent(
     """
-    **Verknüpfe deinen Steam Account**
+    **Verknüpfe deinen Steam-Account**
+    Für Rang, Live-Status in den Voice Lanes und eine bessere Spielersuche.
     """
 ).strip()
 
 
 _STEAM_LINK_DETAILED_DESC = dedent(
     """
-    • Wozu ist das gut? Über den Steam-Bot kannst du Freundschaftsanfragen austauschen
-      und Einladungen schneller koordinieren.
-
+    **Warum verknüpfen?**
+    • Dein Rang wird korrekt erkannt und auf dem Server sauber zugeordnet.
+    • Dein Live-Status in den Voice Lanes funktioniert zuverlässig.
+    • In der Spielersuche wirst du korrekt eingestuft.
 
     **Ablauf:**
-    • **Direkt bei Steam anmelden** – Öffnet Steam OpenID, damit du deinen Account bestätigst (wir speichern nur die **SteamID64**).
-
-
-    • Nach der Authentifizierung musst du dem Steam-Bot eine Freundschaftsanfrage senden
-      Freundescode: **820142646**. Der Bot nimmt sie automatisch an.
+    • **Direkt bei Steam anmelden**: Öffnet Steam OpenID zur Verknüpfung.
+    • Danach dem Steam-Bot eine Freundschaftsanfrage senden:
+      Freundescode: **820142646**.
 
     **Datenschutz-Kurzinfo:**
     • Discord erhält aus diesem Schritt keine zusätzlichen Daten.
@@ -62,9 +62,6 @@ _STEAM_LINK_DETAILED_DESC = dedent(
 
     **Open Source:**
     • <https://github.com/NaniDerEchte2/Deadlock-Bots>
-
-
-    **Hinweis:** Automatische Status-Anzeigen über Steam sind aktuell deaktiviert – die Verknüpfung ist freiwillig.
     """
 ).strip()
 

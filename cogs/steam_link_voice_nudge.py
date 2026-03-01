@@ -432,7 +432,7 @@ class SteamLinkVoiceNudge(commands.Cog):
             desc += "\n\n_Heads-up:_ Der Link-Dienst ist gerade nicht verfügbar. Nutze vorerst **/account_verknüpfen**."
 
         embed = discord.Embed(
-            title="Kleiner Tipp für besseres Voice-Erlebnis 🎧",
+            title="Steam-Verknüpfung empfohlen 🔗",
             description=desc,
             color=discord.Color.blurple(),
         )

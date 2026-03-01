@@ -16,6 +16,9 @@ from .core import (
 
 logger = logging.getLogger("cogs.tempvoice.interface")
 
+# Speichert den gewählten Haupt-Rang bis der Sub-Rang gewählt wird (lane_id → rank)
+_pending_main_rank: dict[int, str] = {}
+
 
 async def setup(bot: commands.Bot):
     """
@@ -253,11 +256,20 @@ class TempVoiceInterface(commands.Cog):
             else:
                 owner_display = f"<@{owner_id}>"
         embed = discord.Embed(
-            title=f"TempVoice Interface – {lane.name}",
+            title=f"🎙️ TempVoice – {lane.name}",
             description=(
-                f"Owner: {owner_display}\n"
-                "• Buttons funktionieren nur, wenn du in dieser Lane bist.\n"
-                "• Kick/Ban/Unban, Duo/Trio/Normale Lane, Lurker, Limit, Sprachfilter, Owner Claim und Mindest-Rang direkt hier steuern."
+                f"**Owner:** {owner_display}\n\n"
+                "**Steuerung** *(nur wenn du in dieser Lane bist)*\n"
+                "🇩🇪 / 🌍 – Sprachfilter: nur DE oder alle EU\n"
+                "👑 – Owner übernehmen (wenn der Owner die Lane verlassen hat)\n"
+                "🔢 – Spielerlimit setzen (0 = kein Limit)\n"
+                "🦵 Kick · 🚫 Ban · ✅ Unban – Mitglieder verwalten\n"
+                "👥 Duo / Trio · 🔄 Reset – Lane-Größe schnell anpassen\n"
+                "👻 Lurker – stumm beitreten ohne Limit-Slot zu belegen\n\n"
+                "**Mindest-Rang** *(nur Ranked)*\n"
+                "① Wähle den **Haupt-Rang** (z. B. Archon)\n"
+                "② Wähle dann den **Sub-Rang** (1–6)\n"
+                "→ Der Rang wird erst gesetzt, wenn **beide** gewählt sind."
             ),
             color=0x2ECC71,
         )
@@ -312,35 +324,11 @@ class TempVoiceInterface(commands.Cog):
                 )
                 return
 
-        try:
-            msg = await lane.send(embed=embed, view=view)
-        except discord.Forbidden:
-            logger.warning(
-                "TempVoice Lane Interface: Keine Berechtigung zum Senden in VoiceChannel %s.",
-                lane.id,
-            )
-            return
-        except discord.HTTPException as e:
-            logger.warning(
-                "TempVoice Lane Interface: HTTP-Fehler beim Senden in %s: %r",
-                lane.id,
-                e,
-            )
-            return
-        except Exception as e:
-            logger.debug(
-                "TempVoice Lane Interface: Unerwarteter Fehler beim Senden in %s: %r",
-                lane.id,
-                e,
-            )
-            return
-
-        await self._record_interface_message(
-            int(lane.guild.id),
-            int(lane.id),
-            int(msg.id),
-            int(lane.category_id) if lane.category_id else None,
-            int(lane.id),
+        # Interface im Voice-Call-Chat deaktiviert – wird nur über den dedizierten
+        # Interface-Kanal verwaltet (globale Interface-Nachrichten ohne lane_id).
+        logger.debug(
+            "ensure_lane_interface: Kein Interface-Eintrag für Lane %s – Senden in Voice-Chat deaktiviert.",
+            lane.id,
         )
 
     async def rehydrate_lane_interfaces(self):
@@ -516,22 +504,30 @@ class MainView(discord.ui.View):
         self.add_item(RegionEUButton(core))
         self.add_item(OwnerClaimButton(core))
         self.add_item(LimitButton(core))
-        # Row 1: Kick/Ban/Unban
+        # Row 1: Kick/Ban/Unban (+ Lurker bei Ranked, da Row 3 für Presets genutzt wird)
         self.add_item(KickButton(util))
         self.add_item(BanButton(util))
         self.add_item(UnbanButton(util))
-        # Row 2: MinRank (nur bei Ranked)
         if include_minrank:
+            # Ranked: Lurker auf Row 1 verschieben, damit Row 4 für Sub-Rang frei ist
+            self.add_item(LurkerButton(util, row=1))
+            # Row 2: Haupt-Rang Selektor
             self.add_item(MinRankSelect(core))
-        # Row 3: Quick Templates
-        self.add_item(ResetLaneButton(core))
-        self.add_item(DuoCallButton(core))
-        self.add_item(TrioCallButton(core))
-        self.add_item(LurkerButton(util))
-        # Row 4: Presets (nur Ranked)
-        if include_presets:
-            self.add_item(SavePresetButton(core))
-            self.add_item(LoadPresetButton(core))
+            # Row 3: Quick Templates + Presets (zusammengefasst)
+            self.add_item(ResetLaneButton(core))
+            self.add_item(DuoCallButton(core))
+            self.add_item(TrioCallButton(core))
+            if include_presets:
+                self.add_item(SavePresetButton(core, row=3))
+                self.add_item(LoadPresetButton(core, row=3))
+            # Row 4: Sub-Rang Selektor
+            self.add_item(SubRankSelectPermanent(core))
+        else:
+            # Nicht-Ranked: Standard-Layout
+            self.add_item(ResetLaneButton(core))
+            self.add_item(DuoCallButton(core))
+            self.add_item(TrioCallButton(core))
+            self.add_item(LurkerButton(util))
 
     @staticmethod
     def lane_of(itx: discord.Interaction) -> discord.VoiceChannel | None:
@@ -779,11 +775,11 @@ class ResetLaneButton(discord.ui.Button):
 
 
 class SavePresetButton(discord.ui.Button):
-    def __init__(self, core):
+    def __init__(self, core, row: int = 4):
         super().__init__(
             label="💾 Preset speichern",
             style=discord.ButtonStyle.success,
-            row=4,
+            row=row,
             custom_id="tv_preset_save",
         )
         self.core = core
@@ -842,11 +838,11 @@ class SavePresetModal(discord.ui.Modal, title="Preset speichern"):
 
 
 class LoadPresetButton(discord.ui.Button):
-    def __init__(self, core):
+    def __init__(self, core, row: int = 4):
         super().__init__(
             label="\ud83d\uddc2 Preset laden",
             style=discord.ButtonStyle.secondary,
-            row=4,
+            row=row,
             custom_id="tv_preset_load",
         )
         self.core = core
@@ -949,13 +945,7 @@ class MinRankSelect(discord.ui.Select):
         ref_guild = self.core.first_guild()
         if ref_guild:
             guild = ref_guild
-        options = [
-            discord.SelectOption(
-                label="Kein Limit (Jeder)",
-                value="unknown",
-                emoji=_find_rank_emoji(guild, "unknown") or "✅",
-            )
-        ]
+        options = []
         for r in RANK_ORDER[1:]:
             options.append(
                 discord.SelectOption(
@@ -963,7 +953,7 @@ class MinRankSelect(discord.ui.Select):
                 )
             )
         super().__init__(
-            placeholder="Mindest-Rang (Lane, falls aktiviert)",
+            placeholder="① Haupt-Rang wählen →",
             min_values=1,
             max_values=1,
             options=options,
@@ -1030,31 +1020,67 @@ class MinRankSelect(discord.ui.Select):
             )
             return
 
-        if lane.category_id == RANKED_CATEGORY_ID and choice != "unknown":
-            view = SubRankSelectView(self.core, lane, base_rank=choice, requester=m)
+        # Haupt-Rang speichern – Sub-Rang muss noch über ② gewählt werden
+        _pending_main_rank[lane.id] = choice
+        try:
             await itx.response.send_message(
-                f"Basis-Rang {choice.capitalize()} gewählt. Sub-Rang auswählen:",
-                view=view,
+                f"Haupt-Rang **{choice.capitalize()}** gespeichert – jetzt **② Sub-Rang (1–6)** auswählen.",
                 ephemeral=True,
             )
+        except discord.HTTPException as e:
+            logger.debug("MinRankSelect: send fehlgeschlagen: %r", e)
+
+
+class SubRankSelectPermanent(discord.ui.Select):
+    """Dauerhafter Sub-Rang Selektor in der MainView (Row 4, nur Ranked).
+    Kombiniert mit dem gewählten Haupt-Rang aus _pending_main_rank und wendet diesen an.
+    """
+
+    def __init__(self, core):
+        self.core = core
+        options = [discord.SelectOption(label=f"Sub-Rang {n}", value=str(n)) for n in range(1, 7)]
+        super().__init__(
+            placeholder="② Sub-Rang wählen (1–6)",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=4,
+            custom_id="tv_subrank_perm",
+        )
+
+    async def callback(self, itx: discord.Interaction):
+        m: discord.Member = itx.user  # type: ignore
+        lane = MainView.lane_of(itx)
+        if not lane:
+            await itx.response.send_message("Tritt zuerst deiner Lane bei.", ephemeral=True)
             return
+
+        main_rank = _pending_main_rank.get(lane.id)
+        if not main_rank:
+            await itx.response.send_message(
+                "Bitte zuerst den **① Haupt-Rang** auswählen.", ephemeral=True
+            )
+            return
+
+        subrank = int(self.values[0])
+        rank_label = f"{main_rank} {subrank}"
+        _pending_main_rank.pop(lane.id, None)
 
         try:
             await itx.response.defer(ephemeral=True, thinking=False)
         except discord.HTTPException as e:
-            logger.debug("MinRankSelect: defer fehlgeschlagen: %r", e)
-        except Exception as e:
-            logger.debug("MinRankSelect: unerwarteter defer-Fehler: %r", e)
+            logger.debug("SubRankSelectPermanent: defer fehlgeschlagen: %r", e)
 
-        self.core.lane_min_rank[lane.id] = choice
-        await self.core._apply_min_rank(lane, choice)  # type: ignore[attr-defined]
+        self.core.lane_min_rank[lane.id] = rank_label
+        await self.core._apply_min_rank(lane, rank_label)  # type: ignore[attr-defined]
         await self.core.refresh_name(lane)
 
-        label = "Kein Limit" if choice == "unknown" else choice.capitalize()
         try:
-            await itx.followup.send(f"Mindest-Rang gesetzt auf: {label}.", ephemeral=True)
+            await itx.followup.send(
+                f"Mindest-Rang gesetzt auf: **{rank_label.title()}**.", ephemeral=True
+            )
         except Exception as e:
-            logger.debug("MinRankSelect followup fehlgeschlagen: %r", e)
+            logger.debug("SubRankSelectPermanent: followup fehlgeschlagen: %r", e)
 
 
 class SubRankSelect(discord.ui.Select):
@@ -1166,7 +1192,53 @@ class KickSelectView(discord.ui.View):
         self.add_item(KickSelect(options))
 
     async def handle_kick(self, itx: discord.Interaction, target_id: int):
-        ok, msg = await self.util.kick(self.lane, target_id, reason=f"Kick durch {itx.user}")
+        ok, msg = await self.util.kick(self.lane, target_id)
+        await itx.response.send_message(msg, ephemeral=True)
+
+
+class BanSelect(discord.ui.Select):
+    def __init__(self, options):
+        super().__init__(min_values=1, max_values=1, options=options, placeholder="Mitglied bannen …")
+
+    async def callback(self, itx: discord.Interaction):
+        view: BanSelectView = self.view  # type: ignore
+        await view.handle_ban(itx, int(self.values[0]))
+
+
+class BanSelectView(discord.ui.View):
+    def __init__(self, util, lane: discord.VoiceChannel, options):
+        super().__init__(timeout=60)
+        self.util = util
+        self.lane = lane
+        self.add_item(BanSelect(options))
+
+    async def handle_ban(self, itx: discord.Interaction, target_id: int):
+        core = itx.client.get_cog("TempVoiceCore")  # type: ignore
+        owner_id = core.lane_owner.get(self.lane.id)
+        ok, msg = await self.util.ban(self.lane, owner_id, str(target_id))
+        await itx.response.send_message(msg, ephemeral=True)
+
+
+class UnbanSelect(discord.ui.Select):
+    def __init__(self, options):
+        super().__init__(min_values=1, max_values=1, options=options, placeholder="User entbannen …")
+
+    async def callback(self, itx: discord.Interaction):
+        view: UnbanSelectView = self.view  # type: ignore
+        await view.handle_unban(itx, int(self.values[0]))
+
+
+class UnbanSelectView(discord.ui.View):
+    def __init__(self, util, lane: discord.VoiceChannel, options):
+        super().__init__(timeout=60)
+        self.util = util
+        self.lane = lane
+        self.add_item(UnbanSelect(options))
+
+    async def handle_unban(self, itx: discord.Interaction, target_id: int):
+        core = itx.client.get_cog("TempVoiceCore")  # type: ignore
+        owner_id = core.lane_owner.get(self.lane.id)
+        ok, msg = await self.util.unban(self.lane, owner_id, str(target_id))
         await itx.response.send_message(msg, ephemeral=True)
 
 
@@ -1191,7 +1263,16 @@ class BanButton(discord.ui.Button):
         if owner_id != m.id and not perms.administrator:
             await itx.response.send_message("Nur der Owner darf bannen.", ephemeral=True)
             return
-        await itx.response.send_modal(BanModal(self.util, lane, action="ban"))
+        options = [
+            discord.SelectOption(label=u.display_name, value=str(u.id))
+            for u in lane.members
+            if u.id != m.id
+        ]
+        if not options:
+            await itx.response.send_message("Niemand zum Bannen vorhanden.", ephemeral=True)
+            return
+        view = BanSelectView(self.util, lane, options)
+        await itx.response.send_message("Wen möchtest du bannen?", view=view, ephemeral=True)
 
 
 class UnbanButton(discord.ui.Button):
@@ -1210,7 +1291,8 @@ class UnbanButton(discord.ui.Button):
         if not lane:
             await itx.response.send_message("Du musst in einer Lane sein.", ephemeral=True)
             return
-        owner_id = itx.client.get_cog("TempVoiceCore").lane_owner.get(lane.id)  # type: ignore
+        core = itx.client.get_cog("TempVoiceCore")  # type: ignore
+        owner_id = core.lane_owner.get(lane.id)
         if owner_id is None:
             await itx.response.send_message("Aktuell ist kein Owner gesetzt.", ephemeral=True)
             return
@@ -1218,7 +1300,17 @@ class UnbanButton(discord.ui.Button):
         if owner_id != m.id and not perms.administrator:
             await itx.response.send_message("Nur der Owner darf entbannen.", ephemeral=True)
             return
-        await itx.response.send_modal(BanModal(self.util, lane, action="unban"))
+        ban_list = await core.bans.list_bans(owner_id)
+        if not ban_list:
+            await itx.response.send_message("Keine aktiven Bans vorhanden.", ephemeral=True)
+            return
+        options = []
+        for uid in ban_list[:25]:
+            member = lane.guild.get_member(uid)
+            label = member.display_name if member else str(uid)
+            options.append(discord.SelectOption(label=label, value=str(uid)))
+        view = UnbanSelectView(self.util, lane, options)
+        await itx.response.send_message("Wen möchtest du entbannen?", view=view, ephemeral=True)
 
 
 class BanModal(discord.ui.Modal, title="User (Un)Ban"):
@@ -1266,11 +1358,11 @@ class BanModal(discord.ui.Modal, title="User (Un)Ban"):
 
 
 class LurkerButton(discord.ui.Button):
-    def __init__(self, util):
+    def __init__(self, util, row: int = 3):
         super().__init__(
             label="👻 Lurker",
             style=discord.ButtonStyle.secondary,
-            row=3,
+            row=row,
             custom_id="tv_lurker",
         )
         self.util = util
