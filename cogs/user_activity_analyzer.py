@@ -2046,5 +2046,26 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
             await ctx.send(f"❌ Fehler beim Abrufen der Server-Statistiken: {e}")
 
 
+    @commands.command(name="rawmember")
+    @commands.has_permissions(manage_guild=True)
+    async def raw_member_command(self, ctx, member: discord.Member):
+        """Zeigt den rohen API-Response für einen Member (Debug: Join-Source Felder)."""
+        try:
+            raw = await self.bot.http.get_member(ctx.guild.id, member.id)
+            # Nur interessante Felder ausgeben
+            interesting = {
+                k: v for k, v in raw.items()
+                if k not in {"user", "roles", "avatar", "banner", "avatar_decoration_data"}
+            }
+            import pprint
+            text = pprint.pformat(interesting, width=80)
+            # In chunks senden wenn zu lang
+            chunks = [text[i:i+1900] for i in range(0, len(text), 1900)]
+            for i, chunk in enumerate(chunks[:3]):
+                await ctx.send(f"```python\n# Raw Member Data ({i+1}/{len(chunks)})\n{chunk}\n```")
+        except Exception as e:
+            await ctx.send(f"❌ Fehler: {e}")
+
+
 async def setup(bot):
     await bot.add_cog(UserActivityAnalyzer(bot))
