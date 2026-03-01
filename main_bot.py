@@ -5,8 +5,10 @@ import importlib
 import logging
 import os
 import signal
+import sys
 import threading
 from collections.abc import Callable
+from pathlib import Path
 
 from bot_core.bootstrap import _load_env_robust, bootstrap_runtime
 
@@ -16,6 +18,48 @@ bootstrap_runtime()
 from bot_core import BotLifecycle, MasterBot, MasterControlCog  # noqa: E402
 
 __all__ = ["MasterBot", "MasterControlCog", "BotLifecycle"]
+
+_PID_FILE = Path(__file__).parent / "master_bot.pid"
+
+
+def _acquire_pid_lock() -> None:
+    """Verhindert dass zwei Instanzen gleichzeitig laufen.
+
+    Prüft ob eine PID-Datei existiert und ob der darin gespeicherte Prozess
+    noch aktiv ist. Bei Konflikt wird gewarnt und der aktuelle Start abgebrochen.
+    """
+    if _PID_FILE.exists():
+        try:
+            old_pid = int(_PID_FILE.read_text().strip())
+        except (ValueError, OSError):
+            old_pid = None
+
+        if old_pid and old_pid != os.getpid():
+            try:
+                # Signal 0: prüft nur ob der Prozess existiert, tut sonst nichts
+                os.kill(old_pid, 0)
+                logging.critical(
+                    "Master Bot läuft bereits als PID %s. "
+                    "Zweite Instanz wird NICHT gestartet (verhindert Token-Race-Conditions). "
+                    "Beende PID %s zuerst oder lösche %s manuell.",
+                    old_pid,
+                    old_pid,
+                    _PID_FILE,
+                )
+                sys.exit(1)
+            except (OSError, ProcessLookupError):
+                # Alter Prozess ist weg → stale PID-File, einfach überschreiben
+                logging.warning("Stale PID-File gefunden (PID %s nicht mehr aktiv) → wird überschrieben", old_pid)
+
+    _PID_FILE.write_text(str(os.getpid()))
+
+
+def _release_pid_lock() -> None:
+    try:
+        if _PID_FILE.exists() and int(_PID_FILE.read_text().strip()) == os.getpid():
+            _PID_FILE.unlink()
+    except Exception:
+        pass
 
 
 def _load_fresh_token() -> str:
@@ -107,4 +151,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    _acquire_pid_lock()
+    try:
+        asyncio.run(main())
+    finally:
+        _release_pid_lock()
