@@ -63,6 +63,11 @@ ACTIVITY_UPCOMING_WINDOW_HOURS = 2
 ACTIVITY_UPCOMING_MIN_SCORE = 4
 LOG_CHANNEL_ID = OUTPUT_CHANNEL_ID  # Decision Logs
 
+# Neue Spieler: Initiate (1) und Seeker (2) gelten als Anfänger
+NEW_PLAYER_MAX_RANK = 2
+# Maximal angezeigte Lobbys im Finder
+MAX_JOIN_LOBBIES_SHOWN = 3
+
 # Spezielle Channel / Kategorien
 NEW_PLAYER_LANE_ID = 1465839460485697556
 STREET_BRAWL_LANE_ID = 1357422958544420944
@@ -658,6 +663,11 @@ class SmartLFGAgent(commands.Cog):
                 continue
 
             minutes = row["deadlock_minutes"]
+            # Snapshot-Korrektur: deadlock_minutes war der Stand beim letzten Update.
+            # Wir addieren die seitdem vergangene Zeit für eine genauere Anzeige.
+            if stage == "match" and minutes is not None:
+                seconds_since_update = now - int(updated_at)
+                minutes = int(minutes) + (seconds_since_update // 60)
             online_map[str(row["steam_id"])] = (stage, minutes)
 
         return online_map
@@ -1031,6 +1041,12 @@ class SmartLFGAgent(commands.Cog):
             if member.voice and member.voice.channel:
                 continue
 
+            # Ist die Person gerade auf Discord aktiv? (online/idle/dnd, nicht offline)
+            is_discord_active = member.status not in (
+                discord.Status.offline,
+                discord.Status.invisible,
+            )
+
             rank_name, rank_value, rank_sub = self._get_user_rank_info(member)
 
             if rank_strict and target_rank > 0 and rank_value > 0:
@@ -1111,6 +1127,7 @@ class SmartLFGAgent(commands.Cog):
                     "score": score,
                     "time_score": time_score,
                     "activity_sessions": activity_sessions,
+                    "discord_active": is_discord_active,
                 }
             )
 
@@ -1129,10 +1146,20 @@ class SmartLFGAgent(commands.Cog):
         self,
         guild: discord.Guild,
         candidates: list[dict[str, object]],
-    ) -> tuple[list[str], int, int]:
-        in_lobby: list[str] = []
-        in_match: list[str] = []
-        in_active: list[str] = []
+    ) -> tuple[list[str], list[str], int, int]:
+        """
+        Gibt zwei getrennte Listen zurück:
+        - ping_lines: Spieler die im Spiel sind aber NICHT auf Discord aktiv
+          → werden gepingt (könnten die Nachricht sonst nicht sehen)
+        - visible_lines: Spieler die auf Discord aktiv sind
+          → nur Name, kein Ping (sehen sowieso alles)
+        """
+        # Spieler die wir anpingen: im Spiel (Lobby/Match) UND nicht auf Discord aktiv
+        ping_in_lobby: list[str] = []
+        ping_in_match: list[str] = []
+
+        # Spieler die schon auf Discord sind: nur Namen, kein Ping
+        discord_active_names: list[str] = []
 
         for cand in candidates:
             discord_id = int(cand.get("user_id", 0) or 0)
@@ -1141,52 +1168,50 @@ class SmartLFGAgent(commands.Cog):
             member = guild.get_member(discord_id)
             if not member:
                 continue
+
             stage = cand.get("stage")
-            if stage == "lobby":
-                in_lobby.append(member.mention)
+            is_discord_active = bool(cand.get("discord_active", False))
+            minutes = cand.get("minutes")
+
+            if is_discord_active:
+                # Auf Discord aktiv → nur namentlich erwähnen, kein Ping
+                rank_name = str(cand.get("rank_name", ""))
+                label = f"{member.display_name}" + (f" ({rank_name})" if rank_name else "")
+                discord_active_names.append(label)
+            elif stage == "lobby":
+                ping_in_lobby.append(member.mention)
             elif stage == "match":
-                minutes = cand.get("minutes")
-                if minutes is not None:
-                    in_match.append(f"{member.mention} ({minutes}m)")
-                else:
-                    in_match.append(member.mention)
-            else:
-                in_active.append(member.mention)
+                suffix = f" ({minutes}m)" if minutes is not None else ""
+                ping_in_match.append(f"{member.mention}{suffix}")
 
-        lobby_count = len(in_lobby)
-        match_count = len(in_match)
+        lobby_count = len(ping_in_lobby)
+        match_count = len(ping_in_match)
 
-        lines: list[str] = []
+        ping_lines: list[str] = []
         remaining = MAX_MENTION_PINGS
 
-        if in_lobby:
-            shown = in_lobby[:remaining]
+        if ping_in_lobby:
+            shown = ping_in_lobby[:remaining]
             remaining -= len(shown)
-            extra = len(in_lobby) - len(shown)
+            extra = len(ping_in_lobby) - len(shown)
             extra_txt = f" (+{extra})" if extra > 0 else ""
-            if shown:
-                lines.append(f"🟢 Lobby: {' '.join(shown)}{extra_txt}")
+            ping_lines.append(f"🟢 In der Lobby: {' '.join(shown)}{extra_txt}")
 
-        if in_match:
-            if remaining > 0:
-                shown = in_match[:remaining]
-                remaining -= len(shown)
-                extra = len(in_match) - len(shown)
-                extra_txt = f" (+{extra})" if extra > 0 else ""
-                if shown:
-                    lines.append(f"🎯 Match: {' '.join(shown)}{extra_txt}")
-            else:
-                lines.append(f"🎯 Match: (+{len(in_match)})")
-
-        if in_active and remaining > 0:
-            shown = in_active[:remaining]
+        if ping_in_match and remaining > 0:
+            shown = ping_in_match[:remaining]
             remaining -= len(shown)
-            extra = len(in_active) - len(shown)
+            extra = len(ping_in_match) - len(shown)
             extra_txt = f" (+{extra})" if extra > 0 else ""
-            if shown:
-                lines.append(f"🕒 Aktiv: {' '.join(shown)}{extra_txt}")
+            ping_lines.append(f"🎮 Im Match: {' '.join(shown)}{extra_txt}")
 
-        return lines, lobby_count, match_count
+        visible_lines: list[str] = []
+        if discord_active_names:
+            shown = discord_active_names[:5]
+            extra = len(discord_active_names) - len(shown)
+            extra_txt = f" und {extra} weitere" if extra > 0 else ""
+            visible_lines.append(", ".join(shown) + extra_txt)
+
+        return ping_lines, visible_lines, lobby_count, match_count
 
     def _get_voice_state_context(self, guild: discord.Guild) -> str:
         """
@@ -1258,6 +1283,31 @@ class SmartLFGAgent(commands.Cog):
 
         return "\n".join(lines)
 
+    def _compose_intro_text(
+        self,
+        display_name: str,
+        rank_display: str,
+        is_new_player: bool,
+        has_lobbies: bool,
+    ) -> str:
+        """Freundlicher Begrüßungstext für den Lobby-Finder Embed."""
+        if is_new_player:
+            return (
+                f"Hey **{display_name}**! Schön dass du dabei bist 🙂\n"
+                f"Als Anfänger bist du in der **New Player Lane** am besten aufgehoben — "
+                f"da findest du Leute auf deinem Level und kannst entspannt ins Spiel reinkommen."
+            )
+        elif has_lobbies:
+            return (
+                f"Hey **{display_name}**! Schau einfach in eine der Lobbys unten rein :)\n"
+                f"Ich hab dir die passendsten rausgesucht — einfach joinen und loszocken."
+            )
+        else:
+            return (
+                f"Hey **{display_name}**! Gerade ist keine passende Lobby offen, "
+                f"aber mach dir einfach eine Lane auf — vllt kommt ja jemand dazu 😉"
+            )
+
     async def _handle_lfg_request(self, message: discord.Message):
         """
         Verarbeitet LFG-Anfrage lokal: Lane Routing + Embed + Decision Log.
@@ -1305,78 +1355,135 @@ class SmartLFGAgent(commands.Cog):
         # 6. Co-Players bald online
         co_coming = await self._find_co_players_likely_coming_online(guild, profile, now)
 
-        # 7. Player Matching
-        player_lines: list[str] = []
+        # 7. Neue Spieler erkennen (Initiate / Seeker = Anfänger)
+        is_new_player = 0 < rank_val <= NEW_PLAYER_MAX_RANK
+
+        # 8. Joinbare Lobbys aus dem Lane-Scan filtern und nach Rank sortieren
+        joinable_lanes = [l for l in lanes if l.has_space and l.member_count > 0]
+        if is_new_player:
+            # Neue Spieler sehen die New-Player-Lane zuerst
+            np_first = [l for l in joinable_lanes if l.label == "New Player"]
+            rest = [l for l in joinable_lanes if l.label != "New Player"]
+            joinable_lanes = np_first + rest
+        else:
+            # Nach Rang-Nähe sortieren
+            def _rank_dist(lane: LaneInfo) -> float:
+                if lane.avg_rank_value == 0:
+                    return 999.0
+                return abs(lane.avg_rank_value - rank_val)
+            joinable_lanes.sort(key=_rank_dist)
+        joinable_lanes = joinable_lanes[:MAX_JOIN_LOBBIES_SHOWN]
+
+        # 9. Player Matching
+        ping_lines: list[str] = []
+        visible_lines: list[str] = []
+        matching_players: list[dict] = []
         try:
             matching_players = await self._find_matching_players(
                 message.author, message.content,
                 rank_val, rank_sub, routing_result=routing,
             )
             if guild:
-                player_lines, _lc, _mc = self._build_player_lines(guild, matching_players)
+                ping_lines, visible_lines, _lc, _mc = self._build_player_lines(
+                    guild, matching_players
+                )
         except Exception as exc:
             log.warning("Spielersuche fehlgeschlagen (%s)", exc)
 
-        # 8. User-Antwort Embed bauen
+        # 10. Embed aufbauen — freundlicher Lobby-Finder Look
         embed = discord.Embed(
-            title=f"LFG Routing für {message.author.display_name} ({rank_display})",
-            color=discord.Color.blue(),
+            title=f"🎮 Lobby-Finder — {message.author.display_name} ({rank_display})",
+            description=self._compose_intro_text(
+                message.author.display_name,
+                rank_display,
+                is_new_player,
+                has_lobbies=bool(joinable_lanes),
+            ),
+            color=discord.Color.green() if joinable_lanes else discord.Color.blurple(),
         )
 
-        # Empfehlung
-        if routing.best_join_lane:
-            lane = routing.best_join_lane
-            rec_text = (
-                f"**{lane.channel.name}** joinen\n"
-                f"{lane.link}\n"
-                f"Spieler: {lane.member_count}/{lane.user_limit} | "
-                f"Rang: ~{lane.avg_rank_label} | "
-                f"Platz: {lane.slots_free} frei"
-            )
-            if routing.mode == "co_player_lane":
-                embed.add_field(name="Empfehlung (Mitspieler-Lane!)", value=rec_text, inline=False)
-            elif routing.mode == "join_existing":
-                embed.add_field(name="Empfehlung", value=rec_text, inline=False)
-            else:
-                embed.add_field(name="Empfehlung: Lane aufmachen", value=rec_text, inline=False)
-        else:
-            cat_label = routing.suggested_category_label or "Casual"
+        # Offene Lobbys zum Beitreten
+        if joinable_lanes:
+            lobby_lines = []
+            for lane in joinable_lanes:
+                co_marker = " ⭐" if any(
+                    cid in lane.member_ids for cid in co_player_ids
+                ) else ""
+                lobby_lines.append(
+                    f"**{lane.channel.name}**{co_marker} — {lane.link}\n"
+                    f"┗ {lane.member_count}/{lane.user_limit} Spieler · "
+                    f"Ø {lane.avg_rank_label} · {lane.slots_free} Platz frei"
+                )
             embed.add_field(
-                name="Empfehlung",
-                value=f"Mach dir eine **{cat_label}** Lane auf — "
-                      f"meist joinen in wenigen Minuten Leute nach.",
+                name="🔓 Offene Lobbys",
+                value="\n\n".join(lobby_lines),
+                inline=False,
+            )
+        else:
+            # Keine offene Lobby → Eigene aufmachen
+            cat_label = routing.suggested_category_label or "Casual"
+            if is_new_player:
+                np_chan = guild.get_channel(NEW_PLAYER_LANE_ID)
+                np_link = f"https://discord.com/channels/{guild.id}/{NEW_PLAYER_LANE_ID}"
+                embed.add_field(
+                    name="🆕 New Player Lane",
+                    value=f"Perfekt für Einsteiger!\n{np_link}",
+                    inline=False,
+                )
+            embed.add_field(
+                name="➕ Eigene Lobby aufmachen",
+                value=f"Mach eine **{cat_label}**-Lane auf — meist finden sich in wenigen Minuten Leute.",
                 inline=False,
             )
 
-        # Mitspieler in Lanes (Info, kein Ping)
+        # Bekannte Mitspieler die schon in einer Lane sind (kein Ping)
         if co_in_lanes:
             co_lines = []
-            for co_id, lane_names in co_in_lanes.items():
+            for co_id, lane_names in list(co_in_lanes.items())[:4]:
                 m = guild.get_member(co_id)
-                sessions = co_player_stats.get(co_id, (0, 0))[0]
                 name = m.display_name if m else str(co_id)
-                co_lines.append(f"{name} ist in {', '.join(lane_names)} ({sessions} Sessions)")
-            embed.add_field(name="Mitspieler in Lanes", value="\n".join(co_lines[:5]), inline=False)
-
-        # Online Spieler
-        if player_lines:
-            embed.add_field(name="Verfügbare Spieler", value="\n".join(player_lines), inline=False)
-
-        # Bald online
-        if co_coming:
-            names = [name for _, name in co_coming[:5]]
+                co_lines.append(f"**{name}** ist in {', '.join(lane_names)}")
             embed.add_field(
-                name="Wahrscheinlich bald online",
+                name="👥 Leute die du kennst — schon drin",
+                value="\n".join(co_lines),
+                inline=False,
+            )
+
+        # Spieler die gerade in Deadlock sind aber NICHT auf Discord aktiv → Ping
+        if ping_lines:
+            embed.add_field(
+                name="📲 Gerade im Spiel — einladen?",
+                value="\n".join(ping_lines),
+                inline=False,
+            )
+
+        # Discord-aktive Spieler → kein Ping, nur Info
+        if visible_lines:
+            embed.add_field(
+                name="👀 Auch verfügbar",
+                value="\n".join(visible_lines),
+                inline=False,
+            )
+
+        # Bald online (bekannte Co-Player)
+        if co_coming:
+            names = [name for _, name in co_coming[:4]]
+            embed.add_field(
+                name="🔜 Wahrscheinlich bald dabei",
                 value=", ".join(names),
                 inline=False,
             )
 
-        # Tipp bei leeren Lanes
-        if routing.mode == "create_new" or (routing.best_join_lane and routing.best_join_lane.member_count == 0):
-            embed.set_footer(text="Mach dir eine Lane auf — meist joinen in Minuten Leute nach.")
+        embed.set_footer(text=f"Rank-Toleranz: ±{RANK_TOLERANCE} Stufen · {message.channel.mention}")
 
-        # Cross-Channel Reference
-        ref_text = f"{message.author.mention} sucht Mitspieler! ({message.channel.mention})"
+        # Cross-Channel Reference + Embed senden
+        # Nur die gepingten Spieler (in-game, nicht auf Discord) in den content
+        ping_content = " ".join(
+            part for line in ping_lines for part in line.split() if part.startswith("<@")
+        )
+        ref_text = f"{message.author.mention} sucht Mitspieler!"
+        if ping_content:
+            ref_text += f"\n{ping_content}"
         await output_channel.send(content=ref_text, embed=embed)
 
         # 9. Decision Log Embed (gleicher Channel, für Admins)
