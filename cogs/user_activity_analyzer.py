@@ -555,6 +555,53 @@ class UserActivityAnalyzer(commands.Cog):
         except Exception as e:
             logger.error(f"Error initializing new tables: {e}", exc_info=True)
 
+        try:
+            central_db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS invite_snapshot_cache (
+                    guild_id INTEGER NOT NULL PRIMARY KEY,
+                    snapshot_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+                """
+            )
+        except Exception as e:
+            logger.error("Failed to create invite_snapshot_cache table: %s", e)
+
+    def _save_invite_snapshot_to_db(
+        self, guild_id: int, invites: dict[str, Any], vanity: dict[str, Any]
+    ) -> None:
+        try:
+            payload = json.dumps({"invites": invites, "vanity": vanity}, separators=(",", ":"))
+            central_db.execute(
+                """
+                INSERT INTO invite_snapshot_cache (guild_id, snapshot_json, updated_at)
+                VALUES (?, ?, datetime('now'))
+                ON CONFLICT(guild_id) DO UPDATE SET
+                    snapshot_json = excluded.snapshot_json,
+                    updated_at = excluded.updated_at
+                """,
+                (guild_id, payload),
+            )
+        except Exception as exc:
+            logger.debug("Failed to save invite snapshot to DB (guild=%s): %s", guild_id, exc)
+
+    def _load_invite_snapshot_from_db(
+        self, guild_id: int
+    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        try:
+            row = central_db.query_one(
+                "SELECT snapshot_json FROM invite_snapshot_cache WHERE guild_id = ?",
+                (guild_id,),
+            )
+            if not row or not row[0]:
+                return None
+            data = json.loads(row[0])
+            return data.get("invites", {}), data.get("vanity", {})
+        except Exception as exc:
+            logger.debug("Failed to load invite snapshot from DB (guild=%s): %s", guild_id, exc)
+            return None
+
     @staticmethod
     def _to_int(value: Any, default: int | None = None) -> int | None:
         try:
@@ -645,17 +692,35 @@ class UserActivityAnalyzer(commands.Cog):
         try:
             await self.bot.wait_until_ready()
             guilds = list(getattr(self.bot, "guilds", []))
+
+            # Schritt 1: Aus DB wiederherstellen (kein API-Call)
+            restored = 0
             for guild in guilds:
+                cached = self._load_invite_snapshot_from_db(guild.id)
+                if cached is not None:
+                    invites, vanity = cached
+                    self._join_invite_snapshot[guild.id] = invites
+                    self._join_vanity_snapshot[guild.id] = vanity
+                    restored += 1
+            logger.info("Invite cache restored from DB for %d/%d guild(s)", restored, len(guilds))
+
+            # Schritt 2: API-Fetch nur für Guilds ohne DB-Eintrag
+            missing = [g for g in guilds if g.id not in self._join_invite_snapshot]
+            for guild in missing:
                 lock = self._invite_lock_for_guild(guild.id)
                 async with lock:
                     snapshot = await self._collect_join_invite_snapshot(guild)
                     if snapshot.get("invites_ok"):
-                        self._join_invite_snapshot[guild.id] = snapshot.get("invites", {})
+                        invites = snapshot.get("invites", {})
+                        vanity = snapshot.get("vanity", {})
+                        self._join_invite_snapshot[guild.id] = invites
+                        self._save_invite_snapshot_to_db(guild.id, invites, vanity)
                     else:
                         self._join_invite_snapshot.pop(guild.id, None)
                     self._join_vanity_snapshot[guild.id] = snapshot.get("vanity", {})
                 await asyncio.sleep(0.2)
-            logger.debug("Join source cache primed for %d guild(s)", len(guilds))
+            if missing:
+                logger.debug("Invite cache API-fetched for %d guild(s)", len(missing))
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -814,7 +879,10 @@ class UserActivityAnalyzer(commands.Cog):
 
             if latest_snapshot:
                 if latest_snapshot.get("invites_ok"):
-                    self._join_invite_snapshot[guild_id] = latest_snapshot.get("invites", {})
+                    invites = latest_snapshot.get("invites", {})
+                    vanity = latest_snapshot.get("vanity", {})
+                    self._join_invite_snapshot[guild_id] = invites
+                    self._save_invite_snapshot_to_db(guild_id, invites, vanity)
                 self._join_vanity_snapshot[guild_id] = latest_snapshot.get("vanity", {})
 
             return detected or {
@@ -971,6 +1039,57 @@ class UserActivityAnalyzer(commands.Cog):
 
         except Exception as e:
             logger.error(f"Error tracking member unban: {e}", exc_info=True)
+
+    @commands.Cog.listener()
+    async def on_invite_create(self, invite: discord.Invite) -> None:
+        """Neuen Invite sofort in den Cache aufnehmen ohne API-Refetch."""
+        try:
+            guild = getattr(invite, "guild", None)
+            if guild is None:
+                return
+            code = str(getattr(invite, "code", "") or "").strip()
+            if not code:
+                return
+            inviter = getattr(invite, "inviter", None)
+            channel = getattr(invite, "channel", None)
+            entry = {
+                "uses": self._to_int(getattr(invite, "uses", 0), 0) or 0,
+                "url": str(getattr(invite, "url", "") or "").strip() or f"https://discord.gg/{code}",
+                "inviter_id": self._to_int(getattr(inviter, "id", None), None),
+                "inviter_name": str(inviter) if inviter else None,
+                "channel_id": self._to_int(getattr(channel, "id", None), None),
+                "channel_name": str(getattr(channel, "name", "") or "").strip() or None,
+            }
+            lock = self._invite_lock_for_guild(guild.id)
+            async with lock:
+                snapshot = self._join_invite_snapshot.setdefault(guild.id, {})
+                snapshot[code] = entry
+                vanity = self._join_vanity_snapshot.get(guild.id, {})
+                self._save_invite_snapshot_to_db(guild.id, snapshot, vanity)
+            logger.debug("Invite %s created for guild %s — cache updated", code, guild.id)
+        except Exception as exc:
+            logger.debug("on_invite_create cache update failed: %s", exc)
+
+    @commands.Cog.listener()
+    async def on_invite_delete(self, invite: discord.Invite) -> None:
+        """Gelöschten Invite aus dem Cache entfernen ohne API-Refetch."""
+        try:
+            guild = getattr(invite, "guild", None)
+            if guild is None:
+                return
+            code = str(getattr(invite, "code", "") or "").strip()
+            if not code:
+                return
+            lock = self._invite_lock_for_guild(guild.id)
+            async with lock:
+                snapshot = self._join_invite_snapshot.get(guild.id, {})
+                if code in snapshot:
+                    del snapshot[code]
+                    vanity = self._join_vanity_snapshot.get(guild.id, {})
+                    self._save_invite_snapshot_to_db(guild.id, snapshot, vanity)
+            logger.debug("Invite %s deleted for guild %s — cache updated", code, guild.id)
+        except Exception as exc:
+            logger.debug("on_invite_delete cache update failed: %s", exc)
 
     @commands.Cog.listener()
     async def on_raw_member_remove(self, payload: discord.RawMemberRemoveEvent):

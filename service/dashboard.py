@@ -3404,22 +3404,35 @@ class DashboardServer:
         self,
         guild_filter: int | None,
         *,
-        days: int = 30,
+        days: int = 0,
     ) -> dict[str, Any]:
-        window_days = max(1, min(int(days), 365))
-        cutoff_expr = f"-{window_days} days"
+        all_time = int(days) == 0
+        window_days: int | None = None if all_time else max(1, min(int(days), 365))
 
-        join_rows = db.query_all(
-            """
-            SELECT id, user_id, guild_id, timestamp, display_name, metadata
-            FROM member_events
-            WHERE event_type = 'join'
-              AND timestamp >= datetime('now', ?)
-              AND (? IS NULL OR guild_id = ?)
-            ORDER BY timestamp DESC
-            """,
-            (cutoff_expr, guild_filter, guild_filter),
-        )
+        if all_time:
+            join_rows = db.query_all(
+                """
+                SELECT id, user_id, guild_id, timestamp, display_name, metadata
+                FROM member_events
+                WHERE event_type = 'join'
+                  AND (? IS NULL OR guild_id = ?)
+                ORDER BY timestamp DESC
+                """,
+                (guild_filter, guild_filter),
+            )
+        else:
+            cutoff_expr = f"-{window_days} days"
+            join_rows = db.query_all(
+                """
+                SELECT id, user_id, guild_id, timestamp, display_name, metadata
+                FROM member_events
+                WHERE event_type = 'join'
+                  AND timestamp >= datetime('now', ?)
+                  AND (? IS NULL OR guild_id = ?)
+                ORDER BY timestamp DESC
+                """,
+                (cutoff_expr, guild_filter, guild_filter),
+            )
 
         twitch_invite_lookup: dict[str, str] = {}
         twitch_assigned_links: list[dict[str, Any]] = []
@@ -3476,9 +3489,9 @@ class DashboardServer:
                 "label": "Server entdecken",
                 "count": 0,
             },
-            "vanity": {"kind": "vanity", "label": "Vanity-Link", "count": 0},
             "other": {"kind": "other", "label": "Public (Sonstige)", "count": 0},
         }
+        # vanity entries added dynamically, keyed by invite_code
         twitch_groups: dict[str, dict[str, Any]] = {}
         personal_groups: dict[str, dict[str, Any]] = {}
         recent: list[dict[str, Any]] = []
@@ -3542,11 +3555,25 @@ class DashboardServer:
             if bucket == "public":
                 if kind_raw in {"server_discovery", "discovery", "public_discovery"}:
                     public_kind = "server_discovery"
+                    public_groups[public_kind]["count"] += 1
                 elif kind_raw in {"vanity", "vanity_url", "public_vanity"}:
                     public_kind = "vanity"
+                    vanity_key = f"vanity:{invite_code.lower()}" if invite_code else "vanity:unknown"
+                    if vanity_key not in public_groups:
+                        code_label = f"discord.gg/{invite_code}" if invite_code else "Vanity-Link"
+                        public_groups[vanity_key] = {
+                            "kind": "vanity",
+                            "label": code_label,
+                            "invite_code": invite_code or None,
+                            "invite_url": invite_url or (
+                                f"https://discord.gg/{invite_code}" if invite_code else None
+                            ),
+                            "count": 0,
+                        }
+                    public_groups[vanity_key]["count"] += 1
                 else:
                     public_kind = "other"
-                public_groups[public_kind]["count"] += 1
+                    public_groups[public_kind]["count"] += 1
 
             if not kind_raw:
                 if bucket == "twitch":
@@ -3585,9 +3612,17 @@ class DashboardServer:
                     entry["invite_url"] = invite_url
 
             if bucket == "personal":
+                # Bekannte Invite-Codes mit festen Labels
+                _KNOWN_CODES: dict[str, str] = {
+                    "xmnqmbuz7z": "In-Game (Build Publisher)",
+                }
                 inviter_id = self._coerce_int(metadata.get("inviter_id"), None)
                 inviter_name = str(metadata.get("inviter_name") or "").strip()
-                if inviter_id is not None:
+                known_label = _KNOWN_CODES.get(invite_code.lower()) if invite_code else None
+                if known_label:
+                    key = f"known:{invite_code.lower()}"
+                    personal_label = known_label
+                elif inviter_id is not None:
                     key = f"id:{inviter_id}"
                     personal_label = inviter_name or f"User {inviter_id}"
                 elif inviter_name:
@@ -3805,7 +3840,7 @@ class DashboardServer:
                 (guild_filter, guild_filter),
             )
 
-            member_sources_30d = self._build_member_source_analytics(guild_filter, days=30)
+            member_sources_30d = self._build_member_source_analytics(guild_filter, days=0)
 
             payload = {
                 "member_events": {row[0]: row[1] for row in member_events_summary},

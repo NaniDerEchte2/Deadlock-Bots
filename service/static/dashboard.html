@@ -264,6 +264,8 @@
             display: flex;
             flex-direction: column;
             gap: 0.5rem;
+            min-width: 0;
+            overflow: hidden;
         }
         .health-status {
             display: flex;
@@ -307,7 +309,10 @@
             font-size: 0.85rem;
             color: #74c0fc;
             text-decoration: none;
-            word-break: break-word;
+            display: block;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
         .health-url:hover {
             text-decoration: underline;
@@ -1452,7 +1457,7 @@
                     <div id="server-stats-summary" class="grid"></div>
                 </div>
                 <div class="card">
-                    <h3>Mitgliederquellen (30 Tage)</h3>
+                    <h3>Mitgliederquellen (Gesamt)</h3>
                     <div class="member-source-layout">
                         <div class="member-source-chart-wrap">
                             <canvas id="member-source-chart"></canvas>
@@ -3030,6 +3035,7 @@
                 urlLink.target = '_blank';
                 urlLink.rel = 'noopener';
                 urlLink.textContent = item.url;
+                urlLink.title = item.url;
                 card.appendChild(urlLink);
             }
 
@@ -4208,7 +4214,8 @@ function renderMemberSourceList(container, rows, emptyText, formatter) {
 }
 
 function renderMemberSourceAnalytics(data) {
-    const analytics = data && data.member_sources_30d ? data.member_sources_30d : {};
+    const analytics = data && (data.member_sources || data.member_sources_30d)
+        ? (data.member_sources || data.member_sources_30d) : {};
     const bucketCounts = analytics.bucket_counts || {};
     const total = Number(analytics.tracked_joins || 0);
 
@@ -4223,9 +4230,11 @@ function renderMemberSourceAnalytics(data) {
         memberSourceSummary.innerHTML = '';
         const header = document.createElement('div');
         header.className = 'voice-meta';
-        const windowDays = Number(analytics.window_days || 30);
+        const windowDays = analytics.window_days;
+        const allTime = windowDays === null || windowDays === undefined || windowDays === 0;
         const known = Number(analytics.known_joins || 0);
-        header.textContent = `${total.toLocaleString('de-DE')} Joins in ${windowDays} Tagen (${known.toLocaleString('de-DE')} mit Quelle)`;
+        const periodLabel = allTime ? 'gesamt' : `in ${windowDays} Tagen`;
+        header.textContent = `${total.toLocaleString('de-DE')} Joins ${periodLabel} (${known.toLocaleString('de-DE')} mit Quelle)`;
         memberSourceSummary.appendChild(header);
 
         series.forEach((entry) => {
@@ -4243,6 +4252,15 @@ function renderMemberSourceAnalytics(data) {
             value.className = 'member-source-count';
             value.textContent = count.toLocaleString('de-DE');
             row.appendChild(value);
+
+            // Twitch hover: show per-partner breakdown as native tooltip
+            if (entry.key === 'twitch' && analytics.twitch_breakdown && analytics.twitch_breakdown.length > 0) {
+                const lines = analytics.twitch_breakdown.slice(0, 12).map((r) =>
+                    `@${r.streamer_login || r.label}: ${Number(r.count || 0).toLocaleString('de-DE')}`
+                );
+                row.title = lines.join('\n');
+                row.style.cursor = 'help';
+            }
 
             memberSourceSummary.appendChild(row);
         });
@@ -4274,7 +4292,14 @@ function renderMemberSourceAnalytics(data) {
                             label: (ctx) => {
                                 const val = Number(ctx.parsed || 0);
                                 const pct = total > 0 ? ((val / total) * 100).toFixed(1) : '0.0';
-                                return `${ctx.label}: ${val.toLocaleString('de-DE')} (${pct}%)`;
+                                const base = `${ctx.label}: ${val.toLocaleString('de-DE')} (${pct}%)`;
+                                if (ctx.label === 'Twitch' && analytics.twitch_breakdown && analytics.twitch_breakdown.length > 0) {
+                                    const lines = analytics.twitch_breakdown.slice(0, 6).map((r) =>
+                                        `  @${r.streamer_login || r.label}: ${Number(r.count || 0).toLocaleString('de-DE')}`
+                                    );
+                                    return [base, ...lines];
+                                }
+                                return base;
                             },
                         },
                     },
@@ -4289,7 +4314,7 @@ function renderMemberSourceAnalytics(data) {
     publicLinks.forEach((link) => {
         publicRows.push({
             label: `Link: ${link.code ? `discord.gg/${link.code}` : 'Vanity'}`,
-            url: link.url || '',
+            invite_url: link.url || '',
             count: null,
         });
     });
@@ -4300,8 +4325,8 @@ function renderMemberSourceAnalytics(data) {
         'Keine Public-Daten.',
         (row) => ({
             label: row.label || row.kind || 'Public',
-            href: row.url || '',
-            hrefLabel: row.url ? 'oeffnen' : undefined,
+            href: row.invite_url || row.url || '',
+            hrefLabel: (row.invite_url || row.url) ? 'oeffnen' : undefined,
             count: row.count === null || row.count === undefined ? null : Number(row.count || 0),
         }),
     );
