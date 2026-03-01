@@ -69,3 +69,4 @@ Gemini.ps1
 # allow tracking of dashboard_v2 manifests despite global *.json ignore
 !cogs/twitch/dashboard_v2/package.json
 !cogs/twitch/dashboard_v2/package-lock.json
+master_bot.pid
