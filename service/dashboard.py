@@ -3481,6 +3481,7 @@ class DashboardServer:
             "public": 0,
             "twitch": 0,
             "personal": 0,
+            "bot_invite": 0,
             "unknown": 0,
         }
         public_groups: dict[str, dict[str, Any]] = {
@@ -3494,6 +3495,7 @@ class DashboardServer:
         # vanity entries added dynamically, keyed by invite_code
         twitch_groups: dict[str, dict[str, Any]] = {}
         personal_groups: dict[str, dict[str, Any]] = {}
+        bot_invite_groups: dict[str, dict[str, Any]] = {}
         recent: list[dict[str, Any]] = []
         backfill_updates: list[tuple[str, int]] = []
 
@@ -3651,6 +3653,29 @@ class DashboardServer:
                 if invite_url and not entry.get("invite_url"):
                     entry["invite_url"] = invite_url
 
+            if bucket == "bot_invite":
+                inviter_id_bi = self._coerce_int(metadata.get("inviter_id"), None)
+                inviter_name_bi = str(metadata.get("inviter_name") or "").strip()
+                key_bi = (
+                    f"id:{inviter_id_bi}" if inviter_id_bi is not None
+                    else f"name:{inviter_name_bi.lower()}" if inviter_name_bi
+                    else "bot_other"
+                )
+                label_bi = inviter_name_bi or (
+                    f"Bot {inviter_id_bi}" if inviter_id_bi else "Bot Invite"
+                )
+                entry_bi = bot_invite_groups.get(key_bi)
+                if entry_bi is None:
+                    entry_bi = {
+                        "label": label_bi,
+                        "inviter_id": inviter_id_bi,
+                        "invite_code": invite_code or None,
+                        "invite_url": invite_url or None,
+                        "count": 0,
+                    }
+                    bot_invite_groups[key_bi] = entry_bi
+                entry_bi["count"] += 1
+
             source_label = label_raw
             if not source_label:
                 if bucket == "public":
@@ -3664,6 +3689,9 @@ class DashboardServer:
                     source_label = f"Twitch: {twitch_login}" if twitch_login else "Twitch"
                 elif bucket == "personal":
                     source_label = f"Persoenlich: {personal_label or 'Invite-Link'}"
+                elif bucket == "bot_invite":
+                    inviter_name_bi = str(metadata.get("inviter_name") or "").strip()
+                    source_label = f"Bot Invite: {inviter_name_bi}" if inviter_name_bi else "Bot Invite"
                 else:
                     source_label = "Unbekannt"
 
@@ -3746,8 +3774,18 @@ class DashboardServer:
             ),
         )
 
-        known_joins = bucket_counts["public"] + bucket_counts["twitch"] + bucket_counts["personal"]
+        known_joins = (
+            bucket_counts["public"]
+            + bucket_counts["twitch"]
+            + bucket_counts["personal"]
+            + bucket_counts["bot_invite"]
+        )
         unknown_joins = bucket_counts["unknown"]
+
+        bot_invite_breakdown = sorted(
+            bot_invite_groups.values(),
+            key=lambda item: (-int(item.get("count", 0)), str(item.get("label") or "").lower()),
+        )
 
         return {
             "window_days": window_days,
@@ -3758,7 +3796,8 @@ class DashboardServer:
             "bucket_labels": {
                 "public": "Public",
                 "twitch": "Twitch",
-                "personal": "Persoenlich/Sonstige",
+                "personal": "Persönlich",
+                "bot_invite": "Bot Invites",
                 "unknown": "Unbekannt",
             },
             "public_breakdown": public_breakdown,
@@ -3766,6 +3805,7 @@ class DashboardServer:
             "twitch_breakdown": twitch_breakdown,
             "twitch_assigned_links": twitch_assigned_links,
             "personal_breakdown": personal_breakdown,
+            "bot_invite_breakdown": bot_invite_breakdown,
             "recent": recent[:20],
         }
 

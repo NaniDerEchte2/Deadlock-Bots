@@ -65,6 +65,10 @@ class UserActivityAnalyzer(commands.Cog):
             self._prime_join_source_cache(),
             name="user-activity.join-source-prime",
         )
+        asyncio.create_task(
+            self._backfill_member_events(),
+            name="user-activity.member-events-backfill",
+        )
 
     async def cog_unload(self):
         """Stoppt Background-Tasks sauber."""
@@ -639,6 +643,7 @@ class UserActivityAnalyzer(commands.Cog):
                     "url": invite_url,
                     "inviter_id": self._to_int(getattr(inviter, "id", None), None),
                     "inviter_name": str(inviter) if inviter else None,
+                    "inviter_bot": bool(getattr(inviter, "bot", False)) if inviter else False,
                     "channel_id": self._to_int(getattr(channel, "id", None), None),
                     "channel_name": str(getattr(channel, "name", "") or "").strip() or None,
                 }
@@ -726,6 +731,116 @@ class UserActivityAnalyzer(commands.Cog):
         except Exception as exc:
             logger.debug("Join source cache prime failed: %s", exc, exc_info=True)
 
+    async def _backfill_member_events(self) -> None:
+        """Legt rückwirkend join-Events für alle Mitglieder ohne DB-Eintrag an."""
+        try:
+            await self.bot.wait_until_ready()
+            guilds = list(getattr(self.bot, "guilds", []))
+            total_inserted = 0
+
+            for guild in guilds:
+                try:
+                    # Bekannte User-IDs aus member_events holen
+                    existing_rows = central_db.query_all(
+                        """
+                        SELECT DISTINCT user_id FROM member_events
+                        WHERE guild_id = ? AND event_type = 'join'
+                        """,
+                        (guild.id,),
+                    )
+                    existing_ids: set[int] = {int(r[0]) for r in existing_rows}
+
+                    # Twitch-Invite-Lookup für Backfill-Korrelation
+                    twitch_rows = central_db.query_all(
+                        "SELECT LOWER(invite_code), streamer_login FROM twitch_streamer_invites WHERE guild_id = ?",
+                        (guild.id,),
+                    )
+                    twitch_lookup: dict[str, str] = {r[0]: r[1] for r in twitch_rows if r[0]}
+
+                    inserted = 0
+                    for member in guild.members:
+                        if member.bot:
+                            continue
+                        if member.id in existing_ids:
+                            continue
+                        if privacy.is_opted_out(member.id):
+                            continue
+
+                        joined_ts = (
+                            member.joined_at.strftime("%Y-%m-%d %H:%M:%S")
+                            if member.joined_at else None
+                        )
+                        account_created = (
+                            member.created_at.strftime("%Y-%m-%d %H:%M:%S")
+                            if member.created_at else None
+                        )
+
+                        # Quelle: Snapshot-Cache für bekannte Invite-Codes prüfen
+                        snapshot = self._join_invite_snapshot.get(guild.id, {})
+                        matched_code: str | None = None
+                        matched_twitch: str | None = None
+                        matched_bot: bool = False
+
+                        # Prüfe ob ein bekannter Twitch-Code aktiv war — grob korrelierbar
+                        for code, info in snapshot.items():
+                            twitch = twitch_lookup.get(code.lower())
+                            if twitch and self._to_int(info.get("uses"), 0):
+                                # Wenn nur ein aktiver Twitch-Code existiert → wahrscheinlich
+                                if not matched_twitch:
+                                    matched_code = code
+                                    matched_twitch = twitch
+                                    matched_bot = bool(info.get("inviter_bot"))
+
+                        if matched_twitch:
+                            source_bucket = "twitch"
+                            source_kind = "twitch_streamer"
+                            source_label = f"Twitch: {matched_twitch} (rückwirkend)"
+                            source_confidence = "low"
+                        else:
+                            source_bucket = "unknown"
+                            source_kind = "backfilled"
+                            source_label = "Vor Tracking (rückwirkend)"
+                            source_confidence = "none"
+
+                        metadata = json.dumps({
+                            "join_source_bucket": source_bucket,
+                            "join_source_kind": source_kind,
+                            "join_source_label": source_label,
+                            "join_source_confidence": source_confidence,
+                            "backfilled": True,
+                            "invite_code": matched_code,
+                            "twitch_streamer_login": matched_twitch,
+                            "inviter_bot": matched_bot or None,
+                        })
+
+                        central_db.execute(
+                            """
+                            INSERT OR IGNORE INTO member_events
+                                (user_id, guild_id, event_type, timestamp,
+                                 display_name, account_created_at, metadata)
+                            VALUES (?, ?, 'join', ?, ?, ?, ?)
+                            """,
+                            (
+                                member.id, guild.id, joined_ts,
+                                member.display_name, account_created, metadata,
+                            ),
+                        )
+                        inserted += 1
+
+                    total_inserted += inserted
+                    if inserted:
+                        logger.info(
+                            "Backfill: %d join-Events für Guild %s nachgetragen", inserted, guild.name
+                        )
+                except Exception as exc:
+                    logger.warning("Backfill fehlgeschlagen für Guild %s: %s", guild.id, exc)
+
+            logger.info("Backfill abgeschlossen: %d Events gesamt eingetragen", total_inserted)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("Backfill member events fehlgeschlagen: %s", exc, exc_info=True)
+
     def _lookup_twitch_streamer_for_code(self, guild_id: int, invite_code: str) -> str | None:
         code = (invite_code or "").strip()
         if not code:
@@ -801,6 +916,16 @@ class UserActivityAnalyzer(commands.Cog):
                         "join_source_kind": "twitch_streamer",
                         "join_source_label": f"Twitch: {twitch_login}",
                         "twitch_streamer_login": twitch_login,
+                    }
+                )
+            elif invite_info.get("inviter_bot"):
+                inviter_name = invite_info.get("inviter_name") or "Bot"
+                payload.update(
+                    {
+                        "join_source_bucket": "bot_invite",
+                        "join_source_kind": "bot_invite",
+                        "join_source_label": f"Bot Invite: {inviter_name}",
+                        "inviter_bot": True,
                     }
                 )
             else:
@@ -1057,6 +1182,7 @@ class UserActivityAnalyzer(commands.Cog):
                 "url": str(getattr(invite, "url", "") or "").strip() or f"https://discord.gg/{code}",
                 "inviter_id": self._to_int(getattr(inviter, "id", None), None),
                 "inviter_name": str(inviter) if inviter else None,
+                "inviter_bot": bool(getattr(inviter, "bot", False)) if inviter else False,
                 "channel_id": self._to_int(getattr(channel, "id", None), None),
                 "channel_name": str(getattr(channel, "name", "") or "").strip() or None,
             }

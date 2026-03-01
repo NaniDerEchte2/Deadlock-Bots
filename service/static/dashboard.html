@@ -1478,6 +1478,10 @@
                             <ul id="member-source-personal" class="member-source-list"></ul>
                         </div>
                         <div class="member-source-section">
+                            <h4>Bot Invites</h4>
+                            <ul id="member-source-bot-invite" class="member-source-list"></ul>
+                        </div>
+                        <div class="member-source-section">
                             <h4>Twitch Invite-Links</h4>
                             <ul id="member-source-twitch-links" class="member-source-list"></ul>
                         </div>
@@ -1865,6 +1869,7 @@
     const memberSourcePublic = document.getElementById('member-source-public');
     const memberSourceTwitch = document.getElementById('member-source-twitch');
     const memberSourcePersonal = document.getElementById('member-source-personal');
+    const memberSourceBotInvite = document.getElementById('member-source-bot-invite');
     const memberSourceTwitchLinks = document.getElementById('member-source-twitch-links');
     const memberEventsContainer = document.getElementById('member-events-container');
     const messageActivityContainer = document.getElementById('message-activity-container');
@@ -4222,7 +4227,8 @@ function renderMemberSourceAnalytics(data) {
     const series = [
         { key: 'public', label: 'Public', color: '#4dabf7' },
         { key: 'twitch', label: 'Twitch', color: '#9775fa' },
-        { key: 'personal', label: 'Persönlich/Sonstige', color: '#ffa94d' },
+        { key: 'personal', label: 'Persönlich', color: '#ffa94d' },
+        { key: 'bot_invite', label: 'Bot Invites', color: '#ff6b6b' },
         { key: 'unknown', label: 'Unbekannt', color: '#868e96' },
     ];
 
@@ -4347,6 +4353,18 @@ function renderMemberSourceAnalytics(data) {
         'Keine persönlichen Einladungen im Zeitraum.',
         (row) => ({
             label: row.label || 'Sonstige Invite-Links',
+            count: Number(row.count || 0),
+        }),
+    );
+
+    renderMemberSourceList(
+        memberSourceBotInvite,
+        (analytics.bot_invite_breakdown || []).slice(0, 8),
+        'Keine Bot Invites.',
+        (row) => ({
+            label: row.label || 'Bot',
+            href: row.invite_url || '',
+            hrefLabel: row.invite_code ? `discord.gg/${row.invite_code}` : undefined,
             count: Number(row.count || 0),
         }),
     );
