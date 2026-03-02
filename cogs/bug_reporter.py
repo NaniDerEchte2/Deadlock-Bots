@@ -84,6 +84,14 @@ CODEX_BLOCKED_ACTIONS = (
     "Keine Mod-/Admin-Rechte setzen. Keine User-Bans/Unbans durchführen."
 )
 KV_NS = "bug_reporter:panel"
+DISCORD_TEXTINPUT_PLACEHOLDER_MAX = 100
+
+
+def _safe_text_input_placeholder(value: str) -> str:
+    text = (value or "").strip()
+    if len(text) <= DISCORD_TEXTINPUT_PLACEHOLDER_MAX:
+        return text
+    return f"{text[: DISCORD_TEXTINPUT_PLACEHOLDER_MAX - 3].rstrip()}..."
 
 SYSTEM_PROMPT = dedent(
     """
@@ -137,14 +145,18 @@ class BugReportModal(discord.ui.Modal):
 
         self.title_input = discord.ui.TextInput(
             label="Kurzbeschreibung",
-            placeholder="z. B. Voice-Kanal bricht ab, Statistiken falsch, Command error ...",
+            placeholder=_safe_text_input_placeholder(
+                "z. B. Voice-Kanal bricht ab, Statistiken falsch, Command error ..."
+            ),
             required=False,
             max_length=150,
         )
         self.details_input = discord.ui.TextInput(
             label="Was genau ist das Problem? (bitte präzise)",
             style=discord.TextStyle.long,
-            placeholder="Fehler kurz beschreiben: Repro, erwartetes Ergebnis, Meldung/ID, betroffene Befehle/Module.",
+            placeholder=_safe_text_input_placeholder(
+                "Fehler kurz beschreiben: Repro, erwartetes Ergebnis, Meldung/ID, betroffene Befehle/Module."
+            ),
             required=True,
             max_length=1800,
         )
@@ -178,7 +190,7 @@ class TicketButtonView(discord.ui.View):
     async def create_ticket(
         self, interaction: discord.Interaction, _button: discord.ui.Button
     ):  # pragma: no cover - runtime
-        await interaction.response.send_modal(BugReportModal(self.cog, category=None))
+        await self.cog.send_ticket_modal(interaction, category=None)
 
 
 class BugReporter(commands.Cog):
@@ -208,7 +220,29 @@ class BugReporter(commands.Cog):
         self, interaction: discord.Interaction, kategorie: app_commands.Choice[str]
     ) -> None:
         """Öffnet das Meldeformular."""
-        await interaction.response.send_modal(BugReportModal(self, category=kategorie.value))
+        await self.send_ticket_modal(interaction, category=kategorie.value)
+
+    async def send_ticket_modal(
+        self, interaction: discord.Interaction, *, category: str | None
+    ) -> None:
+        try:
+            await interaction.response.send_modal(BugReportModal(self, category=category))
+        except discord.HTTPException:
+            log.exception("Ticket-Modal konnte nicht geöffnet werden")
+            msg = (
+                "Das Ticket-Formular konnte gerade nicht geöffnet werden. "
+                "Bitte versuche es in 10 Sekunden erneut oder nutze /ticket."
+            )
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(msg, ephemeral=True)
+                else:
+                    await interaction.response.send_message(msg, ephemeral=True)
+            except Exception:
+                log.debug(
+                    "Fallback-Nachricht nach Modal-Fehler konnte nicht gesendet werden",
+                    exc_info=True,
+                )
 
     @commands.command(name="ticket")
     async def ticket_prefix(self, ctx: commands.Context) -> None:
@@ -276,28 +310,56 @@ class BugReporter(commands.Cog):
             if isinstance(parent, (discord.TextChannel, discord.ForumChannel)):
                 guild = parent.guild
                 channel_name = f"ticket-{report_id}"
-                ticket_channel = await guild.create_text_channel(
-                    name=channel_name,
-                    category=parent.category,
-                    reason=f"Ticket #{report_id} von {interaction.user}",
+                user_overwrite = discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True,
+                    attach_files=True,
+                    embed_links=True,
+                    add_reactions=True,
                 )
+                bot_member = guild.me
+                if bot_member is None and self.bot.user is not None:
+                    bot_member = guild.get_member(self.bot.user.id)
 
-                try:
-                    await ticket_channel.set_permissions(
-                        interaction.user,
+                overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
+                    guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                    interaction.user: user_overwrite,
+                }
+
+                if bot_member is not None:
+                    overwrites[bot_member] = discord.PermissionOverwrite(
                         view_channel=True,
                         send_messages=True,
                         read_message_history=True,
+                        manage_channels=True,
+                        manage_messages=True,
                         attach_files=True,
                         embed_links=True,
                         add_reactions=True,
                     )
-                except Exception:
-                    log.debug(
-                        "Konnte Ticket-Berechtigungen für User %s nicht setzen",
-                        interaction.user.id,
-                        exc_info=True,
+
+                # "Quasi Admins": Rollen mit Admin-/Guild-/Channel-Management-Rechten.
+                for role in guild.roles:
+                    if role.is_default():
+                        continue
+                    perms = role.permissions
+                    if not (perms.administrator or perms.manage_guild or perms.manage_channels):
+                        continue
+                    overwrites[role] = discord.PermissionOverwrite(
+                        view_channel=True,
+                        send_messages=True,
+                        read_message_history=True,
+                        manage_messages=True,
+                        manage_channels=True,
                     )
+
+                ticket_channel = await guild.create_text_channel(
+                    name=channel_name,
+                    category=parent.category,
+                    overwrites=overwrites,
+                    reason=f"Ticket #{report_id} von {interaction.user}",
+                )
 
                 await ticket_channel.send(
                     f"<@{interaction.user.id}> Ticket eröffnet.\n"
