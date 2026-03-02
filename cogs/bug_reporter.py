@@ -6,6 +6,7 @@ import os
 import re
 import shlex
 import tempfile
+import time
 from pathlib import Path
 from shutil import which
 from textwrap import dedent
@@ -19,9 +20,21 @@ from service import db, issue_reports
 
 log = logging.getLogger(__name__)
 
+# Konfiguration
 PRIMARY_MODEL = "gpt-4o-mini"
 FALLBACK_MODEL = "gemini-2.0-flash"
 MAX_OUTPUT_TOKENS = 700
+CODEX_REASONING_EFFORT = "high"
+LOCAL_CODEX_CMD_OVERRIDE = ""  # Optionaler kompletter Cmd-Override
+STEAM_BOT_FRIEND_CODE = "820142646"
+TICKET_CHANNEL_ID = 1475218607213514926
+CODEX_ADMIN_REPORT_CHANNEL_ID = 1374364800817303632
+AUTO_ACTION_MAX_ITEMS = 3
+AUTO_ACTION_COOLDOWN_RESTART_SEC = 900.0
+AUTO_ACTION_COOLDOWN_RELOAD_ALL_SEC = 180.0
+AUTO_ACTION_COOLDOWN_RELOAD_COG_SEC = 30.0
+AUTO_ACTION_COOLDOWN_STANDALONE_RESTART_SEC = 180.0
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CODEX_BIN = "codex.cmd" if os.name == "nt" else "codex"
 CODEX_EXECUTABLE = (
@@ -29,9 +42,6 @@ CODEX_EXECUTABLE = (
     or (which("codex.cmd") if os.name == "nt" else None)
     or which("codex")
     or CODEX_BIN
-)
-CODEX_REASONING_EFFORT = (
-    os.getenv("CODEX_LOCAL_REASONING_EFFORT", "medium").strip() or "medium"
 )
 DEFAULT_LOCAL_CODEX_ARGV = [
     CODEX_EXECUTABLE,
@@ -46,7 +56,6 @@ DEFAULT_LOCAL_CODEX_ARGV = [
     str(PROJECT_ROOT),
     "-",
 ]
-LOCAL_CODEX_CMD_OVERRIDE = os.getenv("CODEX_LOCAL_CMD", "").strip()
 REMOTE_FALLBACK_ENABLED = False  # Lokal only; kein Remote-Fallback
 CODEX_RETRY_COUNT = 1
 CODEX_RETRY_DELAY_SEC = 1.5
@@ -56,6 +65,8 @@ CODEX_ALLOWED_CATEGORIES = {
     "bot_command",
     "build_publishing",
     "ai_features",
+    "user_management",
+    "other",
 }
 ROLE_BLACKLIST = {
     1304169657124782100,
@@ -72,28 +83,34 @@ CODEX_BLOCKED_ACTIONS = (
     "(z. B. Verified durch Steam-Link, Patchnotes/LFG/CustomGames Ping per Bot-Logik). "
     "Keine Mod-/Admin-Rechte setzen. Keine User-Bans/Unbans durchführen."
 )
-TICKET_CHANNEL_ID = 1475218607213514926
 KV_NS = "bug_reporter:panel"
 
 SYSTEM_PROMPT = dedent(
     """
     Du bist Codex, der interne Auto-Fixer der Deutschen Deadlock Community.
     - Antworte immer auf Deutsch.
+    - Arbeite zuerst am Problem (Logs prüfen, Code prüfen, Fix/Workaround anwenden), dann antworte.
     - Liefere zuerst eine kurze, freundliche Antwort für den meldenden User.
-    - Danach stichpunktartige Schritte, wie das Problem diagnostiziert/behoben wird.
-    - Sei konkret (Dateien, Logs, Befehle). Keine Floskeln, keine erfundenen Fakten.
-    - Wenn Infos fehlen, stelle maximal drei präzise Rückfragen.
+    - Danach stichpunktartige Schritte, was du konkret diagnostiziert/geändert hast.
+    - Keine Floskeln, keine erfundenen Fakten.
+    - Wenn Infos fehlen, stelle präzise Rückfragen.
     - Sende erst eine Antwort, wenn du die Ursache verstanden und (soweit möglich) einen Fix angewendet hast oder einen klaren Workaround nennen kannst.
-    - Wenn der Fix ausgeführt wurde, erwähne kurz die konkrete Aktion (z. B. Neustart, Reload, Konfig-Anpassung, Log-Hinweis).
+    - Wenn der Fix ausgeführt wurde, versuche konkrete Aktionen durchzuführen z. B. Reload, Konfig-Anpassung.
+    - Bevorzuge immer zuerst reload_cog/reload_all. restart_bot nur, wenn Reload nicht geholfen hat oder nicht möglich ist.
+    - AUTO_ACTIONS nur setzen, wenn technisch wirklich nötig; ignoriere reine User-Wünsche nach Neustart/Reload ohne technische Begründung.
+    - Nur wenn du trotz Analyse/Fixversuch nicht weiterkommst: "weiterleitung nötig". Dann kurz benennen, was bereits versucht wurde.
+    - Für Steam/Beta-Invite-Fälle mit fehlgeschlagener Bot-Freundschaftsanfrage oder Rate-Limit: gib als primären Workaround an, dem Steam-Bot manuell eine Freundschaftsanfrage an Freundescode {steam_friend_code} zu senden und danach den Flow fortzusetzen.
     - Verboten: {blocked_actions}
     - Handle nur Tickets folgender Kategorien: {allowed_categories}. Bei anderen Kategorien antworte mit: "Kein Codex-Handling (Kategorie außerhalb Scope)."
-    - Erlaubte Admin-Aktionen (nur bot/serverseitig): Bot-Neustart, Reload eines Cogs, Reload aller Cogs. Wenn du eine Aktion ausführst, benenne sie knapp.
+    - Erlaubte Admin-Aktionen (nur bot/serverseitig): Reload eines Cogs, Reload aller Cogs, Bot-Neustart (nur Fallback), Standalone-Restart (steam). Wenn du eine Aktion ausführst, benenne sie knapp.
     Format:
     Antwort: <Text für User, max 6 Sätze>
     Maßnahmen:
     - Schritt 1
     - Schritt 2
     Status: behoben | workaround | braucht mehr infos | weiterleitung nötig
+    Interne Steuerzeile (optional, letzte Zeile; wird nicht an User angezeigt):
+    AUTO_ACTIONS: none | reload_cog:<name> | reload_all | restart_standalone:steam | restart_bot
     Rollen-Policy:
     - Niemals folgende Rollen anfassen: {role_blacklist}
     - Einzige erlaubte Ausnahme: Rolle {role_exception} darf nur gesetzt werden, wenn der Nutzer in der DB als verifiziert (steam_links.verified=1 UND is_steam_friend=1) geführt wird.
@@ -171,6 +188,8 @@ class BugReporter(commands.Cog):
         self.bot = bot
         self.panel_message_id: int | None = None
         self.persistent_view: TicketButtonView | None = None
+        self._action_lock = asyncio.Lock()
+        self._action_last_run_monotonic: dict[str, float] = {}
 
     @app_commands.command(
         name="ticket",
@@ -289,6 +308,7 @@ class BugReporter(commands.Cog):
                 title=title or "Problem",
                 details=details,
                 category=category,
+                thread=thread,
             )
         )
 
@@ -379,60 +399,215 @@ class BugReporter(commands.Cog):
             log.debug("DB-Check für verified user_id=%s fehlgeschlagen", user_id, exc_info=True)
             return False
 
-    def _detect_actions(self, details: str) -> list[dict[str, str]]:
-        """Erkennt gewünschte Admin-Aktionen im Freitext."""
+    def _parse_action_token(self, token: str) -> dict[str, str] | None:
+        raw = (token or "").strip().strip("`").strip()
+        if not raw:
+            return None
+        low = raw.lower()
+
+        if low in {"none", "kein", "keine"}:
+            return None
+        if low in {"reload_all", "reloadall", "reload all"}:
+            return {"type": "reload_all"}
+        if low in {"restart_bot", "restart bot", "bot neustart", "bot neu starten"}:
+            return {"type": "restart_bot"}
+
+        if low.startswith("reload_cog:"):
+            target = raw.split(":", 1)[1].strip()
+            return {"type": "reload_cog", "target": target} if target else None
+
+        if low.startswith("restart_standalone:"):
+            target = raw.split(":", 1)[1].strip().lower()
+            return {"type": "restart_standalone", "target": target} if target else None
+
+        return None
+
+    def _action_key(self, action: dict[str, str]) -> str:
+        t = (action.get("type") or "").strip().lower()
+        target = (action.get("target") or "").strip().lower()
+        return f"{t}:{target}" if target else t
+
+    def _dedupe_actions(self, actions: list[dict[str, str]]) -> list[dict[str, str]]:
+        out: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for action in actions:
+            key = self._action_key(action)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            out.append(action)
+            if len(out) >= AUTO_ACTION_MAX_ITEMS:
+                break
+        return out
+
+    def _extract_actions_from_response(self, text: str) -> tuple[str, list[dict[str, str]]]:
+        if not text:
+            return "", []
+
+        lines = text.splitlines()
+        last_non_empty_idx: int | None = None
+        for idx in range(len(lines) - 1, -1, -1):
+            if lines[idx].strip():
+                last_non_empty_idx = idx
+                break
+
+        if last_non_empty_idx is None:
+            return "", []
+
+        last_line = lines[last_non_empty_idx]
+        match = re.match(r"^\s*AUTO_ACTIONS\s*:\s*(.+?)\s*$", last_line, flags=re.IGNORECASE)
+        if not match:
+            return text.strip(), []
+
         actions: list[dict[str, str]] = []
-        low = details.lower()
-        if "restart bot" in low or "bot neu starten" in low or "bot neustart" in low:
-            actions.append({"type": "restart_bot"})
-        if "reload all" in low or "alle cogs neu laden" in low or "reloadall" in low:
-            actions.append({"type": "reload_all"})
-        # reload cog pattern
-        for name in re.findall(r"reload\s+([\w\.]+)", low):
-            actions.append({"type": "reload_cog", "target": name})
-        return actions
+        payload = (match.group(1) or "").strip()
+        for raw in re.split(r"[;,|]", payload):
+            action = self._parse_action_token(raw)
+            if action:
+                actions.append(action)
+
+        del lines[last_non_empty_idx]
+        cleaned = "\n".join(lines).strip()
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        return cleaned, self._dedupe_actions(actions)
+
+    def _action_cooldown_seconds(self, action: dict[str, str]) -> float:
+        t = (action.get("type") or "").strip().lower()
+        if t == "restart_bot":
+            return AUTO_ACTION_COOLDOWN_RESTART_SEC
+        if t == "reload_all":
+            return AUTO_ACTION_COOLDOWN_RELOAD_ALL_SEC
+        if t == "reload_cog":
+            return AUTO_ACTION_COOLDOWN_RELOAD_COG_SEC
+        if t == "restart_standalone":
+            return AUTO_ACTION_COOLDOWN_STANDALONE_RESTART_SEC
+        return 30.0
 
     async def _run_actions(self, actions: list[dict[str, str]]) -> list[str]:
-        """Führt erkannte Admin-Aktionen aus und liefert Ergebnis-Strings."""
+        """Führt erlaubte Auto-Aktionen aus und liefert Ergebnis-Strings."""
+        planned = self._dedupe_actions(actions)
+        if not planned:
+            return []
+
+        restart_requested = any(a.get("type") == "restart_bot" for a in planned)
+        ordered = [a for a in planned if a.get("type") != "restart_bot"]
+        has_reload_step = any(a.get("type") in {"reload_all", "reload_cog"} for a in ordered)
+        if restart_requested and not has_reload_step:
+            ordered.append({"type": "reload_all"})
+        if restart_requested:
+            ordered.append({"type": "restart_bot"})
+
         results: list[str] = []
-        for action in actions:
-            t = action.get("type")
-            if t == "restart_bot":
-                lifecycle = getattr(self.bot, "lifecycle", None)
-                if lifecycle:
-                    scheduled = await lifecycle.request_restart(reason="bug_reporter:auto")
-                    results.append(
-                        "Bot-Reboot angefordert"
-                        if scheduled
-                        else "Reboot bereits geplant/fehlgeschlagen"
-                    )
-                else:
-                    results.append("Reboot nicht verfügbar (kein Lifecycle)")
-            elif t == "reload_all":
-                try:
-                    ok, summary = await self.bot.reload_all_cogs_with_discovery()
-                    if ok:
-                        results.append("Alle Cogs neu geladen")
-                    else:
-                        results.append(f"Reload-All fehlgeschlagen: {summary}")
-                except Exception as exc:
-                    results.append(f"Reload-All Fehler: {exc}")
-            elif t == "reload_cog":
-                target = action.get("target") or ""
-                resolved, suggestions = self.bot.resolve_cog_identifier(target)
-                if not resolved:
-                    if suggestions:
-                        results.append(
-                            f"Reload {target} unklar (Vorschläge: {', '.join(suggestions)})"
-                        )
-                    else:
-                        results.append(f"Reload {target} nicht gefunden")
+        reload_attempted = False
+        reload_failed = False
+
+        async with self._action_lock:
+            for action in ordered:
+                t = (action.get("type") or "").strip().lower()
+                key = self._action_key(action)
+                if not key:
                     continue
-                try:
-                    ok, msg = await self.bot.reload_cog(resolved)
-                    results.append(msg if ok else f"Reload {resolved} fehlgeschlagen")
-                except Exception as exc:
-                    results.append(f"Reload {resolved} Fehler: {exc}")
+
+                now = time.monotonic()
+                cooldown = self._action_cooldown_seconds(action)
+                last = self._action_last_run_monotonic.get(key)
+                if last is not None and (now - last) < cooldown:
+                    remaining = max(1, int(cooldown - (now - last)))
+                    results.append(f"Aktion `{key}` übersprungen (Cooldown {remaining}s).")
+                    continue
+                self._action_last_run_monotonic[key] = now
+
+                if t == "reload_all":
+                    reload_attempted = True
+                    try:
+                        ok, summary = await self.bot.reload_all_cogs_with_discovery()
+                        if ok:
+                            results.append("✅ Alle Cogs neu geladen.")
+                        else:
+                            reload_failed = True
+                            results.append(f"❌ Reload-All fehlgeschlagen: {summary}")
+                    except Exception as exc:
+                        reload_failed = True
+                        results.append(f"❌ Reload-All Fehler: {exc}")
+                    continue
+
+                if t == "reload_cog":
+                    reload_attempted = True
+                    target = (action.get("target") or "").strip()
+                    if not target:
+                        reload_failed = True
+                        results.append("❌ Reload-Cog ohne Ziel übersprungen.")
+                        continue
+                    resolved, suggestions = self.bot.resolve_cog_identifier(target)
+                    if not resolved:
+                        reload_failed = True
+                        if suggestions:
+                            results.append(
+                                f"❌ Reload `{target}` unklar (Vorschläge: {', '.join(suggestions)})."
+                            )
+                        else:
+                            results.append(f"❌ Reload `{target}` nicht gefunden.")
+                        continue
+                    try:
+                        ok, msg = await self.bot.reload_cog(resolved)
+                        if ok:
+                            results.append(f"✅ {msg}")
+                        else:
+                            reload_failed = True
+                            results.append(f"❌ Reload `{resolved}` fehlgeschlagen.")
+                    except Exception as exc:
+                        reload_failed = True
+                        results.append(f"❌ Reload `{resolved}` Fehler: {exc}")
+                    continue
+
+                if t == "restart_standalone":
+                    manager = getattr(self.bot, "standalone_manager", None)
+                    target = (action.get("target") or "steam").strip().lower() or "steam"
+                    if not manager:
+                        results.append("❌ Standalone-Restart nicht verfügbar (kein Manager).")
+                        continue
+                    try:
+                        valid_keys = {cfg.key for cfg in manager.all_configs()}
+                    except Exception:
+                        valid_keys = set()
+                    if valid_keys and target not in valid_keys:
+                        results.append(
+                            f"❌ Standalone `{target}` nicht bekannt (verfügbar: {', '.join(sorted(valid_keys))})."
+                        )
+                        continue
+                    try:
+                        status = await manager.restart(target)
+                        pid = status.get("pid") if isinstance(status, dict) else None
+                        if pid:
+                            results.append(f"✅ Standalone `{target}` neu gestartet (pid={pid}).")
+                        else:
+                            results.append(f"✅ Standalone `{target}` neu gestartet.")
+                    except Exception as exc:
+                        results.append(f"❌ Standalone-Restart `{target}` Fehler: {exc}")
+                    continue
+
+                if t == "restart_bot":
+                    if reload_attempted and not reload_failed:
+                        results.append(
+                            "ℹ️ Bot-Neustart übersprungen, weil Reload erfolgreich war."
+                        )
+                        continue
+                    lifecycle = getattr(self.bot, "lifecycle", None)
+                    if not lifecycle:
+                        results.append("❌ Bot-Neustart nicht verfügbar (kein Lifecycle).")
+                        continue
+                    try:
+                        scheduled = await lifecycle.request_restart(reason="bug_reporter:auto")
+                        if scheduled:
+                            results.append("✅ Bot-Neustart angefordert.")
+                        else:
+                            results.append("ℹ️ Neustart bereits geplant oder abgelehnt.")
+                    except Exception as exc:
+                        results.append(f"❌ Bot-Neustart Fehler: {exc}")
+                    continue
+
+                results.append(f"ℹ️ Unbekannte Aktion ignoriert: `{key}`.")
+
         return results
 
     async def _codex_healthcheck(self) -> None:
@@ -464,20 +639,37 @@ class BugReporter(commands.Cog):
         user_line = f"User: {getattr(user, 'display_name', getattr(user, 'name', 'Unbekannt'))}"
         user_id_line = f"User ID: {getattr(user, 'id', 'unbekannt')}"
         cat_line = f"Kategorie: {category}"
+        workspace_root = PROJECT_ROOT.parent
+        repo_lines = "\n".join(
+            (
+                f"- {PROJECT_ROOT}",
+                f"- {workspace_root / 'Deadlock-Steam-Bot'}",
+                f"- {workspace_root / 'Deadlock-Twitch-Bot'}",
+            )
+        )
         return dedent(
             f"""
-            Kontext:
+            System-Regeln:
+            {self._system_prompt()}
+
+            Arbeitskontext:
             - {user_line}
             - {user_id_line}
             - {cat_line}
             - Verified in DB: {self._is_verified_in_db(getattr(user, "id", None))}
-            - Logs/Code: Bitte selbst im Ordner ./logs nach relevanten Einträgen schauen und bei Bedarf die Codebase durchsuchen.
+            - Verfügbare Repos:
+            {repo_lines}
+            - Logs/Code: Prüfe zuerst ./logs und danach die betroffenen Module, bevor du antwortest.
 
             Meldung:
             - Titel: {title or "Problem"}
             - Beschreibung: {details}
 
-            Erstelle sofort eine hilfreiche Antwort und Schritte wie oben beschrieben.
+            Arbeitsauftrag:
+            - Erstelle erst nach Analyse/Fixversuch die Antwort.
+            - Wenn du eine Ursache findest, gib konkrete Datei-/Log-Belege an.
+            - Bei Steam-Freundschafts-/Rate-Limit-Problemen muss der manuelle FA-Workaround an Freundescode {STEAM_BOT_FRIEND_CODE} enthalten sein.
+            - Wenn serverseitige Aktion nötig ist, nutze die interne Steuerzeile AUTO_ACTIONS am Ende deiner Antwort.
             Verbotene Aktionen: {CODEX_BLOCKED_ACTIONS}
             Nur bearbeiten, wenn Kategorie in {", ".join(sorted(CODEX_ALLOWED_CATEGORIES))}; sonst kurz melden, dass der Fall manuell geprüft wird.
             """
@@ -489,6 +681,7 @@ class BugReporter(commands.Cog):
             allowed_categories=", ".join(sorted(CODEX_ALLOWED_CATEGORIES)),
             role_blacklist=", ".join(str(rid) for rid in sorted(ROLE_BLACKLIST)),
             role_exception=str(ROLE_EXCEPTION_ID),
+            steam_friend_code=STEAM_BOT_FRIEND_CODE,
         )
 
     async def _process_report(
@@ -499,6 +692,7 @@ class BugReporter(commands.Cog):
         title: str,
         details: str,
         category: str,
+        thread: discord.Thread | None,
     ) -> None:
         prompt = self._compose_prompt(
             title=title,
@@ -510,6 +704,8 @@ class BugReporter(commands.Cog):
         response_text: str | None = None
         meta: dict[str, str | int | None] = {}
         action_results: list[str] = []
+        codex_actions: list[dict[str, str]] = []
+        local_err: str | None = None
 
         # Kategorie außerhalb Codex-Scope -> sofort weiterleiten
         if not self._category_allows_codex(category):
@@ -528,19 +724,28 @@ class BugReporter(commands.Cog):
             )
             await self._send_result(
                 interaction=interaction,
+                thread=thread,
                 report_id=report_id,
                 title=title,
                 content=response_text,
-                status=status,
-                model=str(meta.get("model") or "n/a"),
                 actions=[],
             )
+            await self._send_admin_report(
+                interaction=interaction,
+                report_id=report_id,
+                title=title,
+                details=details,
+                category=category,
+                status=status,
+                model=str(meta.get("model") or "n/a"),
+                thread=thread,
+                codex_response=response_text,
+                codex_actions=[],
+                action_results=[],
+                codex_error=None,
+                local_err=None,
+            )
             return
-
-        # Automatische Admin-Aktionen (nur für Bot/Server-Themen)
-        actions = self._detect_actions(details)
-        if actions:
-            action_results = await self._run_actions(actions)
 
         # Nur lokaler Codex (kein Remote-Fallback)
         response_text, local_err = await self._run_local_codex(prompt)
@@ -548,6 +753,11 @@ class BugReporter(commands.Cog):
             meta["model"] = "local-codex"
         else:
             meta["error"] = f"local_codex_failed: {local_err or 'unknown'}"
+
+        if response_text:
+            response_text, codex_actions = self._extract_actions_from_response(response_text)
+            if codex_actions:
+                action_results = await self._run_actions(codex_actions)
 
         if not response_text:
             response_text = (
@@ -570,12 +780,26 @@ class BugReporter(commands.Cog):
 
         await self._send_result(
             interaction=interaction,
+            thread=thread,
             report_id=report_id,
             title=title,
             content=response_text,
+            actions=action_results,
+        )
+        await self._send_admin_report(
+            interaction=interaction,
+            report_id=report_id,
+            title=title,
+            details=details,
+            category=category,
             status=status,
             model=str(meta.get("model") or "n/a"),
-            actions=action_results,
+            thread=thread,
+            codex_response=response_text,
+            codex_actions=codex_actions,
+            action_results=action_results,
+            codex_error=str(meta.get("error") or "") if meta.get("error") else None,
+            local_err=local_err,
         )
 
     async def _run_local_codex(self, prompt: str) -> tuple[str | None, str | None]:
@@ -629,9 +853,9 @@ class BugReporter(commands.Cog):
             try:
                 argv = shlex.split(LOCAL_CODEX_CMD_OVERRIDE, posix=True)
             except Exception as exc:  # pragma: no cover - defensive
-                return None, f"CODEX_LOCAL_CMD parse error: {exc}"
+                return None, f"LOCAL_CODEX_CMD_OVERRIDE parse error: {exc}"
             if not argv:
-                return None, "CODEX_LOCAL_CMD leer"
+                return None, "LOCAL_CODEX_CMD_OVERRIDE leer"
         else:
             argv = list(DEFAULT_LOCAL_CODEX_ARGV)
             # Schreibt nur die finale Assistant-Nachricht in eine Datei (ohne Runtime-Logs).
@@ -709,42 +933,240 @@ class BugReporter(commands.Cog):
             return None, "empty_output"
         return (text, None)
 
-    async def _send_result(
+    def _split_message_chunks(self, text: str, *, limit: int = 1900) -> list[str]:
+        remaining = (text or "").strip()
+        if not remaining:
+            return ["(keine Ausgabe)"]
+
+        chunks: list[str] = []
+        while remaining:
+            if len(remaining) <= limit:
+                chunks.append(remaining)
+                break
+
+            cut = remaining.rfind("\n", 0, limit)
+            if cut < int(limit * 0.6):
+                cut = remaining.rfind(" ", 0, limit)
+            if cut < int(limit * 0.6):
+                cut = limit
+
+            chunks.append(remaining[:cut].rstrip())
+            remaining = remaining[cut:].lstrip()
+
+        return chunks
+
+    def _build_result_message(
         self,
         *,
         interaction: discord.Interaction,
         report_id: int,
         title: str,
         content: str,
+        actions: list[str],
+    ) -> str:
+        mention = getattr(interaction.user, "mention", f"<@{getattr(interaction.user, 'id', 0)}>")
+        header = f"{mention} Ticket #{report_id}: {title or 'Problem'}"
+        body = (content or "").strip()
+        if actions:
+            body = (
+                f"{body}\n\n"
+                "Automatische Bot-Aktionen:\n"
+                + "\n".join(f"- {line}" for line in actions if line)
+            ).strip()
+        return f"{header}\n\n{body}".strip()
+
+    def _build_admin_report_message(
+        self,
+        *,
+        interaction: discord.Interaction,
+        report_id: int,
+        title: str,
+        details: str,
+        category: str,
         status: str,
         model: str,
-        actions: list[str],
-    ) -> None:
-        trimmed = content[:4000]
-        embed = discord.Embed(
-            title=f"Ticket #{report_id}: {title or 'Problem'}",
-            description=trimmed,
-            colour=discord.Colour.green() if status == "answered" else discord.Colour.orange(),
+        thread: discord.Thread | None,
+        codex_response: str,
+        codex_actions: list[dict[str, str]],
+        action_results: list[str],
+        codex_error: str | None,
+        local_err: str | None,
+    ) -> str:
+        user = interaction.user
+        user_name = getattr(user, "display_name", getattr(user, "name", "unknown"))
+        user_id = getattr(user, "id", 0)
+        user_mention = getattr(user, "mention", f"<@{user_id}>")
+
+        guild = interaction.guild
+        guild_name = getattr(guild, "name", "DM/Unknown")
+        guild_id = getattr(guild, "id", None)
+
+        ticket_channel = interaction.channel
+        ticket_channel_id = getattr(ticket_channel, "id", None)
+        ticket_channel_mention = (
+            getattr(ticket_channel, "mention", f"<#{ticket_channel_id}>")
+            if ticket_channel_id
+            else "unbekannt"
         )
-        embed.set_footer(text=f"Codex • Modell: {model or 'n/a'} • Status: {status}")
-        if actions:
-            embed.add_field(
-                name="Automatische Aktionen",
-                value="\n".join(f"- {line}" for line in actions)[:1024] or "—",
-                inline=False,
+        ticket_jump = ""
+        if guild_id and ticket_channel_id and interaction.id:
+            ticket_jump = (
+                f"https://discord.com/channels/{int(guild_id)}/{int(ticket_channel_id)}/{int(interaction.id)}"
             )
 
+        thread_line = "kein Thread"
+        if thread is not None:
+            thread_line = f"{thread.mention} (id={thread.id})"
+
+        if codex_actions:
+            action_plan = "\n".join(
+                f"- {item.get('type', '?')}" + (
+                    f": {item.get('target')}" if item.get("target") else ""
+                )
+                for item in codex_actions
+            )
+        else:
+            action_plan = "- keine"
+
+        if action_results:
+            action_exec = "\n".join(f"- {line}" for line in action_results)
+        else:
+            action_exec = "- keine"
+
+        codex_error_line = codex_error or "—"
+        local_err_line = local_err or "—"
+
+        response_block = (codex_response or "(leer)").strip()
+        details_block = (details or "(leer)").strip()
+
+        return (
+            f"🧾 **Codex Admin-Report – Ticket #{report_id}**\n"
+            f"- Status: `{status}`\n"
+            f"- Modell: `{model or 'n/a'}`\n"
+            f"- Kategorie: `{category}`\n"
+            f"- Guild: `{guild_name}` ({guild_id})\n"
+            f"- User: {user_mention} `{user_name}` (`{user_id}`)\n"
+            f"- Ticket-Channel: {ticket_channel_mention} (`{ticket_channel_id}`)\n"
+            f"- Ticket-Thread: {thread_line}\n"
+            f"- Ticket-Link: {ticket_jump or '—'}\n"
+            f"- Codex-Error: `{codex_error_line}`\n"
+            f"- Local-Err: `{local_err_line}`\n\n"
+            f"**Titel**\n"
+            f"```text\n{title or 'Problem'}\n```\n"
+            f"**User-Beschreibung**\n"
+            f"```text\n{details_block}\n```\n"
+            f"**Geplante AUTO_ACTIONS**\n"
+            f"{action_plan}\n\n"
+            f"**Ausgeführte Aktionen**\n"
+            f"{action_exec}\n\n"
+            f"**Codex-Antwort (an User/Thread gesendet)**\n"
+            f"```text\n{response_block}\n```"
+        ).strip()
+
+    async def _send_admin_report(
+        self,
+        *,
+        interaction: discord.Interaction,
+        report_id: int,
+        title: str,
+        details: str,
+        category: str,
+        status: str,
+        model: str,
+        thread: discord.Thread | None,
+        codex_response: str,
+        codex_actions: list[dict[str, str]],
+        action_results: list[str],
+        codex_error: str | None,
+        local_err: str | None,
+    ) -> None:
+        if CODEX_ADMIN_REPORT_CHANNEL_ID <= 0:
+            return
+
+        channel = self.bot.get_channel(CODEX_ADMIN_REPORT_CHANNEL_ID)
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(CODEX_ADMIN_REPORT_CHANNEL_ID)
+            except Exception:
+                log.debug(
+                    "Admin-Report-Channel %s nicht erreichbar",
+                    CODEX_ADMIN_REPORT_CHANNEL_ID,
+                    exc_info=True,
+                )
+                return
+
+        message = self._build_admin_report_message(
+            interaction=interaction,
+            report_id=report_id,
+            title=title,
+            details=details,
+            category=category,
+            status=status,
+            model=model,
+            thread=thread,
+            codex_response=codex_response,
+            codex_actions=codex_actions,
+            action_results=action_results,
+            codex_error=codex_error,
+            local_err=local_err,
+        )
+
         try:
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            for chunk in self._split_message_chunks(message):
+                await channel.send(chunk)
+        except Exception:
+            log.exception(
+                "Admin-Report für Ticket #%s konnte nicht gesendet werden",
+                report_id,
+            )
+
+    async def _send_result(
+        self,
+        *,
+        interaction: discord.Interaction,
+        thread: discord.Thread | None,
+        report_id: int,
+        title: str,
+        content: str,
+        actions: list[str],
+    ) -> None:
+        message = self._build_result_message(
+            interaction=interaction,
+            report_id=report_id,
+            title=title,
+            content=content,
+            actions=actions,
+        )
+
+        if thread is not None:
+            try:
+                for chunk in self._split_message_chunks(message):
+                    await thread.send(chunk)
+                return
+            except Exception as exc:
+                log.warning(
+                    "Ticket-Antwort konnte nicht im Thread gesendet werden (id=%s): %s",
+                    report_id,
+                    exc,
+                )
+
+        try:
+            await interaction.followup.send(
+                "Ticket-Antwort konnte nicht in den Thread gepostet werden. "
+                "Ich sende sie dir vorläufig hier:\n\n"
+                + self._split_message_chunks(message)[0],
+                ephemeral=True,
+            )
             return
         except Exception as exc:
             log.debug("Followup für Ticket #%s fehlgeschlagen: %s", report_id, exc, exc_info=True)
 
-        # Fallback: DM an den User
         try:
             user = interaction.user
             if user:
-                await user.send(embed=embed)
+                for idx, chunk in enumerate(self._split_message_chunks(message)):
+                    prefix = "Ticket-Antwort:\n\n" if idx == 0 else ""
+                    await user.send(prefix + chunk)
         except Exception:
             log.exception("Ticket-Antwort konnte nicht zugestellt werden (id=%s)", report_id)
 
