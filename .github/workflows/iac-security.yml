@@ -157,7 +157,7 @@ jobs:
           sarif_file: trivy-config.sarif
           category: trivy-config
       - name: Upload IaC SAST Artifacts
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: always()
         with:
           name: iac-sast-reports
@@ -214,7 +214,7 @@ jobs:
           cat iac-analysis.md
 
       - name: Upload Analysis
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: always()
         with:
           name: iac-best-practices
@@ -251,7 +251,7 @@ jobs:
           cat config-security.md
 
       - name: Upload Config Security
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: always()
         with:
           name: config-security

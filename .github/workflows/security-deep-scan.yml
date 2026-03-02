@@ -154,7 +154,7 @@ jobs:
           echo "Running dodgy..."
           dodgy > dodgy-report.txt
       - name: Upload Python Security Reports
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: always()
         with:
           name: python-security-reports
@@ -271,7 +271,7 @@ jobs:
           npx --yes snyk@1.1302.1 auth "$SNYK_TOKEN"
           npx --yes snyk@1.1302.1 test --all-projects --severity-threshold=low --json-file-output=snyk-report.json
       - name: Upload JS Security Reports
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: always()
         with:
           name: javascript-security-reports
@@ -355,7 +355,7 @@ jobs:
           sarif_file: semgrep-custom.sarif
           category: semgrep-custom-auth
       - name: Upload Semgrep Artifact
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: always()
         with:
           name: semgrep-reports
@@ -394,7 +394,7 @@ jobs:
           sarif_file: 'trivy-fs.sarif'
           category: 'trivy-filesystem'
       - name: Upload Trivy Artifact
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: always()
         with:
           name: trivy-reports
@@ -505,7 +505,7 @@ jobs:
             echo "ℹ️ No npm lockfiles found for license scan"
           fi
       - name: Upload Dependency Reports
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: always()
         with:
           name: dependency-analysis
@@ -542,7 +542,7 @@ jobs:
           sarif_file: scorecard-results.sarif
           category: scorecard
       - name: Upload Scorecard Artifact
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: always()
         with:
           name: scorecard-report
