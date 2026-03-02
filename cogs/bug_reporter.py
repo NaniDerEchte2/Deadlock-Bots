@@ -5,7 +5,9 @@ import logging
 import os
 import re
 import shlex
+import tempfile
 from pathlib import Path
+from shutil import which
 from textwrap import dedent
 
 import discord
@@ -22,9 +24,20 @@ FALLBACK_MODEL = "gemini-2.0-flash"
 MAX_OUTPUT_TOKENS = 700
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CODEX_BIN = "codex.cmd" if os.name == "nt" else "codex"
+CODEX_EXECUTABLE = (
+    which(CODEX_BIN)
+    or (which("codex.cmd") if os.name == "nt" else None)
+    or which("codex")
+    or CODEX_BIN
+)
+CODEX_REASONING_EFFORT = (
+    os.getenv("CODEX_LOCAL_REASONING_EFFORT", "medium").strip() or "medium"
+)
 DEFAULT_LOCAL_CODEX_ARGV = [
-    CODEX_BIN,
+    CODEX_EXECUTABLE,
     "exec",
+    "-c",
+    f"model_reasoning_effort={CODEX_REASONING_EFFORT}",
     "--color",
     "never",
     "--skip-git-repo-check",
@@ -35,7 +48,8 @@ DEFAULT_LOCAL_CODEX_ARGV = [
 ]
 LOCAL_CODEX_CMD_OVERRIDE = os.getenv("CODEX_LOCAL_CMD", "").strip()
 REMOTE_FALLBACK_ENABLED = False  # Lokal only; kein Remote-Fallback
-CODEX_TIMEOUT_SEC = 300
+CODEX_RETRY_COUNT = 1
+CODEX_RETRY_DELAY_SEC = 1.5
 CODEX_ALLOWED_CATEGORIES = {
     "steam_verification",
     "beta_invite",
@@ -113,7 +127,7 @@ class BugReportModal(discord.ui.Modal):
         self.details_input = discord.ui.TextInput(
             label="Was genau ist das Problem? (bitte präzise)",
             style=discord.TextStyle.long,
-            placeholder="Konkrete Fehlerbeschreibung, Repro-Schritte, erwartetes Ergebnis, Fehlermeldung/ID, betroffene Befehle/Module.",
+            placeholder="Fehler kurz beschreiben: Repro, erwartetes Ergebnis, Meldung/ID, betroffene Befehle/Module.",
             required=True,
             max_length=1800,
         )
@@ -565,7 +579,52 @@ class BugReporter(commands.Cog):
         )
 
     async def _run_local_codex(self, prompt: str) -> tuple[str | None, str | None]:
-        """Startet den lokalen Codex-Prozess und gibt (stdout|None, error|None) zurück."""
+        """Startet den lokalen Codex-Prozess mit kurzem Retry und gibt (stdout|None, error|None) zurück."""
+        last_error: str | None = None
+        attempts = CODEX_RETRY_COUNT + 1
+
+        for attempt in range(1, attempts + 1):
+            text, err = await self._run_local_codex_once(prompt)
+            if text:
+                return text, None
+            last_error = err or "unknown"
+            if attempt < attempts:
+                log.warning(
+                    "Lokaler Codex-Versuch %s/%s fehlgeschlagen (%s), erneuter Versuch ...",
+                    attempt,
+                    attempts,
+                    last_error,
+                )
+                await asyncio.sleep(CODEX_RETRY_DELAY_SEC)
+
+        return None, last_error
+
+    def _build_powershell_pipeline(self, argv: list[str]) -> str:
+        quoted = " ".join("'" + part.replace("'", "''") + "'" for part in argv)
+        return f"$input | & {quoted}"
+
+    def _extract_codex_message(self, stdout_text: str) -> str:
+        if not stdout_text:
+            return ""
+        # Exec-Ausgabe kann Laufzeitlogs enthalten; bevorzugt den finalen "codex"-Block.
+        matches = re.findall(r"\ncodex\r?\n([\s\S]*?)(?:\ntokens used|\Z)", stdout_text)
+        if matches:
+            return matches[-1].strip()
+        return stdout_text.strip()
+
+    async def _run_local_codex_once(self, prompt: str) -> tuple[str | None, str | None]:
+        """Ein einzelner lokaler Codex-Aufruf ohne Retry."""
+        output_path: Path | None = None
+        use_output_file = False
+
+        def _cleanup_output_file() -> None:
+            if output_path is None:
+                return
+            try:
+                output_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
         if LOCAL_CODEX_CMD_OVERRIDE:
             try:
                 argv = shlex.split(LOCAL_CODEX_CMD_OVERRIDE, posix=True)
@@ -575,34 +634,77 @@ class BugReporter(commands.Cog):
                 return None, "CODEX_LOCAL_CMD leer"
         else:
             argv = list(DEFAULT_LOCAL_CODEX_ARGV)
+            # Schreibt nur die finale Assistant-Nachricht in eine Datei (ohne Runtime-Logs).
+            fh = tempfile.NamedTemporaryFile(
+                prefix="deadlock-codex-last-",
+                suffix=".txt",
+                delete=False,
+            )
+            fh.close()
+            output_path = Path(fh.name)
+            argv.extend(["--output-last-message", str(output_path)])
+            use_output_file = True
 
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
-                cwd=str(PROJECT_ROOT),
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+            if os.name == "nt" and not LOCAL_CODEX_CMD_OVERRIDE:
+                ps_cmd = self._build_powershell_pipeline(argv)
+                proc = await asyncio.create_subprocess_exec(
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    ps_cmd,
+                    cwd=str(PROJECT_ROOT),
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+            else:
+                proc = await asyncio.create_subprocess_exec(
+                    *argv,
+                    cwd=str(PROJECT_ROOT),
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
         except FileNotFoundError as exc:
+            _cleanup_output_file()
             return None, f"cmd not found: {exc}"
         except Exception as exc:  # pragma: no cover
+            _cleanup_output_file()
             return None, f"spawn failed: {exc}"
 
         try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(prompt.encode("utf-8")),
-                timeout=CODEX_TIMEOUT_SEC,
-            )
+            stdout, stderr = await proc.communicate(prompt.encode("utf-8"))
         except Exception as exc:  # pragma: no cover
             proc.kill()
-            return None, f"communicate failed: {exc}"
+            try:
+                await proc.communicate()
+            except Exception:
+                pass
+            detail = str(exc).strip() or exc.__class__.__name__
+            _cleanup_output_file()
+            return None, f"communicate failed: {detail}"
+
+        stdout_text = stdout.decode("utf-8", errors="ignore").strip()
+        stderr_text = stderr.decode("utf-8", errors="ignore").strip()
 
         if proc.returncode != 0:
-            err = stderr.decode("utf-8", errors="ignore").strip()
+            err = stderr_text or stdout_text
+            _cleanup_output_file()
             return None, err or f"exit {proc.returncode}"
 
-        text = stdout.decode("utf-8", errors="ignore").strip()
+        text = ""
+        if use_output_file and output_path is not None:
+            try:
+                text = output_path.read_text(encoding="utf-8").strip()
+            except Exception:
+                text = ""
+
+        if not text:
+            text = self._extract_codex_message(stdout_text)
+
+        _cleanup_output_file()
+
         if not text:
             return None, "empty_output"
         return (text, None)
