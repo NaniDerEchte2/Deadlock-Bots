@@ -267,37 +267,53 @@ class BugReporter(commands.Cog):
             )
             return
 
-        # Thread im Ticket-Channel erstellen
-        thread: discord.Thread | None = None
+        # Ticket als normalen Kanal in derselben Kategorie erstellen
+        ticket_channel: discord.TextChannel | None = None
         try:
             parent = self.bot.get_channel(TICKET_CHANNEL_ID) or await self.bot.fetch_channel(
                 TICKET_CHANNEL_ID
             )
             if isinstance(parent, (discord.TextChannel, discord.ForumChannel)):
-                name = f"ticket-{report_id}-{interaction.user.display_name[:12]}"
-                thread = await parent.create_thread(
-                    name=name,
-                    type=discord.ChannelType.private_thread
-                    if hasattr(discord.ChannelType, "private_thread")
-                    else discord.ChannelType.public_thread,
-                    invitable=False,
+                guild = parent.guild
+                channel_name = f"ticket-{report_id}"
+                ticket_channel = await guild.create_text_channel(
+                    name=channel_name,
+                    category=parent.category,
                     reason=f"Ticket #{report_id} von {interaction.user}",
                 )
+
                 try:
-                    await thread.add_user(interaction.user)
+                    await ticket_channel.set_permissions(
+                        interaction.user,
+                        view_channel=True,
+                        send_messages=True,
+                        read_message_history=True,
+                        attach_files=True,
+                        embed_links=True,
+                        add_reactions=True,
+                    )
                 except Exception:
-                    log.debug("Konnte User nicht zum Ticket-Thread hinzufügen", exc_info=True)
-                await thread.send(
+                    log.debug(
+                        "Konnte Ticket-Berechtigungen für User %s nicht setzen",
+                        interaction.user.id,
+                        exc_info=True,
+                    )
+
+                await ticket_channel.send(
                     f"<@{interaction.user.id}> Ticket eröffnet.\n"
                     f"**Titel:** {title or 'Problem'}\n"
                     f"**Kategorie (auto):** {category}"
                 )
         except Exception as exc:
-            log.warning("Ticket-Thread konnte nicht erstellt werden: %s", exc)
+            log.warning("Ticket-Kanal konnte nicht erstellt werden: %s", exc)
 
-        ack = (
-            f"Ticket #{report_id} aufgenommen. "
-            f"{'Codex arbeitet automatisch an einer Antwort.' if self._category_allows_codex(category) else 'Diese Kategorie wird manuell geprüft.'}"
+        ack = f"Ticket #{report_id} aufgenommen. "
+        if ticket_channel is not None:
+            ack += f"Kanal: {ticket_channel.mention}. "
+        ack += (
+            "Codex arbeitet automatisch an einer Antwort."
+            if self._category_allows_codex(category)
+            else "Diese Kategorie wird manuell geprüft."
         )
         await interaction.followup.send(ack, ephemeral=True)
 
@@ -308,7 +324,7 @@ class BugReporter(commands.Cog):
                 title=title or "Problem",
                 details=details,
                 category=category,
-                thread=thread,
+                ticket_channel=ticket_channel,
             )
         )
 
@@ -692,7 +708,7 @@ class BugReporter(commands.Cog):
         title: str,
         details: str,
         category: str,
-        thread: discord.Thread | None,
+        ticket_channel: discord.TextChannel | None,
     ) -> None:
         prompt = self._compose_prompt(
             title=title,
@@ -724,7 +740,7 @@ class BugReporter(commands.Cog):
             )
             await self._send_result(
                 interaction=interaction,
-                thread=thread,
+                ticket_channel=ticket_channel,
                 report_id=report_id,
                 title=title,
                 content=response_text,
@@ -738,7 +754,7 @@ class BugReporter(commands.Cog):
                 category=category,
                 status=status,
                 model=str(meta.get("model") or "n/a"),
-                thread=thread,
+                ticket_channel=ticket_channel,
                 codex_response=response_text,
                 codex_actions=[],
                 action_results=[],
@@ -780,7 +796,7 @@ class BugReporter(commands.Cog):
 
         await self._send_result(
             interaction=interaction,
-            thread=thread,
+            ticket_channel=ticket_channel,
             report_id=report_id,
             title=title,
             content=response_text,
@@ -794,7 +810,7 @@ class BugReporter(commands.Cog):
             category=category,
             status=status,
             model=str(meta.get("model") or "n/a"),
-            thread=thread,
+            ticket_channel=ticket_channel,
             codex_response=response_text,
             codex_actions=codex_actions,
             action_results=action_results,
@@ -985,7 +1001,7 @@ class BugReporter(commands.Cog):
         category: str,
         status: str,
         model: str,
-        thread: discord.Thread | None,
+        ticket_channel: discord.TextChannel | None,
         codex_response: str,
         codex_actions: list[dict[str, str]],
         action_results: list[str],
@@ -1001,22 +1017,27 @@ class BugReporter(commands.Cog):
         guild_name = getattr(guild, "name", "DM/Unknown")
         guild_id = getattr(guild, "id", None)
 
-        ticket_channel = interaction.channel
-        ticket_channel_id = getattr(ticket_channel, "id", None)
-        ticket_channel_mention = (
-            getattr(ticket_channel, "mention", f"<#{ticket_channel_id}>")
-            if ticket_channel_id
+        source_channel = interaction.channel
+        source_channel_id = getattr(source_channel, "id", None)
+        source_channel_mention = (
+            getattr(source_channel, "mention", f"<#{source_channel_id}>")
+            if source_channel_id
             else "unbekannt"
         )
-        ticket_jump = ""
-        if guild_id and ticket_channel_id and interaction.id:
-            ticket_jump = (
-                f"https://discord.com/channels/{int(guild_id)}/{int(ticket_channel_id)}/{int(interaction.id)}"
+        source_jump = ""
+        if guild_id and source_channel_id and interaction.id:
+            source_jump = (
+                f"https://discord.com/channels/{int(guild_id)}/{int(source_channel_id)}/{int(interaction.id)}"
             )
 
-        thread_line = "kein Thread"
-        if thread is not None:
-            thread_line = f"{thread.mention} (id={thread.id})"
+        ticket_channel_line = "nicht erstellt"
+        ticket_channel_jump = ""
+        if ticket_channel is not None:
+            ticket_channel_line = f"{ticket_channel.mention} (id={ticket_channel.id})"
+            if guild_id:
+                ticket_channel_jump = (
+                    f"https://discord.com/channels/{int(guild_id)}/{int(ticket_channel.id)}"
+                )
 
         if codex_actions:
             action_plan = "\n".join(
@@ -1046,9 +1067,10 @@ class BugReporter(commands.Cog):
             f"- Kategorie: `{category}`\n"
             f"- Guild: `{guild_name}` ({guild_id})\n"
             f"- User: {user_mention} `{user_name}` (`{user_id}`)\n"
-            f"- Ticket-Channel: {ticket_channel_mention} (`{ticket_channel_id}`)\n"
-            f"- Ticket-Thread: {thread_line}\n"
-            f"- Ticket-Link: {ticket_jump or '—'}\n"
+            f"- Auslöser-Channel: {source_channel_mention} (`{source_channel_id}`)\n"
+            f"- Auslöser-Link: {source_jump or '—'}\n"
+            f"- Ticket-Kanal: {ticket_channel_line}\n"
+            f"- Ticket-Kanal-Link: {ticket_channel_jump or '—'}\n"
             f"- Codex-Error: `{codex_error_line}`\n"
             f"- Local-Err: `{local_err_line}`\n\n"
             f"**Titel**\n"
@@ -1059,7 +1081,7 @@ class BugReporter(commands.Cog):
             f"{action_plan}\n\n"
             f"**Ausgeführte Aktionen**\n"
             f"{action_exec}\n\n"
-            f"**Codex-Antwort (an User/Thread gesendet)**\n"
+            f"**Codex-Antwort (an User/Ticket-Kanal gesendet)**\n"
             f"```text\n{response_block}\n```"
         ).strip()
 
@@ -1073,7 +1095,7 @@ class BugReporter(commands.Cog):
         category: str,
         status: str,
         model: str,
-        thread: discord.Thread | None,
+        ticket_channel: discord.TextChannel | None,
         codex_response: str,
         codex_actions: list[dict[str, str]],
         action_results: list[str],
@@ -1103,7 +1125,7 @@ class BugReporter(commands.Cog):
             category=category,
             status=status,
             model=model,
-            thread=thread,
+            ticket_channel=ticket_channel,
             codex_response=codex_response,
             codex_actions=codex_actions,
             action_results=action_results,
@@ -1124,7 +1146,7 @@ class BugReporter(commands.Cog):
         self,
         *,
         interaction: discord.Interaction,
-        thread: discord.Thread | None,
+        ticket_channel: discord.TextChannel | None,
         report_id: int,
         title: str,
         content: str,
@@ -1138,21 +1160,21 @@ class BugReporter(commands.Cog):
             actions=actions,
         )
 
-        if thread is not None:
+        if ticket_channel is not None:
             try:
                 for chunk in self._split_message_chunks(message):
-                    await thread.send(chunk)
+                    await ticket_channel.send(chunk)
                 return
             except Exception as exc:
                 log.warning(
-                    "Ticket-Antwort konnte nicht im Thread gesendet werden (id=%s): %s",
+                    "Ticket-Antwort konnte nicht im Kanal gesendet werden (id=%s): %s",
                     report_id,
                     exc,
                 )
 
         try:
             await interaction.followup.send(
-                "Ticket-Antwort konnte nicht in den Thread gepostet werden. "
+                "Ticket-Antwort konnte nicht in den Ticket-Kanal gepostet werden. "
                 "Ich sende sie dir vorläufig hier:\n\n"
                 + self._split_message_chunks(message)[0],
                 ephemeral=True,
