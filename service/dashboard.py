@@ -1128,6 +1128,155 @@ class DashboardServer:
             raise web.HTTPBadRequest(text=f"Cog '{raw}' not found")
         return normalized
 
+    def _twitch_reload_manager(self) -> Any | None:
+        try:
+            twitch_cog = self.bot.get_cog("TwitchStreamCog")
+        except Exception:
+            return None
+        if twitch_cog is None:
+            return None
+        manager = getattr(twitch_cog, "_reload_manager", None)
+        if manager is None:
+            return None
+        if not callable(getattr(manager, "get_all_names", None)):
+            return None
+        if not callable(getattr(manager, "get_subsystem", None)):
+            return None
+        if not callable(getattr(manager, "reload", None)):
+            return None
+        return manager
+
+    @staticmethod
+    def _twitch_subsystem_path(name: str) -> str:
+        return f"cogs.twitch.{name}"
+
+    def _twitch_hot_reload_subsystems(self) -> dict[str, dict[str, str]]:
+        manager = self._twitch_reload_manager()
+        if manager is None:
+            return {}
+        subsystems: dict[str, dict[str, str]] = {}
+        try:
+            names = list(manager.get_all_names())
+        except Exception:
+            return {}
+        for name in names:
+            try:
+                subsystem = manager.get_subsystem(name)
+            except Exception:
+                continue
+            if subsystem is None or not bool(getattr(subsystem, "hot_reloadable", False)):
+                continue
+            display_name = str(getattr(subsystem, "display_name", "") or name)
+            subsystems[name] = {"name": name, "display_name": display_name}
+        return subsystems
+
+    def _resolve_twitch_subsystem_target(self, raw: str) -> tuple[str, str] | None:
+        text = str(raw or "").strip()
+        if not text:
+            return None
+        try:
+            normalized = self.bot.normalize_namespace(text)
+        except ValueError:
+            normalized = text
+        if not normalized.startswith("cogs.twitch."):
+            return None
+        subsystem_name = normalized.removeprefix("cogs.twitch.")
+        if not subsystem_name or "." in subsystem_name:
+            return None
+        # If this ever becomes a real extension, let normal resolution handle it.
+        if normalized in self.bot.cogs_list or normalized in self.bot.extensions:
+            return None
+        subsystems = self._twitch_hot_reload_subsystems()
+        if subsystem_name not in subsystems:
+            return None
+        return normalized, subsystem_name
+
+    def _normalize_manage_targets(self, items: Iterable[str]) -> list[tuple[str, str | None]]:
+        normalized: list[tuple[str, str | None]] = []
+        for raw in items:
+            twitch_target = self._resolve_twitch_subsystem_target(str(raw))
+            if twitch_target is not None:
+                normalized.append((twitch_target[0], twitch_target[1]))
+                continue
+            resolved, matches = self.bot.resolve_cog_identifier(raw)
+            if resolved:
+                normalized.append((resolved, None))
+                continue
+            if matches:
+                raise web.HTTPBadRequest(
+                    text=f"Identifier '{raw}' is ambiguous: {', '.join(matches)}"
+                )
+            raise web.HTTPBadRequest(text=f"Cog '{raw}' not found")
+        return normalized
+
+    async def _reload_twitch_subsystem(self, subsystem_name: str) -> tuple[bool, str]:
+        manager = self._twitch_reload_manager()
+        if manager is None:
+            return False, "Twitch subsystem reload unavailable (TwitchStreamCog not loaded)"
+        try:
+            ok, message = await manager.reload(subsystem_name)
+            return bool(ok), str(message)
+        except Exception as exc:
+            logger.exception("Twitch subsystem reload failed for %s", subsystem_name)
+            return False, f"❌ Twitch subsystem reload failed: {exc}"
+
+    def _twitch_virtual_tree_modules(
+        self,
+        *,
+        active: set[str],
+        discovered: set[str],
+        status_map: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        manager = self._twitch_reload_manager()
+        if manager is None:
+            return []
+        subsystems = self._twitch_hot_reload_subsystems()
+        if not subsystems:
+            return []
+
+        try:
+            states = manager.get_all_states()
+        except Exception:
+            states = {}
+
+        twitch_loaded = "cogs.twitch" in active
+        modules: list[dict[str, Any]] = []
+        for subsystem_name in sorted(subsystems.keys()):
+            path = self._twitch_subsystem_path(subsystem_name)
+            if path in discovered or path in active or path in self.bot.extensions:
+                continue
+            blocked = self.bot.is_namespace_blocked(path, assume_normalized=True)
+            raw_status = status_map.get(path)
+            if raw_status:
+                status = raw_status
+            else:
+                state = states.get(subsystem_name) if isinstance(states, dict) else None
+                state_error = getattr(state, "error", None) if state is not None else None
+                if state_error:
+                    safe_error = self._safe_log_value(state_error)[:180]
+                    status = f"error: {safe_error}"
+                elif blocked:
+                    status = "blocked"
+                else:
+                    status = "loaded" if twitch_loaded else "unloaded"
+
+            modules.append(
+                {
+                    "type": "module",
+                    "name": subsystems[subsystem_name]["display_name"],
+                    "path": path,
+                    "blocked": blocked,
+                    "loaded": twitch_loaded and not blocked,
+                    "discovered": True,
+                    "manageable": True,
+                    "reload_only": True,
+                    "blockable": False,
+                    "status": status,
+                    "virtual": True,
+                }
+            )
+        return modules
+
     @staticmethod
     def _format_netloc(host: str, port: int | None, scheme: str) -> str:
         safe_host = host.strip() or "127.0.0.1"
@@ -5477,6 +5626,11 @@ class DashboardServer:
         active = set(bot.active_cogs())
         discovered = set(bot.cogs_list)
         status_map = bot.cog_status.copy()
+        twitch_virtual_modules = self._twitch_virtual_tree_modules(
+            active=active,
+            discovered=discovered,
+            status_map=status_map,
+        )
 
         def is_manageable(path: str) -> bool:
             if path == "cogs":
@@ -5557,6 +5711,19 @@ class DashboardServer:
                 if discovered_child:
                     discovered_count += 1
 
+            if module_path == "cogs.twitch" and twitch_virtual_modules:
+                existing_paths = {str(child.get("path", "")) for child in children}
+                for child in twitch_virtual_modules:
+                    child_path = str(child.get("path", ""))
+                    if not child_path or child_path in existing_paths:
+                        continue
+                    children.append(child)
+                    module_count += 1
+                    if child.get("loaded"):
+                        loaded_count += 1
+                    if child.get("discovered"):
+                        discovered_count += 1
+
             return {
                 "type": "directory",
                 "name": directory.name if parts else "cogs",
@@ -5598,8 +5765,8 @@ class DashboardServer:
         names = payload.get("names") or []
         if not isinstance(names, list) or not names:
             raise web.HTTPBadRequest(text="'names' must be a non-empty list")
-        normalized = self._normalize_names(names)
-        safe_names = self._safe_log_value(normalized)
+        targets = self._normalize_manage_targets(names)
+        safe_names = self._safe_log_value([name for name, _ in targets])
         safe_remote = self._safe_log_value(request.remote)
         logger.info(
             "AUDIT master-dashboard cog_reload: names=%s from %s",
@@ -5609,12 +5776,22 @@ class DashboardServer:
 
         results: dict[str, dict[str, Any]] = {}
         async with self._lock:
-            for name in normalized:
+            for name, subsystem_name in targets:
                 if self.bot.is_namespace_blocked(name, assume_normalized=True):
                     results[name] = {
                         "ok": False,
                         "message": f"🚫 {name} ist blockiert",
                     }
+                    continue
+                if subsystem_name:
+                    if "cogs.twitch" not in self.bot.extensions:
+                        results[name] = {
+                            "ok": False,
+                            "message": "cogs.twitch is not loaded",
+                        }
+                        continue
+                    ok, message = await self._reload_twitch_subsystem(subsystem_name)
+                    results[name] = {"ok": ok, "message": message}
                     continue
                 if name not in self.bot.extensions:
                     results[name] = {
@@ -5633,16 +5810,28 @@ class DashboardServer:
         if not isinstance(names, list) or not names:
             raise web.HTTPBadRequest(text="'names' must be a non-empty list")
         self.bot.auto_discover_cogs()
-        normalized = self._normalize_names(names)
+        targets = self._normalize_manage_targets(names)
 
         results: dict[str, dict[str, Any]] = {}
         async with self._lock:
-            for name in normalized:
+            for name, subsystem_name in targets:
                 if self.bot.is_namespace_blocked(name, assume_normalized=True):
                     results[name] = {
                         "ok": False,
                         "message": f"🚫 {name} ist blockiert",
                     }
+                    continue
+                if subsystem_name:
+                    if "cogs.twitch" not in self.bot.extensions:
+                        ok_twitch, msg_twitch = await self.bot.reload_cog("cogs.twitch")
+                        if not ok_twitch:
+                            results[name] = {
+                                "ok": False,
+                                "message": f"❌ Failed to load cogs.twitch: {msg_twitch}",
+                            }
+                            continue
+                    ok, message = await self._reload_twitch_subsystem(subsystem_name)
+                    results[name] = {"ok": ok, "message": message}
                     continue
                 ok, message = await self.bot.reload_cog(name)
                 results[name] = {"ok": ok, "message": message}
@@ -5654,8 +5843,8 @@ class DashboardServer:
         names = payload.get("names") or []
         if not isinstance(names, list) or not names:
             raise web.HTTPBadRequest(text="'names' must be a non-empty list")
-        normalized = self._normalize_names(names)
-        safe_names = self._safe_log_value(normalized)
+        targets = self._normalize_manage_targets(names)
+        safe_names = self._safe_log_value([name for name, _ in targets])
         safe_remote = self._safe_log_value(request.remote)
         logger.warning(
             "AUDIT master-dashboard cog_unload: names=%s from %s",
@@ -5665,20 +5854,33 @@ class DashboardServer:
 
         results: dict[str, dict[str, Any]] = {}
         async with self._lock:
-            unload_result = await self.bot.unload_many(normalized)
-            for name in normalized:
-                status = unload_result.get(name, "unknown")
-                if status == "unloaded":
-                    results[name] = {"ok": True, "message": f"✅ Unloaded {name}"}
-                elif status == "timeout":
+            normal_targets: list[str] = []
+            for name, subsystem_name in targets:
+                if subsystem_name:
                     results[name] = {
                         "ok": False,
-                        "message": f"⏱️ Timeout unloading {name}",
+                        "message": (
+                            "Twitch subsystem unload is not supported. "
+                            "Use Reload for the subsystem or unload cogs.twitch."
+                        ),
                     }
-                elif status.startswith("error"):
-                    results[name] = {"ok": False, "message": status}
-                else:
-                    results[name] = {"ok": False, "message": status}
+                    continue
+                normal_targets.append(name)
+            if normal_targets:
+                unload_result = await self.bot.unload_many(normal_targets)
+                for name in normal_targets:
+                    status = unload_result.get(name, "unknown")
+                    if status == "unloaded":
+                        results[name] = {"ok": True, "message": f"✅ Unloaded {name}"}
+                    elif status == "timeout":
+                        results[name] = {
+                            "ok": False,
+                            "message": f"⏱️ Timeout unloading {name}",
+                        }
+                    elif status.startswith("error"):
+                        results[name] = {"ok": False, "message": status}
+                    else:
+                        results[name] = {"ok": False, "message": status}
         return self._json({"results": results})
 
     async def _handle_reload_all(self, request: web.Request) -> web.Response:

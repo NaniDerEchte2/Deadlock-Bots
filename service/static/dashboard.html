@@ -5367,6 +5367,8 @@ async function fetchStandaloneLogs(key, limit = 200) {
         }
         const nodePath = getNodePath(node);
         const nodeType = node.type || (Array.isArray(node.children) ? 'directory' : 'module');
+        const reloadOnly = node && node.reload_only === true;
+        const blockable = !node || node.blockable !== false;
         if (shouldHideNode(node, nodeType)) {
             return null;
         }
@@ -5414,7 +5416,7 @@ async function fetchStandaloneLogs(key, limit = 200) {
                 });
                 actions.appendChild(reloadBtn);
 
-                if (!node.blocked) {
+                if (!node.blocked && !reloadOnly) {
                     const loadBtn = document.createElement('button');
                     loadBtn.textContent = 'Load';
                     loadBtn.className = 'load';
@@ -5443,25 +5445,27 @@ async function fetchStandaloneLogs(key, limit = 200) {
                 }
             }
 
-            const blockBtn = document.createElement('button');
-            if (node.blocked) {
-                blockBtn.textContent = 'Unblock';
-                blockBtn.className = 'unblock';
-                blockBtn.addEventListener('click', (ev) => {
-                    ev.preventDefault();
-                    ev.stopPropagation();
-                    unblockPath(node.path);
-                });
-            } else {
-                blockBtn.textContent = 'Block';
-                blockBtn.className = 'block';
-                blockBtn.addEventListener('click', (ev) => {
-                    ev.preventDefault();
-                    ev.stopPropagation();
-                    blockPath(node.path);
-                });
+            if (blockable) {
+                const blockBtn = document.createElement('button');
+                if (node.blocked) {
+                    blockBtn.textContent = 'Unblock';
+                    blockBtn.className = 'unblock';
+                    blockBtn.addEventListener('click', (ev) => {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        unblockPath(node.path);
+                    });
+                } else {
+                    blockBtn.textContent = 'Block';
+                    blockBtn.className = 'block';
+                    blockBtn.addEventListener('click', (ev) => {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        blockPath(node.path);
+                    });
+                }
+                actions.appendChild(blockBtn);
             }
-            actions.appendChild(blockBtn);
 
             summary.appendChild(label);
             summary.appendChild(actions);
@@ -5533,56 +5537,60 @@ async function fetchStandaloneLogs(key, limit = 200) {
             });
             actions.appendChild(reloadBtn);
 
-            const loadBtn = document.createElement('button');
-            loadBtn.textContent = 'Load';
-            loadBtn.className = 'load';
-            if (node.loaded) {
-                loadBtn.disabled = true;
-            }
-            loadBtn.addEventListener('click', (ev) => {
-                ev.preventDefault();
-                ev.stopPropagation();
-                loadCog(node.path);
-            });
-            actions.appendChild(loadBtn);
+            if (!reloadOnly) {
+                const loadBtn = document.createElement('button');
+                loadBtn.textContent = 'Load';
+                loadBtn.className = 'load';
+                if (node.loaded) {
+                    loadBtn.disabled = true;
+                }
+                loadBtn.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    loadCog(node.path);
+                });
+                actions.appendChild(loadBtn);
 
-            const unloadBtn = document.createElement('button');
-            unloadBtn.textContent = 'Unload';
-            unloadBtn.className = 'unload';
-            if (!node.loaded) {
-                unloadBtn.disabled = true;
+                const unloadBtn = document.createElement('button');
+                unloadBtn.textContent = 'Unload';
+                unloadBtn.className = 'unload';
+                if (!node.loaded) {
+                    unloadBtn.disabled = true;
+                }
+                unloadBtn.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    unloadCog(node.path);
+                });
+                actions.appendChild(unloadBtn);
             }
-            unloadBtn.addEventListener('click', (ev) => {
-                ev.preventDefault();
-                ev.stopPropagation();
-                unloadCog(node.path);
-            });
-            actions.appendChild(unloadBtn);
         } else if (!node.manageable) {
             const info = document.createElement('span');
             info.className = 'managed-info';
             info.textContent = 'Nur über Eltern-Cog verwaltbar';
             actions.appendChild(info);
         }
-        const blockBtn = document.createElement('button');
-        if (node.blocked) {
-            blockBtn.textContent = 'Unblock';
-            blockBtn.className = 'unblock';
-            blockBtn.addEventListener('click', (ev) => {
-                ev.preventDefault();
-                ev.stopPropagation();
-                unblockPath(node.path);
-            });
-        } else {
-            blockBtn.textContent = 'Block';
-            blockBtn.className = 'block';
-            blockBtn.addEventListener('click', (ev) => {
-                ev.preventDefault();
-                ev.stopPropagation();
-                blockPath(node.path);
-            });
+        if (blockable) {
+            const blockBtn = document.createElement('button');
+            if (node.blocked) {
+                blockBtn.textContent = 'Unblock';
+                blockBtn.className = 'unblock';
+                blockBtn.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    unblockPath(node.path);
+                });
+            } else {
+                blockBtn.textContent = 'Block';
+                blockBtn.className = 'block';
+                blockBtn.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    blockPath(node.path);
+                });
+            }
+            actions.appendChild(blockBtn);
         }
-        actions.appendChild(blockBtn);
         leaf.appendChild(actions);
         leaf.title = node.path;
         leaf.addEventListener('click', (ev) => {

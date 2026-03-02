@@ -15,11 +15,15 @@ from pkgutil import extend_path
 
 # Honour an explicit override first.
 _CUSTOM_DIR = os.getenv("STEAM_COGS_DIR")
-_DEFAULT_DIR = (
-    Path(os.path.expandvars(r"%USERPROFILE%")) / "Documents" / "Deadlock-Steam-Bot" / "cogs"
-)
+_DEFAULT_DIR = Path(os.path.expandvars(r"%USERPROFILE%")) / "Documents" / "Deadlock-Steam-Bot" / "cogs"
+_SIBLING_DIR = Path(__file__).resolve().parents[3] / "Deadlock-Steam-Bot" / "cogs"
 
-_EXTERNAL_COGS = Path(_CUSTOM_DIR).expanduser() if _CUSTOM_DIR else _DEFAULT_DIR
+if _CUSTOM_DIR:
+    _EXTERNAL_COGS = Path(_CUSTOM_DIR).expanduser()
+elif _DEFAULT_DIR.exists():
+    _EXTERNAL_COGS = _DEFAULT_DIR
+else:
+    _EXTERNAL_COGS = _SIBLING_DIR
 
 if _EXTERNAL_COGS.exists():
     # Make sure Python can find the external `cogs` package.

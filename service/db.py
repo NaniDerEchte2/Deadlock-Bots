@@ -672,6 +672,17 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
               created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
             );
 
+            -- Private Beta-Invite-Tickets pro User (Ticket-Channel-Reuse)
+            CREATE TABLE IF NOT EXISTS beta_invite_tickets(
+              discord_id INTEGER PRIMARY KEY,
+              guild_id INTEGER NOT NULL,
+              channel_id INTEGER NOT NULL,
+              status TEXT NOT NULL,
+              created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+              updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+              closed_at INTEGER
+            );
+
             -- Steuer-Tabelle für den Steam-Task-Consumer
             CREATE TABLE IF NOT EXISTS steam_tasks(
               id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -904,6 +915,9 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
             )
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_beta_invites_account ON steam_beta_invites(account_id)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_beta_invite_tickets_channel ON beta_invite_tickets(channel_id)"
             )
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_steam_tasks_status ON steam_tasks(status, id)"

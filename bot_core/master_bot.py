@@ -75,11 +75,16 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
         if steam_env:
             extra_dirs.append(Path(steam_env).expanduser())
 
-        default_external = (
-            Path(os.path.expandvars(r"%USERPROFILE%")) / "Documents" / "Deadlock-Steam-Bot" / "cogs"
-        )
-        if default_external.exists():
-            extra_dirs.append(default_external)
+        default_external_candidates = [
+            Path(os.path.expandvars(r"%USERPROFILE%"))
+            / "Documents"
+            / "Deadlock-Steam-Bot"
+            / "cogs",
+            self.root_dir.parent / "Deadlock-Steam-Bot" / "cogs",
+        ]
+        for default_external in default_external_candidates:
+            if default_external.exists():
+                extra_dirs.append(default_external)
 
         for raw in (os.getenv("EXTRA_COG_DIRS") or "").split(os.pathsep):
             item = raw.strip()
