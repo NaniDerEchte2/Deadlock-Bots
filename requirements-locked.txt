@@ -474,9 +474,9 @@ cryptography==46.0.5 \
     --hash=sha256:f145bba11b878005c496e93e257c1e88f154d278d2638e6450d17e0f31e558d2 \
     --hash=sha256:fe346b143ff9685e40192a4960938545c699054ba11d4f9029f94751e3f71d87
     # via -r requirements.txt
-discord-py==2.6.4 \
-    --hash=sha256:2783b7fb7f8affa26847bfc025144652c294e8fe6e0f8877c67ed895749eb227 \
-    --hash=sha256:44384920bae9b7a073df64ae9b14c8cf85f9274b5ad5d1d07bd5a67539de2da9
+discord-py==2.7.0 \
+    --hash=sha256:6abe8392d8127213b02ef714be41f843dd053775500bb2e7c596abb77e802b9b \
+    --hash=sha256:b40a36fd09232c958cef0640c7830f3cdc9b1d476e63355b91728576ac7dd1ba
     # via -r requirements.txt
 frozenlist==1.8.0 \
     --hash=sha256:0325024fe97f94c41c08872db482cf8ac4800d80e79222c6b0b7b162d5b13686 \
