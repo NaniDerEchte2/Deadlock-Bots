@@ -61,7 +61,7 @@ COPLAYER_IN_LANE_BONUS = 40.0       # Score-Bonus wenn Co-Player in Lane
 COPLAYER_IN_LANE_SESSIONS_THRESHOLD = 2
 ACTIVITY_UPCOMING_WINDOW_HOURS = 2
 ACTIVITY_UPCOMING_MIN_SCORE = 4
-LOG_CHANNEL_ID = OUTPUT_CHANNEL_ID  # Decision Logs
+LOG_CHANNEL_ID = 1374364800817303632  # Decision Logs (separater Admin-Channel)
 
 # Neue Spieler: Initiate (1) und Seeker (2) gelten als Anfänger
 NEW_PLAYER_MAX_RANK = 2
@@ -1449,11 +1449,24 @@ class SmartLFGAgent(commands.Cog):
                 inline=False,
             )
 
+        ping_mentions = list(dict.fromkeys(re.findall(r"<@!?\d+>", " ".join(ping_lines))))
+
         # Spieler die gerade in Deadlock sind aber NICHT auf Discord aktiv → Ping
         if ping_lines:
+            mention_text = " ".join(ping_mentions)
+            if mention_text:
+                invite_text = (
+                    f"Vielleicht haben {mention_text} auch noch Bock oder Lust, "
+                    "die sind auf jeden Fall auch gerade in dem Game."
+                )
+            else:
+                invite_text = (
+                    "Vielleicht haben die auch noch Bock oder Lust, "
+                    "die sind auf jeden Fall auch gerade in dem Game."
+                )
             embed.add_field(
-                name="📲 Gerade im Spiel — einladen?",
-                value="\n".join(ping_lines),
+                name="📲 Vielleicht haben die auch noch Bock oder Lust",
+                value=f"{invite_text}\n" + "\n".join(ping_lines),
                 inline=False,
             )
 
@@ -1476,17 +1489,10 @@ class SmartLFGAgent(commands.Cog):
 
         embed.set_footer(text=f"Rank-Toleranz: ±{RANK_TOLERANCE} Stufen · {message.channel.mention}")
 
-        # Cross-Channel Reference + Embed senden
-        # Nur die gepingten Spieler (in-game, nicht auf Discord) in den content
-        ping_content = " ".join(
-            part for line in ping_lines for part in line.split() if part.startswith("<@")
-        )
-        ref_text = f"{message.author.mention} sucht Mitspieler!"
-        if ping_content:
-            ref_text += f"\n{ping_content}"
-        await output_channel.send(content=ref_text, embed=embed)
+        # Nur Embed senden (kein extra Text über dem Embed)
+        await output_channel.send(embed=embed)
 
-        # 9. Decision Log Embed (gleicher Channel, für Admins)
+        # 9. Decision Log Embed (separater Log-Channel, für Admins)
         log_channel = guild.get_channel(LOG_CHANNEL_ID)
         if log_channel and isinstance(log_channel, discord.abc.Messageable):
             log_embed = discord.Embed(
