@@ -19,7 +19,90 @@ from bot_core import BotLifecycle, MasterBot, MasterControlCog  # noqa: E402
 
 __all__ = ["MasterBot", "MasterControlCog", "BotLifecycle"]
 
-_PID_FILE = Path(__file__).parent / "master_bot.pid"
+_PID_FILE_BASE = Path(__file__).parent / "master_bot.pid"
+_PID_LOCK_PATH: Path | None = None
+
+
+def _env_truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _effective_split_runtime_role() -> str:
+    role = (os.getenv("TWITCH_SPLIT_RUNTIME_ROLE") or "").strip().lower()
+    if role not in {"bot", "dashboard"}:
+        return ""
+    if not _env_truthy(os.getenv("TWITCH_SPLIT_RUNTIME_ENFORCE")):
+        return ""
+    return role
+
+
+def _pid_file_path() -> Path:
+    role = _effective_split_runtime_role()
+    if not role:
+        return _PID_FILE_BASE
+    return _PID_FILE_BASE.with_name(f"{_PID_FILE_BASE.stem}.{role}{_PID_FILE_BASE.suffix}")
+
+
+def _pid_exists(pid: int) -> bool:
+    if pid <= 0:
+        return False
+
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            SYNCHRONIZE = 0x00100000
+            WAIT_OBJECT_0 = 0x00000000
+            WAIT_TIMEOUT = 0x00000102
+            WAIT_FAILED = 0xFFFFFFFF
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            open_process = kernel32.OpenProcess
+            open_process.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+            open_process.restype = ctypes.c_void_p
+
+            wait_for_single_object = kernel32.WaitForSingleObject
+            wait_for_single_object.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+            wait_for_single_object.restype = ctypes.c_uint32
+
+            close_handle = kernel32.CloseHandle
+            close_handle.argtypes = [ctypes.c_void_p]
+            close_handle.restype = ctypes.c_int
+
+            access = PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE
+            handle = open_process(access, 0, pid)
+            if not handle:
+                err = ctypes.get_last_error()
+                if err in {87, 1168}:  # invalid parameter / element not found
+                    return False
+                if err == 5:  # access denied => process exists
+                    return True
+                return True  # fail closed: avoid starting a duplicate instance
+
+            try:
+                wait_result = wait_for_single_object(handle, 0)
+                if wait_result == WAIT_TIMEOUT:
+                    return True
+                if wait_result == WAIT_OBJECT_0:
+                    return False
+                if wait_result == WAIT_FAILED:
+                    return True
+                return True
+            finally:
+                close_handle(handle)
+        except Exception:
+            return True
+
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return True
+    return True
 
 
 def _acquire_pid_lock() -> None:
@@ -28,66 +111,46 @@ def _acquire_pid_lock() -> None:
     Prüft ob eine PID-Datei existiert und ob der darin gespeicherte Prozess
     noch aktiv ist. Bei Konflikt wird gewarnt und der aktuelle Start abgebrochen.
     """
-    if _PID_FILE.exists():
+    global _PID_LOCK_PATH
+    pid_file = _pid_file_path()
+    if pid_file.exists():
         try:
-            old_pid = int(_PID_FILE.read_text().strip())
+            old_pid = int(pid_file.read_text().strip())
         except (ValueError, OSError):
             old_pid = None
 
         if old_pid and old_pid != os.getpid():
-            try:
-                # Signal 0: prüft nur ob der Prozess existiert, tut sonst nichts
-                os.kill(old_pid, 0)
-            except ProcessLookupError:
-                # Alter Prozess ist weg → stale PID-File, einfach überschreiben
-                logging.warning(
-                    "Stale PID-File gefunden (PID %s nicht mehr aktiv) → wird überschrieben",
-                    old_pid,
-                )
-            except PermissionError:
-                # Unter Windows kann ein fremder Benutzer-/Service-Prozess bei kill(, 0)
-                # mit PermissionError antworten – das bedeutet nicht "stale".
-                logging.critical(
-                    "Master Bot-Instanz mit PID %s existiert vermutlich bereits "
-                    "(keine Berechtigung für Existenzprüfung). "
-                    "Zweite Instanz wird NICHT gestartet.",
-                    old_pid,
-                )
-                sys.exit(1)
-            except OSError as exc:
-                if getattr(exc, "winerror", None) == 5:
-                    logging.critical(
-                        "Master Bot-Instanz mit PID %s existiert vermutlich bereits "
-                        "(WinError 5 bei Existenzprüfung). "
-                        "Zweite Instanz wird NICHT gestartet.",
-                        old_pid,
-                    )
-                    sys.exit(1)
-                logging.warning(
-                    "PID-Check für %s war nicht eindeutig (%s) – PID-File wird überschrieben.",
-                    old_pid,
-                    exc,
-                )
-            else:
+            if _pid_exists(old_pid):
                 logging.critical(
                     "Master Bot läuft bereits als PID %s. "
                     "Zweite Instanz wird NICHT gestartet (verhindert Token-Race-Conditions). "
                     "Beende PID %s zuerst oder lösche %s manuell.",
                     old_pid,
                     old_pid,
-                    _PID_FILE,
+                    pid_file,
                 )
                 sys.exit(1)
+            logging.warning(
+                "Stale PID-File gefunden (PID %s nicht mehr aktiv) → wird überschrieben",
+                old_pid,
+            )
 
-    _PID_FILE.write_text(str(os.getpid()))
+    pid_file.write_text(str(os.getpid()))
+    _PID_LOCK_PATH = pid_file
 
 
 def _release_pid_lock() -> None:
+    global _PID_LOCK_PATH
+    pid_file = _PID_LOCK_PATH
+    if pid_file is None:
+        return
     try:
-        if _PID_FILE.exists() and int(_PID_FILE.read_text().strip()) == os.getpid():
-            _PID_FILE.unlink()
-    except Exception:
-        pass
+        if pid_file.exists() and int(pid_file.read_text().strip()) == os.getpid():
+            pid_file.unlink()
+    except Exception as exc:
+        logging.getLogger(__name__).debug("PID lock release failed: %r", exc)
+    finally:
+        _PID_LOCK_PATH = None
 
 
 def _load_fresh_token() -> str:
