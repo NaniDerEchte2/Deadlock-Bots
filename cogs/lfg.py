@@ -122,6 +122,11 @@ _SUBRANK_PATTERN = "|".join(
     re.escape(n) for n in list(RANK_NAME_TO_VALUE.keys()) + list(RANK_SHORT_NAMES.values())
 )
 SUBRANK_ROLE_RE = re.compile(rf"^({_SUBRANK_PATTERN})\s+([1-6])$", re.IGNORECASE)
+SHORT_LFG_COUNT_RE = re.compile(
+    r"^\s*(?:(?:suche|suchen|lfm|lfg)\s*\+?\s*[1-6]|\+\s*[1-6])\s*$",
+    re.IGNORECASE,
+)
+PLUS_PLAYER_RE = re.compile(r"\+\s*[1-6](?:\D|$)")
 
 
 @dataclass
@@ -474,6 +479,11 @@ class SmartLFGAgent(commands.Cog):
         if not text:
             return False
 
+        # --- Sehr kurze LFG-Formate ---
+        # "suchen +3", "suche+2", "lfm +1" oder nur "+3"
+        if SHORT_LFG_COUNT_RE.match(text):
+            return True
+
         # --- Direkte LFG/LFM Keywords ---
         if "lfg" in text or "lfm" in text:
             return True
@@ -506,6 +516,9 @@ class SmartLFGAgent(commands.Cog):
         # "suche leute", "suche spieler", "suche wen", "suche anschluss",
         # "suche noch", "suche nach", "suche jemanden", "suche mates"
         if "suche" in text or "suchen" in text or "gesucht" in text:
+            # Kurzform mit Slot-Angabe wie "suchen +3"
+            if PLUS_PLAYER_RE.search(text):
+                return True
             if any(w in text for w in (
                 "leute", "spieler", "mitspieler", "team", "gruppe", "party",
                 "wen", "anschluss", "jemand", "noch", "nach", "mates", "mate",
