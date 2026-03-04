@@ -25,6 +25,9 @@ _USER_TABLES: tuple[tuple[str, str], ...] = (
     ("message_activity", "user_id"),
     ("member_events", "user_id"),
     ("steam_links", "user_id"),
+    ("steam_cleanup_poll_state", "user_id"),
+    ("steam_friendship_miss_tracker", "user_id"),
+    ("steam_role_cleanup_pending", "user_id"),
     ("steam_beta_invites", "discord_id"),
     ("beta_invite_intent", "discord_id"),
     ("beta_invite_audit", "discord_id"),
@@ -58,6 +61,7 @@ _STEAM_SIDE_TABLES: tuple[tuple[str, str], ...] = (
     ("steam_rich_presence", "steam_id"),
     ("steam_presence_watchlist", "steam_id"),
     ("steam_friend_requests", "steam_id"),
+    ("steam_friendship_miss_tracker", "steam_id"),
     ("steam_beta_invites", "steam_id64"),
     ("beta_invite_audit", "steam_id64"),
 )
@@ -72,6 +76,12 @@ _DELETE_SQL_BY_TARGET: dict[tuple[str, str], str] = {
     ("message_activity", "user_id"): "DELETE FROM message_activity WHERE user_id=?",
     ("member_events", "user_id"): "DELETE FROM member_events WHERE user_id=?",
     ("steam_links", "user_id"): "DELETE FROM steam_links WHERE user_id=?",
+    ("steam_cleanup_poll_state", "user_id"): "DELETE FROM steam_cleanup_poll_state WHERE user_id=?",
+    (
+        "steam_friendship_miss_tracker",
+        "user_id",
+    ): "DELETE FROM steam_friendship_miss_tracker WHERE user_id=?",
+    ("steam_role_cleanup_pending", "user_id"): "DELETE FROM steam_role_cleanup_pending WHERE user_id=?",
     ("steam_beta_invites", "discord_id"): "DELETE FROM steam_beta_invites WHERE discord_id=?",
     ("beta_invite_intent", "discord_id"): "DELETE FROM beta_invite_intent WHERE discord_id=?",
     ("beta_invite_audit", "discord_id"): "DELETE FROM beta_invite_audit WHERE discord_id=?",
@@ -108,6 +118,10 @@ _DELETE_SQL_BY_TARGET: dict[tuple[str, str], str] = {
         "steam_id",
     ): "DELETE FROM steam_presence_watchlist WHERE steam_id=?",
     ("steam_friend_requests", "steam_id"): "DELETE FROM steam_friend_requests WHERE steam_id=?",
+    (
+        "steam_friendship_miss_tracker",
+        "steam_id",
+    ): "DELETE FROM steam_friendship_miss_tracker WHERE steam_id=?",
     ("steam_beta_invites", "steam_id64"): "DELETE FROM steam_beta_invites WHERE steam_id64=?",
     ("beta_invite_audit", "steam_id64"): "DELETE FROM beta_invite_audit WHERE steam_id64=?",
 }
@@ -125,6 +139,18 @@ _SELECT_SQL_BY_TARGET: dict[tuple[str, str], str] = {
     ("message_activity", "user_id"): "SELECT * FROM message_activity WHERE user_id=?",
     ("member_events", "user_id"): "SELECT * FROM member_events WHERE user_id=?",
     ("steam_links", "user_id"): "SELECT * FROM steam_links WHERE user_id=?",
+    (
+        "steam_cleanup_poll_state",
+        "user_id",
+    ): "SELECT * FROM steam_cleanup_poll_state WHERE user_id=?",
+    (
+        "steam_friendship_miss_tracker",
+        "user_id",
+    ): "SELECT * FROM steam_friendship_miss_tracker WHERE user_id=?",
+    (
+        "steam_role_cleanup_pending",
+        "user_id",
+    ): "SELECT * FROM steam_role_cleanup_pending WHERE user_id=?",
     ("steam_beta_invites", "discord_id"): "SELECT * FROM steam_beta_invites WHERE discord_id=?",
     ("beta_invite_intent", "discord_id"): "SELECT * FROM beta_invite_intent WHERE discord_id=?",
     ("beta_invite_audit", "discord_id"): "SELECT * FROM beta_invite_audit WHERE discord_id=?",
@@ -167,6 +193,10 @@ _SELECT_SQL_BY_TARGET: dict[tuple[str, str], str] = {
         "steam_id",
     ): "SELECT * FROM steam_presence_watchlist WHERE steam_id=?",
     ("steam_friend_requests", "steam_id"): "SELECT * FROM steam_friend_requests WHERE steam_id=?",
+    (
+        "steam_friendship_miss_tracker",
+        "steam_id",
+    ): "SELECT * FROM steam_friendship_miss_tracker WHERE steam_id=?",
     ("steam_beta_invites", "steam_id64"): "SELECT * FROM steam_beta_invites WHERE steam_id64=?",
     ("beta_invite_audit", "steam_id64"): "SELECT * FROM beta_invite_audit WHERE steam_id64=?",
 }

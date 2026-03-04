@@ -434,6 +434,64 @@ class SteamVerifiedRole(commands.Cog):
                 )
                 return False
 
+    async def remove_verified_role_for_user(
+        self,
+        user_id: int,
+        *,
+        reason: str = "Steam unfollow cleanup",
+        guild: discord.Guild | None = None,
+        role: discord.Role | None = None,
+    ) -> bool:
+        """
+        Entfernt die Verified-Rolle gezielt für einen User.
+        Gibt True zurück, wenn die Rolle entfernt wurde oder nichts zu tun war.
+        """
+        guild_local, role_local = guild, role
+        if not guild_local or not role_local:
+            guild_local, role_local = await self._resolve_guild_and_role()
+        if not guild_local or not role_local:
+            return False
+
+        member = guild_local.get_member(int(user_id))
+        if member is None:
+            if not self._can_attempt_member_fetch(int(user_id)):
+                return False
+            try:
+                member = await self._fetch_member_rate_limited(guild_local, int(user_id))
+            except discord.NotFound:
+                self._mark_member_missing(int(user_id))
+                return True
+            except TimeoutError:
+                self._mark_member_transient_error(int(user_id))
+                return False
+            except discord.HTTPException as exc:
+                self._mark_member_transient_error(int(user_id))
+                log.warning("HTTP-Fehler beim Member-Lookup für remove_verified_role (%s): %s", user_id, exc)
+                return False
+
+        if role_local not in member.roles:
+            self._clear_member_retry_state(int(user_id))
+            return True
+
+        try:
+            await member.remove_roles(role_local, reason=reason)
+            self._clear_member_retry_state(int(user_id))
+            return True
+        except discord.Forbidden:
+            log.error(
+                "Forbidden: Konnte Verified-Rolle nicht entfernen bei %s (%s)",
+                member.id,
+                member.display_name,
+            )
+            return False
+        except TimeoutError:
+            self._mark_member_transient_error(int(user_id))
+            return False
+        except discord.HTTPException as exc:
+            self._mark_member_transient_error(int(user_id))
+            log.warning("HTTP-Fehler beim Entfernen der Verified-Rolle für %s: %s", user_id, exc)
+            return False
+
     async def assign_verified_role_with_retries(
         self,
         user_id: int,

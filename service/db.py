@@ -615,6 +615,37 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
               error TEXT
             );
 
+            -- Polling-Status für Leave/Ban-Reconcile (restart-sicher, pro User gedrosselt)
+            CREATE TABLE IF NOT EXISTS steam_cleanup_poll_state(
+              user_id INTEGER PRIMARY KEY,
+              last_polled_at INTEGER NOT NULL,
+              last_result TEXT NOT NULL,
+              last_error TEXT,
+              updated_at INTEGER NOT NULL
+            );
+
+            -- Miss-Tracking für Unfollow-Reconcile (2x-Bestätigung, restart-sicher)
+            CREATE TABLE IF NOT EXISTS steam_friendship_miss_tracker(
+              steam_id TEXT PRIMARY KEY,
+              user_id INTEGER NOT NULL,
+              miss_count INTEGER NOT NULL DEFAULT 0,
+              last_polled_at INTEGER NOT NULL,
+              last_seen_friend_at INTEGER,
+              last_miss_at INTEGER,
+              last_action_at INTEGER,
+              updated_at INTEGER NOT NULL
+            );
+
+            -- Persistente Queue für nachgelagerten Rollen-Entzug bei bestätigtem Unfollow
+            CREATE TABLE IF NOT EXISTS steam_role_cleanup_pending(
+              user_id INTEGER PRIMARY KEY,
+              reason TEXT NOT NULL,
+              attempts INTEGER NOT NULL DEFAULT 0,
+              last_error TEXT,
+              created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+              updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+            );
+
             -- Vorgehaltene Steam-Quick-Invite-Links (werden vom Node-Service erzeugt)
             CREATE TABLE IF NOT EXISTS steam_quick_invites(
               token TEXT PRIMARY KEY,
@@ -1037,6 +1068,18 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
             )
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_steam_links_archive_steam ON steam_links_archive(steam_id)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_steam_cleanup_poll_state_polled ON steam_cleanup_poll_state(last_polled_at, updated_at)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_steam_friendship_miss_tracker_user ON steam_friendship_miss_tracker(user_id, last_polled_at)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_steam_friendship_miss_tracker_polled ON steam_friendship_miss_tracker(last_polled_at, miss_count)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_steam_role_cleanup_pending_updated ON steam_role_cleanup_pending(updated_at)"
             )
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_voice_log_started_user ON voice_session_log(started_at, user_id)"
