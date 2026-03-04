@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import datetime as _dt
+import hashlib
+import json
 import logging
 import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import discord
 import pytz
@@ -155,6 +158,324 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
         except ValueError:
             self.per_cog_unload_timeout = 3.0
 
+        # Central app-command sync guard (prevents concurrent sync storms).
+        self._command_sync_lock = asyncio.Lock()
+
+    @staticmethod
+    def _env_bool(name: str, default: bool = False) -> bool:
+        raw = os.getenv(name)
+        if raw is None:
+            return default
+        return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    @staticmethod
+    def _parse_id_list(raw: str) -> list[int]:
+        ids: list[int] = []
+        for token in raw.replace(",", " ").split():
+            value = token.strip()
+            if not value.isdigit():
+                continue
+            num = int(value)
+            if num > 0 and num not in ids:
+                ids.append(num)
+        return ids
+
+    def _command_sync_mode(self) -> str:
+        raw = (os.getenv("COMMAND_SYNC_MODE") or "hybrid").strip().lower()
+        if raw in {"disabled", "off", "none", "0", "false"}:
+            return "disabled"
+        if raw in {"always", "force", "legacy"}:
+            return "always"
+        return "hybrid"
+
+    def _command_sync_state_path(self) -> Path:
+        override = (os.getenv("COMMAND_SYNC_STATE_FILE") or "").strip()
+        if override:
+            return Path(override).expanduser()
+        return self.root_dir / "logs" / "command_sync_state.json"
+
+    def _read_command_sync_state(self) -> dict[str, Any]:
+        path = self._command_sync_state_path()
+        try:
+            if not path.exists():
+                return {}
+            raw = path.read_text(encoding="utf-8")
+            data = json.loads(raw)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            logging.debug("Command sync state unreadable at %s", path, exc_info=True)
+            return {}
+
+    def _write_command_sync_state(self, state: dict[str, Any]) -> None:
+        path = self._command_sync_state_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(state, ensure_ascii=True, sort_keys=True, indent=2), encoding="utf-8")
+        except Exception:
+            logging.warning("Failed to persist command sync state at %s", path, exc_info=True)
+
+    @staticmethod
+    def _normalize_command_sync_scope(scope: str) -> str:
+        value = scope.strip().lower()
+        if value in {"all", "both"}:
+            return "both"
+        if value in {"global", "globals"}:
+            return "global"
+        if value in {"guild", "guilds"}:
+            return "guild"
+        return "both"
+
+    def _command_sync_guild_ids(self) -> list[int]:
+        ids = self._parse_id_list(os.getenv("COMMAND_SYNC_GUILD_IDS", ""))
+        if ids:
+            return ids
+
+        main_guild = (os.getenv("MAIN_GUILD_ID") or "").strip()
+        if main_guild.isdigit():
+            return [int(main_guild)]
+
+        guild_id = int(getattr(settings, "guild_id", 0) or 0)
+        return [guild_id] if guild_id > 0 else []
+
+    @staticmethod
+    def _command_sync_timeout_seconds() -> float | None:
+        """
+        Timeout for individual Discord app-command sync calls.
+
+        Prevents long startup stalls (and perceived offline bot) when Discord
+        responds with long retry windows for sync endpoints.
+        """
+        raw = (os.getenv("COMMAND_SYNC_TIMEOUT_SECONDS") or "").strip()
+        if not raw:
+            return 20.0
+        try:
+            parsed = float(raw)
+        except ValueError:
+            logging.warning(
+                "Invalid COMMAND_SYNC_TIMEOUT_SECONDS=%r, using default 20s",
+                raw,
+            )
+            return 20.0
+        if parsed <= 0:
+            return None
+        return parsed
+
+    def _command_sync_hash(self, guild_ids: list[int]) -> str:
+        global_payload = [cmd.to_dict(self.tree) for cmd in self.tree.get_commands()]
+        global_payload.sort(
+            key=lambda c: (
+                str(c.get("name", "")),
+                str(c.get("type", "")),
+                str(c.get("description", "")),
+            )
+        )
+
+        guild_payload: dict[str, list[dict[str, Any]]] = {}
+        for guild_id in guild_ids:
+            obj = discord.Object(id=guild_id)
+            payload = [cmd.to_dict(self.tree) for cmd in self.tree.get_commands(guild=obj)]
+            payload.sort(
+                key=lambda c: (
+                    str(c.get("name", "")),
+                    str(c.get("type", "")),
+                    str(c.get("description", "")),
+                )
+            )
+            guild_payload[str(guild_id)] = payload
+
+        doc = {"global": global_payload, "guilds": guild_payload}
+        raw = json.dumps(doc, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    async def sync_app_commands(
+        self,
+        *,
+        reason: str,
+        scope: str = "both",
+        force: bool = False,
+    ) -> dict[str, Any]:
+        normalized_scope = self._normalize_command_sync_scope(scope)
+        include_global = normalized_scope in {"both", "global"}
+        include_guilds = normalized_scope in {"both", "guild"}
+        sync_timeout = self._command_sync_timeout_seconds()
+        copy_global_to_guild = self._env_bool("COMMAND_SYNC_COPY_GLOBAL_TO_GUILD", True)
+
+        async with self._command_sync_lock:
+            mode = self._command_sync_mode()
+            guild_ids = self._command_sync_guild_ids()
+
+            try:
+                current_hash = self._command_sync_hash(guild_ids)
+            except Exception:
+                logging.warning("Failed to build app-command hash; falling back to forced sync.", exc_info=True)
+                current_hash = ""
+                force = True
+            state = self._read_command_sync_state()
+            previous_hash = str(state.get("hash") or "")
+            previous_scope = self._normalize_command_sync_scope(str(state.get("scope") or "both"))
+
+            if mode == "disabled" and not force:
+                logging.info("App-command sync disabled (reason=%s, scope=%s)", reason, normalized_scope)
+                return {
+                    "status": "skipped",
+                    "scope": normalized_scope,
+                    "mode": mode,
+                    "force": force,
+                    "skip_reason": "disabled",
+                    "hash": current_hash,
+                    "previous_hash": previous_hash,
+                    "global_count": 0,
+                    "guild_counts": {},
+                    "errors": {},
+                }
+
+            if (
+                mode == "hybrid"
+                and not force
+                and previous_hash
+                and previous_hash == current_hash
+                and previous_scope == normalized_scope
+            ):
+                logging.info(
+                    "App-command sync skipped (unchanged hash=%s, reason=%s, scope=%s)",
+                    current_hash[:12],
+                    reason,
+                    normalized_scope,
+                )
+                return {
+                    "status": "skipped",
+                    "scope": normalized_scope,
+                    "mode": mode,
+                    "force": force,
+                    "skip_reason": "unchanged",
+                    "hash": current_hash,
+                    "previous_hash": previous_hash,
+                    "global_count": 0,
+                    "guild_counts": {},
+                    "errors": {},
+                }
+
+            started = time.perf_counter()
+            guild_counts: dict[str, int] = {}
+            errors: dict[str, str] = {}
+            global_count = 0
+
+            if include_guilds:
+                if guild_ids:
+                    for guild_id in guild_ids:
+                        guild_obj = discord.Object(id=guild_id)
+                        try:
+                            if copy_global_to_guild:
+                                try:
+                                    self.tree.copy_global_to(guild=guild_obj)
+                                except Exception:
+                                    logging.warning(
+                                        "copy_global_to failed for guild %s; syncing guild-local commands only",
+                                        guild_id,
+                                        exc_info=True,
+                                    )
+                            if sync_timeout is None:
+                                synced = await self.tree.sync(guild=guild_obj)
+                            else:
+                                synced = await asyncio.wait_for(
+                                    self.tree.sync(guild=guild_obj),
+                                    timeout=sync_timeout,
+                                )
+                            guild_counts[str(guild_id)] = len(synced)
+                        except TimeoutError:
+                            timeout_msg = (
+                                f"timeout after {sync_timeout:.1f}s"
+                                if sync_timeout is not None
+                                else "timeout"
+                            )
+                            errors[f"guild:{guild_id}"] = timeout_msg
+                            logging.warning(
+                                "Guild app-command sync timed out for %s (reason=%s, timeout=%s)",
+                                guild_id,
+                                reason,
+                                timeout_msg,
+                            )
+                        except Exception as exc:
+                            errors[f"guild:{guild_id}"] = str(exc)
+                            logging.warning(
+                                "Guild app-command sync failed for %s (reason=%s): %s",
+                                guild_id,
+                                reason,
+                                exc,
+                            )
+                else:
+                    logging.info("No guild IDs configured for app-command guild sync.")
+
+            if include_global:
+                try:
+                    if sync_timeout is None:
+                        synced_global = await self.tree.sync()
+                    else:
+                        synced_global = await asyncio.wait_for(
+                            self.tree.sync(),
+                            timeout=sync_timeout,
+                        )
+                    global_count = len(synced_global)
+                except TimeoutError:
+                    timeout_msg = (
+                        f"timeout after {sync_timeout:.1f}s"
+                        if sync_timeout is not None
+                        else "timeout"
+                    )
+                    errors["global"] = timeout_msg
+                    logging.error(
+                        "Global app-command sync timed out (reason=%s, timeout=%s)",
+                        reason,
+                        timeout_msg,
+                    )
+                except Exception as exc:
+                    errors["global"] = str(exc)
+                    logging.error("Global app-command sync failed (reason=%s): %s", reason, exc)
+
+            success_count = (1 if include_global and "global" not in errors else 0) + len(guild_counts)
+            if errors and success_count > 0:
+                status = "partial"
+            elif errors:
+                status = "error"
+            else:
+                status = "synced"
+
+            elapsed = time.perf_counter() - started
+            if status == "synced":
+                self._write_command_sync_state(
+                    {
+                        "hash": current_hash,
+                        "updated_at": _dt.datetime.now(tz=_dt.timezone.utc).isoformat(),
+                        "reason": reason,
+                        "scope": normalized_scope,
+                        "mode": mode,
+                    }
+                )
+
+            logging.info(
+                "App-command sync %s (reason=%s, scope=%s, global=%d, guilds=%d, errors=%d, took=%.2fs)",
+                status,
+                reason,
+                normalized_scope,
+                global_count,
+                len(guild_counts),
+                len(errors),
+                elapsed,
+            )
+            return {
+                "status": status,
+                "scope": normalized_scope,
+                "mode": mode,
+                "force": force,
+                "hash": current_hash,
+                "previous_hash": previous_hash,
+                "global_count": global_count,
+                "guild_counts": guild_counts,
+                "errors": errors,
+                "sync_timeout_seconds": sync_timeout,
+                "elapsed_seconds": elapsed,
+            }
+
     async def request_restart(self, reason: str = "unknown") -> bool:
         """
         Delegate a full-process restart to the lifecycle supervisor if available.
@@ -193,17 +514,21 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
         load_span.finish(detail=f"loaded={loaded_now}")
         logging.info("Cogs geladen in %.2fs", time.perf_counter() - self._boot_started_at)
 
-        try:
+        if self._env_bool("COMMAND_SYNC_ON_START", True):
             sync_span = measure("slash.sync")
-            synced = await self.tree.sync()
-            sync_span.finish(detail=f"commands={len(synced)}")
-            logging.info(
-                "Synced %d slash commands in %.2fs",
-                len(synced),
-                time.perf_counter() - self._boot_started_at,
+            scope = self._normalize_command_sync_scope(
+                os.getenv("COMMAND_SYNC_START_SCOPE", "guild")
             )
-        except Exception as e:
-            logging.error(f"Failed to sync slash commands: {e}")
+            result = await self.sync_app_commands(reason="setup_hook", scope=scope, force=False)
+            sync_span.finish(
+                detail=(
+                    f"status={result.get('status')} "
+                    f"global={result.get('global_count', 0)} "
+                    f"guilds={len(result.get('guild_counts', {}))}"
+                )
+            )
+        else:
+            logging.info("Startup app-command sync disabled via COMMAND_SYNC_ON_START.")
 
         logging.info("Master Bot setup completed")
         log_event("bot.setup_hook", time.perf_counter() - self._boot_started_at, "completed")

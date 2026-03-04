@@ -8,29 +8,52 @@ Deadlock-Twitch-Bot project.
 
 from __future__ import annotations
 
-import os
+import importlib
 import sys
 from pathlib import Path
 
-# Prefer an explicit override via env, otherwise fall back to the sibling repo.
-_DEFAULT_PATH = Path(os.path.expandvars(r"%USERPROFILE%")) / "Documents" / "Deadlock-Twitch-Bot"
-_CUSTOM_PATH = os.getenv("TWITCH_COG_PATH")
-
-_BASE_PATH = Path(_CUSTOM_PATH).expanduser() if _CUSTOM_PATH else _DEFAULT_PATH
+# Use the sibling split repository path directly.
+_BASE_PATH = Path(__file__).resolve().parents[3] / "Deadlock-Twitch-Bot"
+_EXPECTED_MODULE_PATHS = {
+    (_BASE_PATH / "twitch_cog.py").resolve(),
+    (_BASE_PATH / "twitch_cog" / "__init__.py").resolve(),
+}
 
 # Ensure the external repo is importable before we pull in twitch_cog -> bot.*
 if _BASE_PATH.exists():
     if str(_BASE_PATH) not in sys.path:
         sys.path.insert(0, str(_BASE_PATH))
 
+def _import_twitch_cog():
+    """Import the split twitch_cog module and guard against namespace collisions."""
+    importlib.invalidate_caches()
+    cached = sys.modules.get("twitch_cog")
+    if cached is not None:
+        cached_file = getattr(cached, "__file__", None)
+        if not callable(getattr(cached, "setup", None)) or not cached_file:
+            sys.modules.pop("twitch_cog", None)
+        else:
+            try:
+                if Path(cached_file).resolve() not in _EXPECTED_MODULE_PATHS:
+                    sys.modules.pop("twitch_cog", None)
+            except Exception:
+                sys.modules.pop("twitch_cog", None)
+    module = importlib.import_module("twitch_cog")
+    if not callable(getattr(module, "setup", None)):
+        module_file = getattr(module, "__file__", "<namespace>")
+        raise AttributeError(
+            "Imported twitch_cog has no callable setup(). "
+            f"Loaded from: {module_file}; expected under: {_BASE_PATH}"
+        )
+    return module
+
 try:
-    import twitch_cog
-except ModuleNotFoundError as exc:  # pragma: no cover - runtime guard
+    if not _BASE_PATH.exists():
+        raise ModuleNotFoundError(f"Expected split Twitch repo at {_BASE_PATH}")
+    twitch_cog = _import_twitch_cog()
+except (ModuleNotFoundError, AttributeError) as exc:  # pragma: no cover - runtime guard
     # Surface a clearer error when the external repo is missing.
-    raise ModuleNotFoundError(
-        f"twitch_cog not found. Expected at {_BASE_PATH}. "
-        "Set TWITCH_COG_PATH to the Deadlock-Twitch-Bot checkout."
-    ) from exc
+    raise ModuleNotFoundError(f"twitch_cog could not be loaded from {_BASE_PATH}") from exc
 
 
 async def setup(bot):

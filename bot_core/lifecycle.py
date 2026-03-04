@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
+import os
 import time
 from collections.abc import Callable
 
@@ -27,6 +28,28 @@ class BotLifecycle:
         self._restart_requested_at: float | None = None
         self._last_restart_at: float | None = None
         self._restart_reason: str | None = None
+        self._crash_backoff_seconds = 1.0
+        try:
+            max_backoff = float(os.getenv("LIFECYCLE_MAX_BACKOFF_SECONDS", "60"))
+        except ValueError:
+            max_backoff = 60.0
+        self._max_crash_backoff_seconds = max(1.0, max_backoff)
+        try:
+            max_login_failures = int(os.getenv("LIFECYCLE_MAX_LOGIN_FAILURES", "10"))
+        except ValueError:
+            max_login_failures = 10
+        self._max_consecutive_login_failures = max(1, max_login_failures)
+        self._consecutive_login_failures = 0
+
+    @staticmethod
+    def _is_login_failure(exc: Exception) -> bool:
+        name = exc.__class__.__name__.lower()
+        msg = str(exc).lower()
+        return (
+            "loginfailure" in name
+            or "improper token has been passed" in msg
+            or "401 unauthorized" in msg
+        )
 
     def _resolve_token(self) -> str:
         if self._token_loader is not None:
@@ -134,6 +157,7 @@ class BotLifecycle:
 
             bot, control_cog_cls = self._build_bot()
             self._current_bot = bot
+            crash_exc: Exception | None = None
 
             try:
                 await bot.add_cog(control_cog_cls(bot))  # type: ignore[arg-type]
@@ -143,6 +167,7 @@ class BotLifecycle:
                 await self.request_stop("keyboard")
             except Exception as exc:
                 logger.error("Bot crashed: %s", exc, exc_info=True)
+                crash_exc = exc
             finally:
                 if not bot.is_closed():
                     try:
@@ -157,8 +182,40 @@ class BotLifecycle:
             if self._restart_event.is_set():
                 self._restart_event.clear()
                 self._last_restart_at = time.time()
+                self._crash_backoff_seconds = 1.0
+                self._consecutive_login_failures = 0
                 logger.info("Restart request processed -> launching new bot instance")
                 continue
+
+            if crash_exc is not None:
+                if self._is_login_failure(crash_exc):
+                    self._consecutive_login_failures += 1
+                    logger.warning(
+                        "Detected login failure (%d/%d consecutive).",
+                        self._consecutive_login_failures,
+                        self._max_consecutive_login_failures,
+                    )
+                    if self._consecutive_login_failures >= self._max_consecutive_login_failures:
+                        logger.critical(
+                            "Stopping lifecycle after %d consecutive login failures.",
+                            self._consecutive_login_failures,
+                        )
+                        self._stop_event.set()
+                        break
+                else:
+                    self._consecutive_login_failures = 0
+
+                delay = min(self._crash_backoff_seconds, self._max_crash_backoff_seconds)
+                logger.warning("Bot crash backoff active: retry in %.1fs", delay)
+                await asyncio.sleep(delay)
+                self._crash_backoff_seconds = min(
+                    self._crash_backoff_seconds * 2,
+                    self._max_crash_backoff_seconds,
+                )
+                continue
+
+            self._crash_backoff_seconds = 1.0
+            self._consecutive_login_failures = 0
 
             # Normal exit without restart
             break

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import os
 import sys
 
 from bot_core.bootstrap import _RedactSecretsFilter
@@ -13,12 +14,15 @@ class LoggingMixin:
     def setup_logging(self):
         log_dir = self.root_dir / "logs"
         log_dir.mkdir(exist_ok=True)
+        runtime_role = str(os.getenv("TWITCH_SPLIT_RUNTIME_ROLE", "")).strip().lower()
+        safe_role = "".join(ch for ch in runtime_role if ch.isalnum() or ch in {"-", "_"})
+        log_prefix = f"master_bot.{safe_role}" if safe_role else "master_bot"
 
         # Default output: INFO. Still capture DEBUG to a dedicated log file.
         root_handlers: list[logging.Handler] = []
 
         info_file = logging.handlers.RotatingFileHandler(
-            log_dir / "master_bot.log",
+            log_dir / f"{log_prefix}.log",
             maxBytes=5 * 1024 * 1024,
             backupCount=5,
             encoding="utf-8",
@@ -27,7 +31,7 @@ class LoggingMixin:
         root_handlers.append(info_file)
 
         debug_file = logging.handlers.RotatingFileHandler(
-            log_dir / "master_bot.debug.log",
+            log_dir / f"{log_prefix}.debug.log",
             maxBytes=5 * 1024 * 1024,
             backupCount=3,
             encoding="utf-8",

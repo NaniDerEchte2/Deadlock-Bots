@@ -55,6 +55,7 @@ DEFAULT_NSSM_SERVICE_NAME = KEYRING_SERVICE_NAME
 DEFAULT_NSSM_RESTART_DELAY_SECONDS = 1.0
 DEFAULT_BOT_RESTART_MIN_INTERVAL_SECONDS = 15.0
 DEFAULT_DASHBOARD_SESSION_TTL_SECONDS = 6 * 3600
+DEFAULT_DISCORD_OAUTH_STATE_TTL_SECONDS = 6 * 3600
 NSSM_PATH_CANDIDATES = (
     r"C:\ProgramData\chocolatey\lib\NSSM\tools\nssm.exe",
     r"C:\ProgramData\chocolatey\bin\nssm.exe",
@@ -164,7 +165,16 @@ class DashboardServer:
         self._discord_sessions: dict[str, dict[str, Any]] = {}
         self._discord_oauth_states: dict[str, dict[str, Any]] = {}
         self._auth_rate_limits: dict[str, list[float]] = {}
-        self._discord_oauth_state_ttl = 600
+        self._discord_oauth_state_ttl = int(
+            self._parse_positive_float(
+                os.getenv(
+                    "MASTER_DASHBOARD_OAUTH_STATE_TTL_SEC",
+                    str(DEFAULT_DISCORD_OAUTH_STATE_TTL_SECONDS),
+                ),
+                default=float(DEFAULT_DISCORD_OAUTH_STATE_TTL_SECONDS),
+                env_name="MASTER_DASHBOARD_OAUTH_STATE_TTL_SEC",
+            )
+        )
         self._discord_session_ttl = max(
             DEFAULT_DASHBOARD_SESSION_TTL_SECONDS,
             int(

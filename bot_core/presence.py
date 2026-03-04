@@ -13,6 +13,16 @@ from bot_core.boot_profile import log_event
 _STEAM_LOG_CHANNEL_ID = 1374364800817303632
 
 
+def _split_runtime_enforced_role() -> str:
+    role = str(os.getenv("TWITCH_SPLIT_RUNTIME_ROLE", "")).strip().lower()
+    if role not in {"bot", "dashboard"}:
+        return ""
+    enforce = str(os.getenv("TWITCH_SPLIT_RUNTIME_ENFORCE", "")).strip().lower()
+    if enforce in {"1", "true", "yes", "y", "on"}:
+        return role
+    return ""
+
+
 class PresenceMixin:
     """Presence, Ready-Tasks und Voice-Routing."""
 
@@ -261,6 +271,14 @@ class PresenceMixin:
                     logging.warning("Steam Bridge Login-Health-Check fehlgeschlagen: %s", exc)
 
                 if current - last_critical_check >= critical_check_interval:
+                    runtime_role = _split_runtime_enforced_role()
+                    if runtime_role == "bot":
+                        logging.debug(
+                            "Critical Health Check übersprungen (split runtime role=bot)."
+                        )
+                        last_critical_check = current
+                        continue
+
                     issues = []
 
                     if not self.get_cog("TempVoiceCore"):

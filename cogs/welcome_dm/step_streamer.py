@@ -20,10 +20,10 @@ Hinweise:
 - Views werden persistent registriert (cog_load)
 - /streamer Slash-Command startet Step 1
 
-Konfiguration (ENV optional):
-  STREAMER_ROLE_ID               (Default 1313624729466441769)
-  STREAMER_NOTIFY_CHANNEL_ID     (Default 1374364800817303632)
-  MAIN_GUILD_ID                  (nur für DM-Fallback)
+Feste Konfiguration (Single-Guild-Bot):
+  STREAMER_ROLE_ID               1313624729466441769
+  STREAMER_NOTIFY_CHANNEL_ID     1374364800817303632
+  MAIN_GUILD_ID                  1289721245281292288
 """
 
 from __future__ import annotations
@@ -32,7 +32,9 @@ import asyncio
 import logging
 import os
 import textwrap
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
+import aiohttp
 log = logging.getLogger("StreamerOnboarding")
 
 try:
@@ -50,21 +52,65 @@ from .base import (
     StepView,
 )  # WICHTIG: Diese StepView hat __init__(self) OHNE timeout-Argument
 
-# --- IDs (optional via ENV überschreibbar) ---
-STREAMER_ROLE_ID = int(os.getenv("STREAMER_ROLE_ID", "1313624729466441769"))
-STREAMER_NOTIFY_CHANNEL_ID = int(os.getenv("STREAMER_NOTIFY_CHANNEL_ID", "1374364800817303632"))
-MAIN_GUILD_ID = int(os.getenv("MAIN_GUILD_ID", "0"))  # DM-Fallback, falls interaction.guild None
+# --- IDs (fest verdrahtet, Single-Guild-Betrieb) ---
+STREAMER_ROLE_ID = 1313624729466441769
+STREAMER_NOTIFY_CHANNEL_ID = 1374364800817303632
+MAIN_GUILD_ID = 1289721245281292288  # DM-Fallback + Guild-Sync
 
 # Demo-Dashboard URL (öffentlich, kein Login nötig)
 ANALYTICS_DEMO_URL = "https://demo.earlysalty.com/"
+_TWITCH_INTERNAL_API_BASE_PATH = "/internal/twitch/v1"
+_TWITCH_INTERNAL_API_TOKEN_HEADER = "X-Internal-Token"
 
 
 # ------------------------------
 # Utilities
 # ------------------------------
-def _find_raid_bot(client: discord.Client) -> object | None:
+def _parse_env_bool(var_name: str, default: bool = False) -> bool:
+    raw = (os.getenv(var_name) or "").strip().lower()
+    if not raw:
+        return default
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _split_runtime_enforced_role() -> str:
+    role = str(os.getenv("TWITCH_SPLIT_RUNTIME_ROLE", "")).strip().lower()
+    if role not in {"bot", "dashboard"}:
+        return ""
+    if not _parse_env_bool("TWITCH_SPLIT_RUNTIME_ENFORCE", False):
+        return ""
+    return role
+
+
+def _extract_raid_bot_and_auth_manager(
+    candidate: object | None,
+) -> tuple[object | None, object | None]:
+    """Extrahiert (raid_bot, auth_manager) aus einer Kandidaten-Instanz."""
+    if candidate is None:
+        return None, None
+
+    raid_bot = getattr(candidate, "_raid_bot", None) or getattr(candidate, "raid_bot", None)
+    if raid_bot is not None:
+        auth_manager = getattr(raid_bot, "auth_manager", None)
+        if auth_manager is not None:
+            return raid_bot, auth_manager
+
+    auth_manager = getattr(candidate, "auth_manager", None)
+    if auth_manager is not None:
+        return raid_bot or candidate, auth_manager
+
+    return raid_bot, None
+
+
+def _find_raid_bot_and_auth_manager(
+    client: discord.Client,
+) -> tuple[object | None, object | None]:
     """
-    Versucht den Raid-Bot aus den geladenen Cogs zu ermitteln.
+    Versucht Raid-Bot + Auth-Manager aus geladenen Cogs zu ermitteln.
     Nutzt bekannte Cog-Namen und fällt auf eine generische Suche zurück.
     """
     known_names = (
@@ -82,20 +128,134 @@ def _find_raid_bot(client: discord.Client) -> object | None:
         except Exception as exc:
             log.debug("get_cog(%s) failed: %r", name, exc)
             continue
-        raid_bot = getattr(cog, "_raid_bot", None)
-        if raid_bot:
-            return raid_bot
+        raid_bot, auth_manager = _extract_raid_bot_and_auth_manager(cog)
+        if auth_manager is not None:
+            return raid_bot, auth_manager
 
     # Fallback: durch alle Cogs iterieren
     try:
         for cog in getattr(client, "cogs", {}).values():  # type: ignore[attr-defined]
-            raid_bot = getattr(cog, "_raid_bot", None)
-            if raid_bot:
-                return raid_bot
+            raid_bot, auth_manager = _extract_raid_bot_and_auth_manager(cog)
+            if auth_manager is not None:
+                return raid_bot, auth_manager
     except Exception as exc:
         log.debug("Fallback Raid-Bot lookup fehlgeschlagen: %r", exc)
 
-    return None
+    # Letzter Fallback: Attribute direkt auf dem Bot/Client prüfen
+    raid_bot, auth_manager = _extract_raid_bot_and_auth_manager(client)
+    if auth_manager is not None:
+        return raid_bot, auth_manager
+    return None, None
+
+
+async def _try_load_twitch_cog(client: discord.Client) -> bool:
+    """
+    Versucht `cogs.twitch` bei Bedarf nachzuladen.
+    Hilft, wenn der Streamer-Flow aktiv ist, der Twitch-Cog aber nicht geladen wurde.
+    """
+    if not isinstance(client, commands.Bot):
+        return False
+
+    ext_name = "cogs.twitch"
+    if ext_name in getattr(client, "extensions", {}):
+        return False
+
+    is_blocked = getattr(client, "is_namespace_blocked", None)
+    if callable(is_blocked):
+        try:
+            if is_blocked(ext_name, assume_normalized=True):
+                log.warning(
+                    "StreamerOnboarding: %s ist blockiert und kann nicht on-demand geladen werden.",
+                    ext_name,
+                )
+                return False
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug("StreamerOnboarding: Blocklist-Prüfung fehlgeschlagen: %r", exc)
+
+    try:
+        await client.load_extension(ext_name)
+        log.info("StreamerOnboarding: %s on-demand geladen.", ext_name)
+        return True
+    except commands.ExtensionAlreadyLoaded:
+        return False
+    except Exception as exc:
+        log.warning(
+            "StreamerOnboarding: On-demand load von %s fehlgeschlagen: %s",
+            ext_name,
+            exc,
+            exc_info=True,
+        )
+        return False
+
+
+def _split_internal_api_auth_url(discord_user_id: int) -> tuple[str, dict[str, str]] | None:
+    base_url = (os.getenv("TWITCH_INTERNAL_API_BASE_URL") or "").strip()
+    token = (os.getenv("TWITCH_INTERNAL_API_TOKEN") or "").strip()
+    if not base_url or not token:
+        return None
+
+    raw = base_url if "://" in base_url else f"http://{base_url}"
+    try:
+        parsed = urlsplit(raw)
+    except Exception:
+        return None
+    if not parsed.scheme or not parsed.netloc:
+        return None
+
+    base_path = (parsed.path or "").rstrip("/")
+    internal_base = _TWITCH_INTERNAL_API_BASE_PATH.rstrip("/")
+    if base_path == internal_base:
+        base_path = ""
+    elif base_path.endswith(internal_base):
+        base_path = base_path[: -len(internal_base)]
+
+    normalized_base = urlunsplit((parsed.scheme, parsed.netloc, base_path.rstrip("/"), "", ""))
+    endpoint = f"{normalized_base.rstrip('/')}{internal_base}/raid/auth-url"
+    query = urlencode({"login": f"discord:{discord_user_id}"})
+    headers = {_TWITCH_INTERNAL_API_TOKEN_HEADER: token}
+    return f"{endpoint}?{query}", headers
+
+
+def _prefer_split_internal_raid_auth_api() -> bool:
+    if _split_internal_api_auth_url(0) is None:
+        return False
+    return _split_runtime_enforced_role() != "bot"
+
+
+async def _fetch_split_raid_auth_url(discord_user_id: int) -> str | None:
+    request_data = _split_internal_api_auth_url(discord_user_id)
+    if request_data is None:
+        return None
+
+    url, headers = request_data
+    timeout = aiohttp.ClientTimeout(total=8.0)
+
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, headers=headers) as response:
+                body = await response.text()
+                payload: dict[str, object] = {}
+                if body:
+                    try:
+                        decoded = await response.json(content_type=None)
+                    except Exception:
+                        decoded = {}
+                    if isinstance(decoded, dict):
+                        payload = decoded
+
+                if response.status != 200:
+                    log.warning(
+                        "StreamerOnboarding: Split-API raid auth url failed (%s): %s",
+                        response.status,
+                        str(payload.get("message") or body or "").strip()[:200],
+                    )
+                    return None
+
+                auth_url = str(payload.get("auth_url") or "").strip()
+                return auth_url or None
+    except Exception as exc:
+        log.warning("StreamerOnboarding: Split-API raid auth request failed: %r", exc)
+        return None
 
 
 async def _resolve_guild_and_member(
@@ -739,22 +899,51 @@ class StreamerRequirementsView(StepView):
 
         # Twitch Cog finden und OAuth-URL generieren
         try:
-            raid_bot = _find_raid_bot(interaction.client)
-            auth_mgr = getattr(raid_bot, "auth_manager", None) if raid_bot else None
+            auth_mgr = None
+            for attempt in range(3):
+                _, auth_mgr = _find_raid_bot_and_auth_manager(interaction.client)
+                if auth_mgr:
+                    break
+                if attempt < 2:
+                    await asyncio.sleep(1.0)
 
-            if not raid_bot or not auth_mgr:
+            if not auth_mgr:
+                loaded_now = await _try_load_twitch_cog(interaction.client)
+                if loaded_now:
+                    for attempt in range(4):
+                        _, auth_mgr = _find_raid_bot_and_auth_manager(interaction.client)
+                        if auth_mgr:
+                            break
+                        if attempt < 3:
+                            await asyncio.sleep(1.0)
+
+            auth_url = ""
+            prefer_split_api = _prefer_split_internal_raid_auth_api()
+            if prefer_split_api:
+                auth_url = str(await _fetch_split_raid_auth_url(interaction.user.id) or "").strip()
+
+            if not auth_url and auth_mgr:
+                state_payload = f"discord:{interaction.user.id}"
+                # OAuth-URL generieren (Discord-ID im State, Kanal wird automatisch erkannt)
+                # generate_discord_button_url erzeugt einen kurzen Redirect-URL (<512 Zeichen)
+                # statt des vollen Twitch-OAuth-URLs (Discord-Button-Limit: 512 Zeichen)
+                auth_url = str(auth_mgr.generate_discord_button_url(state_payload) or "").strip()
+
+            if not auth_url and not prefer_split_api:
+                auth_url = str(await _fetch_split_raid_auth_url(interaction.user.id) or "").strip()
+
+            if not auth_url:
+                loaded_cogs = sorted(getattr(interaction.client, "cogs", {}).keys())  # type: ignore[attr-defined]
+                log.warning(
+                    "StreamerOnboarding: Kein Raid-Auth-Link verfügbar. Geladene Cogs: %s",
+                    ", ".join(loaded_cogs) if loaded_cogs else "<none>",
+                )
                 await _safe_send(
                     interaction,
                     content="⚠️ Twitch-Bot ist derzeit nicht verfügbar. Bitte informiere einen Admin.",
                     ephemeral=True,
                 )
                 return
-
-            # OAuth-URL generieren (Discord-ID im State, Kanal wird automatisch erkannt)
-            # generate_discord_button_url erzeugt einen kurzen Redirect-URL (<512 Zeichen)
-            # statt des vollen Twitch-OAuth-URLs (Discord-Button-Limit: 512 Zeichen)
-            state_payload = f"discord:{interaction.user.id}"
-            auth_url = auth_mgr.generate_discord_button_url(state_payload)
 
             # View mit Link-Button erstellen
             view = discord.ui.View()
@@ -968,9 +1157,13 @@ class StreamerOnboarding(commands.Cog):
         self.bot.add_view(StreamerIntroView())
         self.bot.add_view(StreamerRequirementsView())
         log.info("StreamerOnboarding Views registriert (persistent).")
-        # Sicherstellen, dass der Slash-Command in der Haupt-Guild sofort verfügbar ist
-        asyncio.create_task(self._sync_slash_commands())
+        # Command-Sync läuft zentral im MasterBot, um doppelte Syncs/429 zu vermeiden.
+        # Fallback nur für Umgebungen ohne zentralen Sync-Orchestrator.
+        if not callable(getattr(self.bot, "sync_app_commands", None)):
+            asyncio.create_task(self._sync_slash_commands())
 
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     @app_commands.command(name="streamer", description="Streamer-Partner werden (2 Schritte).")
     async def streamer_cmd(self, interaction: discord.Interaction):
         """Startet Schritt 1 direkt per DM und bestätigt hier nur kurz."""
@@ -1028,13 +1221,31 @@ class StreamerOnboarding(commands.Cog):
 
     async def _sync_slash_commands(self) -> None:
         """Synchronisiert den Command für die Haupt-Guild, damit er angezeigt wird."""
+        central_sync = getattr(self.bot, "sync_app_commands", None)
+        if callable(central_sync):
+            result = await central_sync(
+                reason="streamer_onboarding",
+                scope="guild",
+                force=False,
+            )
+            log.info(
+                "StreamerOnboarding: zentraler Sync verwendet (status=%s, guilds=%d)",
+                result.get("status"),
+                len(result.get("guild_counts", {})),
+            )
+            return
+
         if not MAIN_GUILD_ID:
+            log.warning(
+                "StreamerOnboarding: Guild-Command-Sync uebersprungen, MAIN_GUILD_ID ist 0."
+            )
             return
 
         try:
+            guild_obj = discord.Object(id=MAIN_GUILD_ID)
             synced = await asyncio.wait_for(
-                self.bot.tree.sync(guild=discord.Object(id=MAIN_GUILD_ID)),
-                timeout=20.0,
+                self.bot.tree.sync(guild=guild_obj),
+                timeout=300.0,
             )
             log.info(
                 "StreamerOnboarding: Slash-Command sync abgeschlossen (Guild %s, %d Commands)",
@@ -1043,7 +1254,7 @@ class StreamerOnboarding(commands.Cog):
             )
         except TimeoutError:
             log.warning(
-                "StreamerOnboarding: Slash-Command sync Timeout (>20s) für Guild %s",
+                "StreamerOnboarding: Slash-Command sync Timeout (>300s) für Guild %s",
                 MAIN_GUILD_ID,
             )
         except Exception as exc:

@@ -30,6 +30,52 @@ except Exception:  # pragma: no cover - fallback if boot_profile missing
 class CogLoaderMixin:
     """Cog-Discovery, Blocklist und Reload-Helfer."""
 
+    @staticmethod
+    def _env_truthy(value: str | None) -> bool:
+        return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    def _effective_split_runtime_role(self) -> str:
+        """
+        Return the active split runtime role only when explicitly enforced.
+
+        This avoids accidental global env leakage (TWITCH_SPLIT_RUNTIME_ROLE)
+        forcing the master bot to load only one cog.
+        """
+
+        runtime_role = (os.getenv("TWITCH_SPLIT_RUNTIME_ROLE") or "").strip().lower()
+        if runtime_role not in {"bot", "dashboard"}:
+            return ""
+
+        if self._env_truthy(os.getenv("TWITCH_SPLIT_RUNTIME_ENFORCE")):
+            return runtime_role
+
+        warned = bool(getattr(self, "_split_runtime_role_ignored_warned", False))
+        if not warned:
+            logging.warning(
+                "Ignoring TWITCH_SPLIT_RUNTIME_ROLE=%s because TWITCH_SPLIT_RUNTIME_ENFORCE is not enabled.",
+                runtime_role,
+            )
+            setattr(self, "_split_runtime_role_ignored_warned", True)
+        return ""
+
+    def _excluded_namespaces_from_env(self) -> set[str]:
+        """Read optional COG_EXCLUDE env list (comma/semicolon separated)."""
+        raw = (os.getenv("COG_EXCLUDE") or "").strip()
+        if not raw:
+            return set()
+
+        excluded: set[str] = set()
+        for token in raw.replace(";", ",").split(","):
+            item = token.strip()
+            if not item:
+                continue
+            try:
+                normalized = self.normalize_namespace(item)
+            except Exception:
+                continue
+            excluded.add(normalized)
+        return excluded
+
     def normalize_namespace(self, raw: str) -> str:
         text = (raw or "").strip()
         if not text:
@@ -163,14 +209,19 @@ class CogLoaderMixin:
         default_excludes = {
             "",
         }
-        env_ex = (os.getenv("COG_EXCLUDE") or "").strip()
-        for item in [x.strip() for x in env_ex.split(",") if x.strip()]:
-            default_excludes.add(item)
-        only = {x.strip() for x in (os.getenv("COG_ONLY") or "").split(",") if x.strip()}
-        if only:
-            return module_path not in only
+        runtime_role = self._effective_split_runtime_role()
+        if runtime_role == "bot":
+            # Split runtime bot service must only load the Twitch bridge extension.
+            if module_path != "cogs.twitch":
+                return True
+        elif runtime_role == "dashboard":
+            # Dashboard split runtime should not load discord cogs at all.
+            return True
         if module_path in default_excludes:
             return True
+        for excluded in self._excluded_namespaces_from_env():
+            if module_path == excluded or module_path.startswith(f"{excluded}."):
+                return True
         if self.is_namespace_blocked(module_path, assume_normalized=True):
             return True
         return False

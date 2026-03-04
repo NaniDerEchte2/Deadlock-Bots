@@ -24,6 +24,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import os
 import secrets
 import struct
 
@@ -70,6 +71,19 @@ class FieldCrypto:
 
     def _load_keys(self) -> None:
         """Load encryption keys from Windows Credential Manager."""
+        key_v1 = (os.getenv("DB_MASTER_KEY_V1") or "").strip()
+        if key_v1:
+            try:
+                self._keys["v1"] = bytes.fromhex(key_v1)
+                if len(self._keys["v1"]) != self.KEY_SIZE:
+                    raise KeyMissing(
+                        f"Key v1 has invalid size: {len(self._keys['v1'])} bytes (expected {self.KEY_SIZE})"
+                    )
+                log.info("Loaded encryption key: v1 (env)")
+                return
+            except ValueError as e:
+                raise KeyMissing(f"Invalid key format for v1 from env: {e}")
+
         try:
             import keyring
         except ImportError:

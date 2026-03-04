@@ -578,7 +578,7 @@ class DeadlockTeamBalancer(commands.Cog):
             self.bot.add_view(TournamentPanelView())
             self.bot._deadlock_tournament_panel_registered = True
         logger.info("DeadlockTeamBalancer bereit (DB verbunden, Turnier-Schema aktiv)")
-        print("✅ DeadlockTeamBalancer Cog geladen")
+        logger.info("DeadlockTeamBalancer Cog geladen")
 
     # ---------- Rank-Ermittlung ----------
     async def get_user_rank(self, member: discord.Member) -> tuple[str, int]:

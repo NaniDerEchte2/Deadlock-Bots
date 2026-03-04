@@ -38,6 +38,37 @@ def _acquire_pid_lock() -> None:
             try:
                 # Signal 0: prüft nur ob der Prozess existiert, tut sonst nichts
                 os.kill(old_pid, 0)
+            except ProcessLookupError:
+                # Alter Prozess ist weg → stale PID-File, einfach überschreiben
+                logging.warning(
+                    "Stale PID-File gefunden (PID %s nicht mehr aktiv) → wird überschrieben",
+                    old_pid,
+                )
+            except PermissionError:
+                # Unter Windows kann ein fremder Benutzer-/Service-Prozess bei kill(, 0)
+                # mit PermissionError antworten – das bedeutet nicht "stale".
+                logging.critical(
+                    "Master Bot-Instanz mit PID %s existiert vermutlich bereits "
+                    "(keine Berechtigung für Existenzprüfung). "
+                    "Zweite Instanz wird NICHT gestartet.",
+                    old_pid,
+                )
+                sys.exit(1)
+            except OSError as exc:
+                if getattr(exc, "winerror", None) == 5:
+                    logging.critical(
+                        "Master Bot-Instanz mit PID %s existiert vermutlich bereits "
+                        "(WinError 5 bei Existenzprüfung). "
+                        "Zweite Instanz wird NICHT gestartet.",
+                        old_pid,
+                    )
+                    sys.exit(1)
+                logging.warning(
+                    "PID-Check für %s war nicht eindeutig (%s) – PID-File wird überschrieben.",
+                    old_pid,
+                    exc,
+                )
+            else:
                 logging.critical(
                     "Master Bot läuft bereits als PID %s. "
                     "Zweite Instanz wird NICHT gestartet (verhindert Token-Race-Conditions). "
@@ -47,9 +78,6 @@ def _acquire_pid_lock() -> None:
                     _PID_FILE,
                 )
                 sys.exit(1)
-            except (OSError, ProcessLookupError):
-                # Alter Prozess ist weg → stale PID-File, einfach überschreiben
-                logging.warning("Stale PID-File gefunden (PID %s nicht mehr aktiv) → wird überschrieben", old_pid)
 
     _PID_FILE.write_text(str(os.getpid()))
 

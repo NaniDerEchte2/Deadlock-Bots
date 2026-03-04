@@ -49,6 +49,7 @@ class MasterControlCog(commands.Cog):
                 f"`{p}master discover` - Neue Cogs entdecken (ohne laden)\n"
                 f"`{p}master unload <muster>` - Cogs mit Muster entladen\n"
                 f"`{p}master unloadtree <prefix>` - ganzen Cog-Ordner entladen\n"
+                f"`{p}master sync_commands [scope] [mode]` - Slash-Commands kontrolliert syncen\n"
                 f"`{p}master restart` - Bot sauber neu starten\n"
                 f"`{p}master shutdown` - Bot beenden"
             ),
@@ -364,6 +365,73 @@ class MasterControlCog(commands.Cog):
         else:
             embed.description = "Restart konnte nicht geplant werden (evtl. läuft bereits einer)."
             embed.color = 0xFF0000
+        await msg.edit(embed=embed)
+
+    @master_control.command(name="sync_commands", aliases=["synccommands", "sync"])
+    async def master_sync_commands(self, ctx, scope: str = "both", mode: str = "force"):
+        """
+        Führt einen kontrollierten App-Command-Sync aus.
+
+        scope: both | global | guild
+        mode:  force | auto
+        """
+        scope_normalized = scope.strip().lower()
+        mode_normalized = mode.strip().lower()
+        valid_scopes = {"both", "global", "guild"}
+        valid_modes = {"force", "auto"}
+
+        if scope_normalized not in valid_scopes:
+            await ctx.send("❌ Ungültiger scope. Erlaubt: `both`, `global`, `guild`.")
+            return
+        if mode_normalized not in valid_modes:
+            await ctx.send("❌ Ungültiger mode. Erlaubt: `force`, `auto`.")
+            return
+
+        sync_fn = getattr(self.bot, "sync_app_commands", None)
+        if not callable(sync_fn):
+            await ctx.send("❌ Zentraler Command-Sync ist in diesem Bot nicht verfügbar.")
+            return
+
+        force = mode_normalized == "force"
+        embed = discord.Embed(
+            title="🔄 App-Command Sync",
+            description=f"Starte Sync (`scope={scope_normalized}`, `mode={mode_normalized}`)...",
+            color=0x00AAFF,
+        )
+        msg = await ctx.send(embed=embed)
+
+        result = await sync_fn(
+            reason=f"command:{ctx.author.id}",
+            scope=scope_normalized,
+            force=force,
+        )
+
+        status = str(result.get("status", "unknown"))
+        color = (
+            0x00FF00
+            if status in {"synced", "skipped"}
+            else 0xFFAA00 if status == "partial" else 0xFF0000
+        )
+        details = (
+            f"Status: `{status}`\n"
+            f"Scope: `{result.get('scope', scope_normalized)}`\n"
+            f"Global synced: `{result.get('global_count', 0)}`\n"
+            f"Guild syncs: `{len(result.get('guild_counts', {}))}`"
+        )
+
+        if result.get("skip_reason"):
+            details += f"\nSkip reason: `{result['skip_reason']}`"
+
+        errors = result.get("errors") or {}
+        if errors:
+            error_preview = "\n".join(f"• {k}: {v}" for k, v in list(errors.items())[:8])
+            details += f"\nFehler:\n{error_preview}"
+
+        embed = discord.Embed(
+            title="🔄 App-Command Sync",
+            description=details,
+            color=color,
+        )
         await msg.edit(embed=embed)
 
     @master_control.command(name="shutdown", aliases=["stop", "quit"])
