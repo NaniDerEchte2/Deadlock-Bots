@@ -42,6 +42,16 @@ class StandaloneMixin:
 
             self.standalone_manager = StandaloneBotManager()
             manager = self.standalone_manager
+            steam_managed_externally = str(
+                os.getenv("STEAM_BRIDGE_MANAGED_EXTERNALLY", "")
+            ).strip().lower() in {"1", "true", "yes", "y", "on"}
+            if steam_managed_externally:
+                logging.info(
+                    "Standalone manager: Steam Bridge wird extern verwaltet "
+                    "(STEAM_BRIDGE_MANAGED_EXTERNALLY=1) – interne Registrierung übersprungen"
+                )
+                return
+
             steam_bridge_env = (os.getenv("STEAM_BRIDGE_DIR") or "").strip()
             if steam_bridge_env:
                 steam_dir = Path(steam_bridge_env).expanduser()
