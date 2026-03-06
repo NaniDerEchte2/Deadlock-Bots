@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import importlib
 import logging
 import os
 import signal
 import sys
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
 from bot_core.bootstrap import _load_env_robust, bootstrap_runtime
+from bot_core.runtime_mode import ensure_gateway_start_allowed, resolve_runtime_mode
 
 # Frühe Initialisierung, damit .env/Logging bereitstehen bevor Settings geladen werden.
 bootstrap_runtime()
@@ -21,24 +24,20 @@ __all__ = ["MasterBot", "MasterControlCog", "BotLifecycle"]
 
 _PID_FILE_BASE = Path(__file__).parent / "master_bot.pid"
 _PID_LOCK_PATH: Path | None = None
+_PID_RECOVERY_SUFFIX = ".recover"
+_PID_LOCK_RETRY_DELAY_SECONDS = 0.05
+_PID_LOCK_RETRY_ATTEMPTS = 120
+_RECOVERY_LOCK_INVALID_GRACE_SECONDS = 1.0
 
 
-def _env_truthy(value: str | None) -> bool:
-    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
-
-
-def _effective_split_runtime_role() -> str:
-    role = (os.getenv("TWITCH_SPLIT_RUNTIME_ROLE") or "").strip().lower()
-    if role not in {"bot", "dashboard"}:
-        return ""
-    if not _env_truthy(os.getenv("TWITCH_SPLIT_RUNTIME_ENFORCE")):
-        return ""
-    return role
+def _effective_runtime_role() -> str:
+    mode = resolve_runtime_mode()
+    return mode.role
 
 
 def _pid_file_path() -> Path:
-    role = _effective_split_runtime_role()
-    if not role:
+    role = _effective_runtime_role()
+    if role == "master":
         return _PID_FILE_BASE
     return _PID_FILE_BASE.with_name(f"{_PID_FILE_BASE.stem}.{role}{_PID_FILE_BASE.suffix}")
 
@@ -105,38 +104,150 @@ def _pid_exists(pid: int) -> bool:
     return True
 
 
+def _read_pid_from_file(lock_file: Path) -> int | None:
+    try:
+        raw = lock_file.read_text(encoding="ascii").strip()
+    except OSError:
+        return None
+    try:
+        pid = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return pid if pid > 0 else None
+
+
+def _try_create_pid_file(lock_file: Path, pid: int) -> bool:
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    try:
+        fd = os.open(os.fspath(lock_file), flags, 0o644)
+    except OSError as exc:
+        if exc.errno == errno.EEXIST:
+            return False
+        raise
+
+    try:
+        os.write(fd, f"{pid}\n".encode("ascii"))
+    finally:
+        os.close(fd)
+    return True
+
+
+def _release_file_if_owned(lock_file: Path, owner_pid: int) -> bool:
+    if _read_pid_from_file(lock_file) != owner_pid:
+        return False
+    try:
+        lock_file.unlink()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return False
+    return True
+
+
+def _recovery_lock_path(pid_file: Path) -> Path:
+    return pid_file.with_name(f"{pid_file.name}{_PID_RECOVERY_SUFFIX}")
+
+
+def _recovery_lock_is_stale(recovery_file: Path, holder_pid: int | None, current_pid: int) -> bool:
+    if holder_pid == current_pid:
+        return True
+    if holder_pid:
+        return not _pid_exists(holder_pid)
+    try:
+        age_seconds = time.time() - recovery_file.stat().st_mtime
+    except OSError:
+        return False
+    return age_seconds >= _RECOVERY_LOCK_INVALID_GRACE_SECONDS
+
+
+def _try_claim_recovery_lock(recovery_file: Path, current_pid: int) -> bool:
+    if _try_create_pid_file(recovery_file, current_pid):
+        return True
+
+    holder_pid = _read_pid_from_file(recovery_file)
+    if not _recovery_lock_is_stale(recovery_file, holder_pid, current_pid):
+        return False
+
+    try:
+        recovery_file.unlink()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return False
+
+    return _try_create_pid_file(recovery_file, current_pid)
+
+
 def _acquire_pid_lock() -> None:
     """Verhindert dass zwei Instanzen gleichzeitig laufen.
 
-    Prüft ob eine PID-Datei existiert und ob der darin gespeicherte Prozess
-    noch aktiv ist. Bei Konflikt wird gewarnt und der aktuelle Start abgebrochen.
+    Erzeugt die PID-Datei atomar, um TOCTOU-Races beim Start zu vermeiden.
+    Bei stale PID-Dateien wird eine koordinierte Recovery durchgeführt.
     """
     global _PID_LOCK_PATH
     pid_file = _pid_file_path()
-    if pid_file.exists():
-        try:
-            old_pid = int(pid_file.read_text().strip())
-        except (ValueError, OSError):
-            old_pid = None
+    recovery_file = _recovery_lock_path(pid_file)
+    current_pid = os.getpid()
 
-        if old_pid and old_pid != os.getpid():
-            if _pid_exists(old_pid):
+    for _ in range(_PID_LOCK_RETRY_ATTEMPTS):
+        if _try_create_pid_file(pid_file, current_pid):
+            _PID_LOCK_PATH = pid_file
+            return
+
+        old_pid = _read_pid_from_file(pid_file)
+        if old_pid == current_pid:
+            _PID_LOCK_PATH = pid_file
+            return
+
+        if old_pid and _pid_exists(old_pid):
+            logging.critical(
+                "Master Bot läuft bereits als PID %s. "
+                "Zweite Instanz wird NICHT gestartet (verhindert Token-Race-Conditions). "
+                "Beende PID %s zuerst oder lösche %s manuell.",
+                old_pid,
+                old_pid,
+                pid_file,
+            )
+            sys.exit(1)
+
+        if not _try_claim_recovery_lock(recovery_file, current_pid):
+            time.sleep(_PID_LOCK_RETRY_DELAY_SECONDS)
+            continue
+
+        try:
+            owner_pid = _read_pid_from_file(pid_file)
+            if owner_pid and owner_pid != current_pid and _pid_exists(owner_pid):
                 logging.critical(
                     "Master Bot läuft bereits als PID %s. "
                     "Zweite Instanz wird NICHT gestartet (verhindert Token-Race-Conditions). "
                     "Beende PID %s zuerst oder lösche %s manuell.",
-                    old_pid,
-                    old_pid,
+                    owner_pid,
+                    owner_pid,
                     pid_file,
                 )
                 sys.exit(1)
-            logging.warning(
-                "Stale PID-File gefunden (PID %s nicht mehr aktiv) → wird überschrieben",
-                old_pid,
-            )
 
-    pid_file.write_text(str(os.getpid()))
-    _PID_LOCK_PATH = pid_file
+            if owner_pid:
+                logging.warning(
+                    "Stale PID-File gefunden (PID %s nicht mehr aktiv) -> wird überschrieben",
+                    owner_pid,
+                )
+            else:
+                logging.warning("Ungültiges PID-File gefunden (%s) -> wird überschrieben", pid_file)
+
+            try:
+                pid_file.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                logging.getLogger(__name__).debug("PID lock cleanup failed: %r", exc)
+        finally:
+            _release_file_if_owned(recovery_file, current_pid)
+
+        time.sleep(_PID_LOCK_RETRY_DELAY_SECONDS)
+
+    logging.critical("PID lock acquisition timed out for %s", pid_file)
+    raise SystemExit(1)
 
 
 def _release_pid_lock() -> None:
@@ -145,8 +256,7 @@ def _release_pid_lock() -> None:
     if pid_file is None:
         return
     try:
-        if pid_file.exists() and int(pid_file.read_text().strip()) == os.getpid():
-            pid_file.unlink()
+        _release_file_if_owned(pid_file, os.getpid())
     except Exception as exc:
         logging.getLogger(__name__).debug("PID lock release failed: %r", exc)
     finally:
@@ -230,6 +340,24 @@ def _install_signal_handlers(
 
 
 async def main() -> None:
+    try:
+        mode = ensure_gateway_start_allowed()
+    except RuntimeError as exc:
+        logging.critical("%s", exc)
+        raise SystemExit(2) from exc
+
+    logging.info(
+        "Runtime mode active: role=%s discord_gateway_enabled=%s",
+        mode.role,
+        mode.discord_gateway_enabled,
+    )
+    if not mode.discord_gateway_enabled:
+        logging.info(
+            "Discord Gateway disabled for role=%s. Skipping discord.Client login.",
+            mode.role,
+        )
+        return
+
     lifecycle = BotLifecycle(token_loader=_load_fresh_token)
     loop = asyncio.get_running_loop()
     cancel_watchdog = _install_signal_handlers(loop, lifecycle)

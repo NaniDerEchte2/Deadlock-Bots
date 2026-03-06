@@ -12,6 +12,8 @@ from typing import Any
 
 from discord.ext import commands
 
+from bot_core.runtime_mode import resolve_runtime_mode
+
 try:
     from bot_core.boot_profile import log_event, measure
 except Exception:  # pragma: no cover - fallback if boot_profile missing
@@ -41,6 +43,14 @@ class CogLoaderMixin:
         This avoids accidental global env leakage (TWITCH_SPLIT_RUNTIME_ROLE)
         forcing the master bot to load only one cog.
         """
+        runtime_mode = resolve_runtime_mode()
+        if runtime_mode.role == "twitch_worker":
+            return "bot"
+        if runtime_mode.role == "dashboard":
+            return "dashboard"
+
+        if (os.getenv("RUNTIME_ROLE") or "").strip():
+            return ""
 
         runtime_role = (os.getenv("TWITCH_SPLIT_RUNTIME_ROLE") or "").strip().lower()
         if runtime_role not in {"bot", "dashboard"}:

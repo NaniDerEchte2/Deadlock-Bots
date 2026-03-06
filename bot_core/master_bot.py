@@ -9,7 +9,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import discord
 import pytz
@@ -20,9 +20,11 @@ from bot_core.bootstrap import _init_db_if_available, _log_secret_present
 from bot_core.cog_loader import CogLoaderMixin
 from bot_core.logging_setup import LoggingMixin
 from bot_core.presence import PresenceMixin
+from bot_core.runtime_mode import ensure_gateway_start_allowed, resolve_runtime_mode
 from bot_core.standalone import StandaloneMixin
 from service.config import settings
 from service.http_client import build_resilient_connector
+from service.master_broker import MasterBroker
 
 try:
     from service.dashboard import DashboardServer
@@ -31,6 +33,9 @@ except Exception as _dashboard_import_error:
     logging.getLogger(__name__).warning("Dashboard module unavailable: %s", _dashboard_import_error)
 
 __all__ = ["MasterBot"]
+
+if TYPE_CHECKING:
+    from bot_core.lifecycle import BotLifecycle
 
 
 class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, commands.Bot):
@@ -44,6 +49,8 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
     """
 
     def __init__(self, lifecycle: BotLifecycle | None = None):
+        self.runtime_mode = ensure_gateway_start_allowed(resolve_runtime_mode())
+
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
@@ -160,6 +167,8 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
 
         # Central app-command sync guard (prevents concurrent sync storms).
         self._command_sync_lock = asyncio.Lock()
+        self.master_broker: MasterBroker | None = None
+        self._init_master_broker()
 
     @staticmethod
     def _env_bool(name: str, default: bool = False) -> bool:
@@ -167,6 +176,49 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
         if raw is None:
             return default
         return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    @staticmethod
+    def _env_port(name: str, default: int) -> int:
+        raw = (os.getenv(name) or "").strip()
+        if not raw:
+            return default
+        try:
+            parsed = int(raw)
+        except ValueError:
+            logging.warning("Invalid %s=%r, using %s", name, raw, default)
+            return default
+        if parsed <= 0 or parsed > 65535:
+            logging.warning("Out-of-range %s=%r, using %s", name, raw, default)
+            return default
+        return parsed
+
+    @staticmethod
+    def _master_broker_token() -> str:
+        for key in ("MASTER_BROKER_TOKEN", "MAIN_BOT_INTERNAL_TOKEN", "TWITCH_INTERNAL_API_TOKEN"):
+            value = (os.getenv(key) or "").strip()
+            if value:
+                return value
+        return ""
+
+    def _init_master_broker(self) -> None:
+        if self.runtime_mode.role != "master":
+            return
+
+        token = self._master_broker_token()
+        if not token:
+            logging.warning(
+                "Master broker disabled: missing token "
+                "(MASTER_BROKER_TOKEN/MAIN_BOT_INTERNAL_TOKEN/TWITCH_INTERNAL_API_TOKEN)."
+            )
+            return
+
+        host = (os.getenv("MASTER_BROKER_HOST") or "127.0.0.1").strip() or "127.0.0.1"
+        port = self._env_port("MASTER_BROKER_PORT", 8770)
+        try:
+            self.master_broker = MasterBroker(self, token=token, host=host, port=port)
+        except Exception as exc:
+            logging.error("Master broker init failed: %s", exc, exc_info=True)
+            self.master_broker = None
 
     @staticmethod
     def _parse_id_list(raw: str) -> list[int]:
@@ -486,7 +538,11 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
         return await self.lifecycle.request_restart(reason=reason)
 
     async def setup_hook(self):
-        logging.info("Master Bot setup starting...")
+        logging.info(
+            "Master Bot setup starting (role=%s, gateway=%s)...",
+            self.runtime_mode.role,
+            self.runtime_mode.discord_gateway_enabled,
+        )
 
         secret_mode = (os.getenv("SECRET_LOG_MODE") or "off").lower()
         _log_secret_present(
@@ -507,6 +563,21 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
         db_span = measure("db.init")
         _init_db_if_available()
         db_span.finish()
+
+        if self.master_broker:
+            broker_span = measure("broker.start")
+            try:
+                await self.master_broker.start()
+            except Exception as exc:
+                logging.warning(
+                    "Master broker startup failed; continuing without broker: %s",
+                    exc,
+                    exc_info=True,
+                )
+                self.master_broker = None
+                broker_span.finish(detail="disabled:start-failed")
+            else:
+                broker_span.finish(detail=self.master_broker.base_url)
 
         load_span = measure("cogs.load", detail=f"planned={len(self.cogs_list)}")
         await self.load_all_cogs()
@@ -535,6 +606,12 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
 
     async def close(self):
         logging.info("Master Bot shutting down...")
+
+        if self.master_broker:
+            try:
+                await self.master_broker.stop()
+            except Exception as exc:
+                logging.error(f"Fehler beim Stoppen des Master-Brokers: {exc}")
 
         if self.dashboard:
             try:
