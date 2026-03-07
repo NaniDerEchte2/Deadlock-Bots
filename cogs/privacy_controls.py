@@ -174,7 +174,7 @@ class PrivacyControls(commands.Cog):
             + self._summary_value(summary, "coaching_sessions.user_id")
             + self._summary_value(summary, "voice_channel_anchors.user_id")
         )
-        twitch_rows = self._summary_value(
+        partner_rows = self._summary_value(
             summary, "twitch_streamers.discord_user_id"
         ) + self._summary_value(summary, "twitch_link_clicks.discord_user_id")
         rankbot_rows = (
@@ -196,7 +196,7 @@ class PrivacyControls(commands.Cog):
             + (f" (IDs: {', '.join(steam_ids)})" if steam_ids else ""),
             f"- Aktivitäts-/Retention-Datenbank: {retention_rows} Einträge entfernt",
             f"- TempVoice/Claims/Coaching: {tempvoice_rows + claims_rows} Einträge entfernt",
-            f"- Twitch/Rank-Bot: {twitch_rows + rankbot_rows} Einträge entfernt",
+            f"- Legacy-Partner/Rank-Bot: {partner_rows + rankbot_rows} Einträge entfernt",
             f"- KI-Onboarding/Voice-Nudge KV-Einträge: {kv_rows}",
             "Zukünftige Speicherung ist blockiert, bis du mit /datenschutz-optin wieder zustimmst.",
         ]
@@ -210,7 +210,7 @@ class PrivacyControls(commands.Cog):
         view = PrivacyConfirmView(self, interaction.user.id)
         content = (
             "Dieser Vorgang entfernt gespeicherte Daten (z. B. Voice-Statistiken und Logs, "
-            "Steam-Verknüpfungen, TempVoice- und Twitch-Daten, KI-Onboarding-Logs) und setzt "
+            "Steam-Verknüpfungen, TempVoice-, Partner- und KI-Onboarding-Daten) und setzt "
             "ein Opt-out. Standardmäßig wird danach nichts Neues gespeichert. "
             "Nutze vorher gern **Daten herunterladen**, um deine Datenauskunft zu bekommen."
         )

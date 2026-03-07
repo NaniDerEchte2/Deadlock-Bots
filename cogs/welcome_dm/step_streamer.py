@@ -30,18 +30,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import textwrap
-from urllib.parse import urlencode, urlsplit, urlunsplit
 
-import aiohttp
 log = logging.getLogger("StreamerOnboarding")
-
-try:
-    from cogs.twitch import storage as twitch_storage
-except Exception as exc:  # pragma: no cover - optional dependency
-    log.warning("StreamerOnboarding: Twitch-Module nicht verfügbar: %s", exc, exc_info=True)
-    twitch_storage = None  # type: ignore[assignment]
 
 import discord
 from discord import app_commands
@@ -51,6 +42,12 @@ from discord.ext import commands
 from .base import (
     StepView,
 )  # WICHTIG: Diese StepView hat __init__(self) OHNE timeout-Argument
+from .twitch_partner_integration import (
+    TwitchPartnerIntegrationUnavailable,
+    check_onboarding_blocklist,
+    generate_discord_auth_url,
+    get_auth_state,
+)
 
 # --- IDs (fest verdrahtet, Single-Guild-Betrieb) ---
 STREAMER_ROLE_ID = 1313624729466441769
@@ -59,203 +56,17 @@ MAIN_GUILD_ID = 1289721245281292288  # DM-Fallback + Guild-Sync
 
 # Demo-Dashboard URL (öffentlich, kein Login nötig)
 ANALYTICS_DEMO_URL = "https://demo.earlysalty.com/"
-_TWITCH_INTERNAL_API_BASE_PATH = "/internal/twitch/v1"
-_TWITCH_INTERNAL_API_TOKEN_HEADER = "X-Internal-Token"
 
 
 # ------------------------------
 # Utilities
 # ------------------------------
-def _parse_env_bool(var_name: str, default: bool = False) -> bool:
-    raw = (os.getenv(var_name) or "").strip().lower()
-    if not raw:
-        return default
-    if raw in {"1", "true", "yes", "on"}:
-        return True
-    if raw in {"0", "false", "no", "off"}:
-        return False
-    return default
-
-
-def _split_runtime_enforced_role() -> str:
-    role = str(os.getenv("TWITCH_SPLIT_RUNTIME_ROLE", "")).strip().lower()
-    if role not in {"bot", "dashboard"}:
-        return ""
-    if not _parse_env_bool("TWITCH_SPLIT_RUNTIME_ENFORCE", False):
-        return ""
-    return role
-
-
-def _extract_raid_bot_and_auth_manager(
-    candidate: object | None,
-) -> tuple[object | None, object | None]:
-    """Extrahiert (raid_bot, auth_manager) aus einer Kandidaten-Instanz."""
-    if candidate is None:
-        return None, None
-
-    raid_bot = getattr(candidate, "_raid_bot", None) or getattr(candidate, "raid_bot", None)
-    if raid_bot is not None:
-        auth_manager = getattr(raid_bot, "auth_manager", None)
-        if auth_manager is not None:
-            return raid_bot, auth_manager
-
-    auth_manager = getattr(candidate, "auth_manager", None)
-    if auth_manager is not None:
-        return raid_bot or candidate, auth_manager
-
-    return raid_bot, None
-
-
-def _find_raid_bot_and_auth_manager(
-    client: discord.Client,
-) -> tuple[object | None, object | None]:
-    """
-    Versucht Raid-Bot + Auth-Manager aus geladenen Cogs zu ermitteln.
-    Nutzt bekannte Cog-Namen und fällt auf eine generische Suche zurück.
-    """
-    known_names = (
-        "TwitchStreamCog",
-        "TwitchStreams",
-        "Twitch",
-        "TwitchBot",
-        "TwitchDeadlock",
+def _twitch_integration_unavailable_message() -> str:
+    return (
+        "⚠️ Twitch-Onboarding ist derzeit nicht verfuegbar. "
+        "Die externe Deadlock-Twitch-Bot-Integration fehlt oder ist nicht korrekt konfiguriert. "
+        "Bitte informiere einen Admin."
     )
-
-    # Erst bekannte Namen abfragen (schnellster Weg)
-    for name in known_names:
-        try:
-            cog = client.get_cog(name)  # type: ignore[arg-type]
-        except Exception as exc:
-            log.debug("get_cog(%s) failed: %r", name, exc)
-            continue
-        raid_bot, auth_manager = _extract_raid_bot_and_auth_manager(cog)
-        if auth_manager is not None:
-            return raid_bot, auth_manager
-
-    # Fallback: durch alle Cogs iterieren
-    try:
-        for cog in getattr(client, "cogs", {}).values():  # type: ignore[attr-defined]
-            raid_bot, auth_manager = _extract_raid_bot_and_auth_manager(cog)
-            if auth_manager is not None:
-                return raid_bot, auth_manager
-    except Exception as exc:
-        log.debug("Fallback Raid-Bot lookup fehlgeschlagen: %r", exc)
-
-    # Letzter Fallback: Attribute direkt auf dem Bot/Client prüfen
-    raid_bot, auth_manager = _extract_raid_bot_and_auth_manager(client)
-    if auth_manager is not None:
-        return raid_bot, auth_manager
-    return None, None
-
-
-async def _try_load_twitch_cog(client: discord.Client) -> bool:
-    """
-    Versucht `cogs.twitch` bei Bedarf nachzuladen.
-    Hilft, wenn der Streamer-Flow aktiv ist, der Twitch-Cog aber nicht geladen wurde.
-    """
-    if not isinstance(client, commands.Bot):
-        return False
-
-    ext_name = "cogs.twitch"
-    if ext_name in getattr(client, "extensions", {}):
-        return False
-
-    is_blocked = getattr(client, "is_namespace_blocked", None)
-    if callable(is_blocked):
-        try:
-            if is_blocked(ext_name, assume_normalized=True):
-                log.warning(
-                    "StreamerOnboarding: %s ist blockiert und kann nicht on-demand geladen werden.",
-                    ext_name,
-                )
-                return False
-        except Exception as exc:  # pragma: no cover - defensive
-            log.debug("StreamerOnboarding: Blocklist-Prüfung fehlgeschlagen: %r", exc)
-
-    try:
-        await client.load_extension(ext_name)
-        log.info("StreamerOnboarding: %s on-demand geladen.", ext_name)
-        return True
-    except commands.ExtensionAlreadyLoaded:
-        return False
-    except Exception as exc:
-        log.warning(
-            "StreamerOnboarding: On-demand load von %s fehlgeschlagen: %s",
-            ext_name,
-            exc,
-            exc_info=True,
-        )
-        return False
-
-
-def _split_internal_api_auth_url(discord_user_id: int) -> tuple[str, dict[str, str]] | None:
-    base_url = (os.getenv("TWITCH_INTERNAL_API_BASE_URL") or "").strip()
-    token = (os.getenv("TWITCH_INTERNAL_API_TOKEN") or "").strip()
-    if not base_url or not token:
-        return None
-
-    raw = base_url if "://" in base_url else f"http://{base_url}"
-    try:
-        parsed = urlsplit(raw)
-    except Exception:
-        return None
-    if not parsed.scheme or not parsed.netloc:
-        return None
-
-    base_path = (parsed.path or "").rstrip("/")
-    internal_base = _TWITCH_INTERNAL_API_BASE_PATH.rstrip("/")
-    if base_path == internal_base:
-        base_path = ""
-    elif base_path.endswith(internal_base):
-        base_path = base_path[: -len(internal_base)]
-
-    normalized_base = urlunsplit((parsed.scheme, parsed.netloc, base_path.rstrip("/"), "", ""))
-    endpoint = f"{normalized_base.rstrip('/')}{internal_base}/raid/auth-url"
-    query = urlencode({"login": f"discord:{discord_user_id}"})
-    headers = {_TWITCH_INTERNAL_API_TOKEN_HEADER: token}
-    return f"{endpoint}?{query}", headers
-
-
-def _prefer_split_internal_raid_auth_api() -> bool:
-    if _split_internal_api_auth_url(0) is None:
-        return False
-    return _split_runtime_enforced_role() != "bot"
-
-
-async def _fetch_split_raid_auth_url(discord_user_id: int) -> str | None:
-    request_data = _split_internal_api_auth_url(discord_user_id)
-    if request_data is None:
-        return None
-
-    url, headers = request_data
-    timeout = aiohttp.ClientTimeout(total=8.0)
-
-    try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, headers=headers) as response:
-                body = await response.text()
-                payload: dict[str, object] = {}
-                if body:
-                    try:
-                        decoded = await response.json(content_type=None)
-                    except Exception:
-                        decoded = {}
-                    if isinstance(decoded, dict):
-                        payload = decoded
-
-                if response.status != 200:
-                    log.warning(
-                        "StreamerOnboarding: Split-API raid auth url failed (%s): %s",
-                        response.status,
-                        str(payload.get("message") or body or "").strip()[:200],
-                    )
-                    return None
-
-                auth_url = str(payload.get("auth_url") or "").strip()
-                return auth_url or None
-    except Exception as exc:
-        log.warning("StreamerOnboarding: Split-API raid auth request failed: %r", exc)
-        return None
 
 
 async def _resolve_guild_and_member(
@@ -326,103 +137,20 @@ async def _resolve_guild_and_member(
 
     return g1, m1
 
-
-def _is_truthy_flag(value: object) -> bool:
-    """Robuste Auswertung von bool/int-Flags aus DB-Zeilen."""
-    try:
-        return bool(int(value or 0))
-    except (TypeError, ValueError):
-        return bool(value)
-
-
 def _check_partner_onboarding_blacklist(
     *,
     discord_user_id: int | None = None,
     twitch_login: str | None = None,
 ) -> tuple[bool, str | None]:
-    """
-    Prüft, ob ein Streamer beim Partner-Onboarding zwingend abgelehnt werden muss.
-
-    Sperrgründe:
-    - manuelles Opt-out (`manual_partner_opt_out=1`)
-    - Twitch-Login in `twitch_raid_blacklist`
-    """
-    if not twitch_storage:
-        return False, None
-
-    normalized_login = (twitch_login or "").strip().lower()
-    discord_id = str(discord_user_id) if discord_user_id is not None else ""
-    candidate_logins: set[str] = set()
-    if normalized_login:
-        candidate_logins.add(normalized_login)
-
     try:
-        with twitch_storage.get_conn() as conn:
-            if normalized_login:
-                opt_out_row = conn.execute(
-                    """
-                    SELECT manual_partner_opt_out
-                    FROM twitch_streamers
-                    WHERE LOWER(twitch_login) = LOWER(?)
-                    LIMIT 1
-                    """,
-                    (normalized_login,),
-                ).fetchone()
-                if opt_out_row:
-                    opt_out_raw = (
-                        opt_out_row["manual_partner_opt_out"]
-                        if hasattr(opt_out_row, "keys")
-                        else opt_out_row[0]
-                    )
-                    if _is_truthy_flag(opt_out_raw):
-                        return True, f"manual_partner_opt_out=1 fuer {normalized_login}"
+        return check_onboarding_blocklist(
+            discord_user_id=discord_user_id,
+            twitch_login=twitch_login,
+        )
+    except TwitchPartnerIntegrationUnavailable as exc:
+        log.warning("Blacklist-/Opt-out-Pruefung nicht verfuegbar: %s", exc)
+        raise
 
-            if discord_id:
-                rows = conn.execute(
-                    """
-                    SELECT twitch_login, manual_partner_opt_out
-                    FROM twitch_streamers
-                    WHERE discord_user_id = ?
-                    """,
-                    (discord_id,),
-                ).fetchall()
-                for row in rows:
-                    row_login = (
-                        str(row["twitch_login"] if hasattr(row, "keys") else row[0] or "")
-                        .strip()
-                        .lower()
-                    )
-                    if row_login:
-                        candidate_logins.add(row_login)
-
-                    opt_out_raw = row["manual_partner_opt_out"] if hasattr(row, "keys") else row[1]
-                    if _is_truthy_flag(opt_out_raw):
-                        blocked_login = row_login or normalized_login or "unbekannt"
-                        return True, f"manual_partner_opt_out=1 fuer {blocked_login}"
-
-            for login in candidate_logins:
-                blacklist_row = conn.execute(
-                    """
-                    SELECT reason
-                    FROM twitch_raid_blacklist
-                    WHERE LOWER(target_login) = LOWER(?)
-                    LIMIT 1
-                    """,
-                    (login,),
-                ).fetchone()
-                if blacklist_row:
-                    reason_raw = (
-                        blacklist_row["reason"]
-                        if hasattr(blacklist_row, "keys")
-                        else blacklist_row[0]
-                    )
-                    reason = str(reason_raw).strip() if reason_raw else "kein Grund hinterlegt"
-                    return True, f"twitch_raid_blacklist fuer {login} ({reason})"
-    except Exception:
-        log.exception("Blacklist-/Opt-out-Pruefung im Streamer-Onboarding fehlgeschlagen")
-        return False, None
-
-    return False, None
 
 
 def _blacklist_rejection_message() -> str:
@@ -470,64 +198,10 @@ async def _assign_role_and_notify(
             "Unerwarteter Fehler beim Zuweisen der Rolle. Bitte Team informieren.",
         )
 
-    # 2) Verifizierung (Chat-Promo aktiv → immer erfolgreich)
     auto_verified = True
-    verification_reason = "Auto-verifiziert (Promonachricht im Chat aktiv)."
+    verification_reason = "Externe Twitch-Autorisierung bestaetigt."
 
-    if twitch_login and twitch_storage:
-        try:
-            with twitch_storage.get_conn() as conn:
-                conn.execute(
-                    "UPDATE twitch_streamers SET manual_verified_permanent=1, manual_verified_at=CURRENT_TIMESTAMP "
-                    "WHERE twitch_login=?",
-                    (twitch_login.lower(),),
-                )
-            log.info("Auto-verified streamer %s (Twitch: %s)", member.id, twitch_login)
-        except Exception as e:
-            log.exception("Fehler bei der automatisierten Streamer-Prüfung")
-            verification_reason = f"Fehler bei der Prüfung: {e}"
-
-    # 3) Twitch-Registrierung (optional, mehrere Cog-Namen probieren)
-    try:
-        possible_cogs = ("TwitchStreamCog", "TwitchDeadlock", "TwitchBot", "Twitch")
-        registered = False
-        for name in possible_cogs:
-            cog = interaction.client.get_cog(name)  # type: ignore
-            if not cog:
-                continue
-
-            method_found = False
-            for meth in ("register_streamer", "add_streamer", "register"):
-                if not hasattr(cog, meth):
-                    continue
-
-                method_found = True
-                try:
-                    res = await getattr(cog, meth)(member.id)  # type: ignore[attr-defined]
-                    log.info("%s.%s(%s) -> %r", name, meth, member.id, res)
-                    registered = True
-                    break
-                except Exception as e:
-                    log.warning(
-                        "Twitch registration via %s.%s failed for %s: %r",
-                        name,
-                        meth,
-                        member.id,
-                        e,
-                    )
-
-            if not method_found:
-                log.debug(
-                    "Twitch cog '%s' gefunden, aber keine passende register-Methode.",
-                    name,
-                )
-
-            if registered:
-                break
-    except Exception as e:
-        log.debug("Twitch registration check failed: %r", e)
-
-    # 4) Kontroll-Ping
+    # 2) Kontroll-Ping
     notify_ch = interaction.client.get_channel(STREAMER_NOTIFY_CHANNEL_ID)  # type: ignore
     if isinstance(notify_ch, (discord.TextChannel, discord.Thread)):
         try:
@@ -684,7 +358,19 @@ class StreamerIntroView(StepView):
             except Exception:
                 log.debug("Intro defer failed", exc_info=True)
 
-        blocked, reason = _check_partner_onboarding_blacklist(discord_user_id=interaction.user.id)
+        try:
+            blocked, reason = _check_partner_onboarding_blacklist(
+                discord_user_id=interaction.user.id
+            )
+        except TwitchPartnerIntegrationUnavailable as exc:
+            log.warning("Streamer-Onboarding Intro nicht verfuegbar: %s", exc)
+            await _safe_send(
+                interaction,
+                content=_twitch_integration_unavailable_message(),
+                ephemeral=True,
+            )
+            await self._finish(interaction)
+            return
         if blocked:
             log.info(
                 "Streamer-Onboarding abgelehnt (Intro): user=%s reason=%s",
@@ -897,53 +583,26 @@ class StreamerRequirementsView(StepView):
             )
             return
 
-        # Twitch Cog finden und OAuth-URL generieren
         try:
-            auth_mgr = None
-            for attempt in range(3):
-                _, auth_mgr = _find_raid_bot_and_auth_manager(interaction.client)
-                if auth_mgr:
-                    break
-                if attempt < 2:
-                    await asyncio.sleep(1.0)
+            auth_url = generate_discord_auth_url(interaction.user.id)
+        except TwitchPartnerIntegrationUnavailable as exc:
+            log.warning("StreamerOnboarding: Auth-Link nicht verfuegbar: %s", exc)
+            await _safe_send(
+                interaction,
+                content=_twitch_integration_unavailable_message(),
+                ephemeral=True,
+            )
+            return
+        except Exception as e:
+            log.exception("Raid bot authorization failed: %r", e)
+            await _safe_send(
+                interaction,
+                content="⚠️ Fehler beim Generieren des Autorisierungs-Links. Bitte informiere einen Admin.",
+                ephemeral=True,
+            )
+            return
 
-            if not auth_mgr:
-                loaded_now = await _try_load_twitch_cog(interaction.client)
-                if loaded_now:
-                    for attempt in range(4):
-                        _, auth_mgr = _find_raid_bot_and_auth_manager(interaction.client)
-                        if auth_mgr:
-                            break
-                        if attempt < 3:
-                            await asyncio.sleep(1.0)
-
-            auth_url = ""
-            prefer_split_api = _prefer_split_internal_raid_auth_api()
-            if prefer_split_api:
-                auth_url = str(await _fetch_split_raid_auth_url(interaction.user.id) or "").strip()
-
-            if not auth_url and auth_mgr:
-                state_payload = f"discord:{interaction.user.id}"
-                # OAuth-URL generieren (Discord-ID im State, Kanal wird automatisch erkannt)
-                # generate_discord_button_url erzeugt einen kurzen Redirect-URL (<512 Zeichen)
-                # statt des vollen Twitch-OAuth-URLs (Discord-Button-Limit: 512 Zeichen)
-                auth_url = str(auth_mgr.generate_discord_button_url(state_payload) or "").strip()
-
-            if not auth_url and not prefer_split_api:
-                auth_url = str(await _fetch_split_raid_auth_url(interaction.user.id) or "").strip()
-
-            if not auth_url:
-                loaded_cogs = sorted(getattr(interaction.client, "cogs", {}).keys())  # type: ignore[attr-defined]
-                log.warning(
-                    "StreamerOnboarding: Kein Raid-Auth-Link verfügbar. Geladene Cogs: %s",
-                    ", ".join(loaded_cogs) if loaded_cogs else "<none>",
-                )
-                await _safe_send(
-                    interaction,
-                    content="⚠️ Twitch-Bot ist derzeit nicht verfügbar. Bitte informiere einen Admin.",
-                    ephemeral=True,
-                )
-                return
+        try:
 
             # View mit Link-Button erstellen
             view = discord.ui.View()
@@ -994,63 +653,27 @@ class StreamerRequirementsView(StepView):
 
                 await btn_interaction.response.defer(ephemeral=True)
 
-                # Prüfe, ob Autorisierung in DB vorhanden + Kanal automatisch erkannt
-                if not twitch_storage:
-                    await btn_interaction.followup.send(
-                        "⚠️ Twitch-Modul ist derzeit nicht verfügbar. Bitte informiere einen Admin.",
-                        ephemeral=True,
-                    )
-                    return
-
                 try:
-                    discord_user_id = str(btn_interaction.user.id)
-                    display_label = (
-                        getattr(btn_interaction.user, "global_name", None)
-                        or getattr(btn_interaction.user, "display_name", None)
-                        or str(btn_interaction.user)
-                    )
+                    auth_state = get_auth_state(btn_interaction.user.id)
+                    if not auth_state.twitch_login:
+                        await btn_interaction.followup.send(
+                            "⚠️ **Kanal noch nicht erkannt**\n\n"
+                            "Falls du gerade autorisiert hast, warte bitte kurz (ca. 10 Sek.) "
+                            "und klicke den Button erneut.",
+                            ephemeral=True,
+                        )
+                        return
 
-                    with twitch_storage.get_conn() as conn:
-                        row = conn.execute(
-                            "SELECT twitch_login FROM twitch_streamers WHERE discord_user_id = ?",
-                            (discord_user_id,),
-                        ).fetchone()
-                        twitch_login = None
-                        if row:
-                            twitch_login = row["twitch_login"] if hasattr(row, "keys") else row[0]
-
-                        if not twitch_login:
-                            await btn_interaction.followup.send(
-                                "⚠️ **Kanal noch nicht erkannt**\n\n"
-                                "Falls du gerade autorisiert hast, warte bitte kurz (ca. 10 Sek.) "
-                                "und klicke den Button erneut.",
-                                ephemeral=True,
-                            )
-                            return
-
-                        auth_row = conn.execute(
-                            "SELECT raid_enabled FROM twitch_raid_auth WHERE lower(twitch_login)=lower(?)",
-                            (twitch_login,),
-                        ).fetchone()
-
-                        if auth_row:
-                            conn.execute(
-                                "UPDATE twitch_streamers SET discord_display_name=?, is_on_discord=1 "
-                                "WHERE lower(twitch_login)=lower(?)",
-                                (display_label, twitch_login),
-                            )
-                            conn.commit()
-
-                    if auth_row:
+                    if auth_state.authorized:
                         blocked, reason = _check_partner_onboarding_blacklist(
                             discord_user_id=btn_interaction.user.id,
-                            twitch_login=twitch_login,
+                            twitch_login=auth_state.twitch_login,
                         )
                         if blocked:
                             log.info(
                                 "Streamer-Onboarding abgelehnt (Auto-Verify): user=%s login=%s reason=%s",
                                 btn_interaction.user.id,
-                                twitch_login,
+                                auth_state.twitch_login,
                                 reason,
                             )
                             await btn_interaction.followup.send(
@@ -1063,36 +686,42 @@ class StreamerRequirementsView(StepView):
                             return
 
                         assign_ok, assign_msg = await _assign_role_and_notify(
-                            btn_interaction, twitch_login
+                            btn_interaction, auth_state.twitch_login
                         )
                         if not assign_ok:
                             await btn_interaction.followup.send(f"⚠️ {assign_msg}", ephemeral=True)
                             return
 
-                        self.twitch_login = twitch_login
+                        self.twitch_login = auth_state.twitch_login
                         self.raid_bot_authorized = True
                         self.verification_started = True
                         self.verification_message = assign_msg
                         await self._update_message(btn_interaction)
                         await btn_interaction.followup.send(
                             "✅ **Twitch-Bot erfolgreich autorisiert und automatisch verifiziert!**\n"
-                            f"**Kanal erkannt:** **{twitch_login}**\n"
+                            f"**Kanal erkannt:** **{auth_state.twitch_login}**\n"
                             f"{assign_msg}",
                             ephemeral=True,
                         )
                         confirm_button.disabled = True
                         await btn_interaction.edit_original_response(view=confirm_view)
                         await self._finish(interaction)
-                    else:
-                        await btn_interaction.followup.send(
-                            "⚠️ **Autorisierung noch nicht gefunden (OAuth fehlt)**\n\n"
-                            "Mögliche Gründe:\n"
-                            "• Du hast den Bot noch nicht auf Twitch autorisiert\n"
-                            "• Die Autorisierung wurde noch nicht synchronisiert (warte 10 Sek.)\n\n"
-                            "Wichtig: Ohne Twitch-Bot-Autorisierung keine Freischaltung.\n"
-                            "Stelle sicher, dass du auf Twitch autorisiert hast und versuche es dann erneut.",
-                            ephemeral=True,
-                        )
+                        return
+                    await btn_interaction.followup.send(
+                        "⚠️ **Autorisierung noch nicht gefunden (OAuth fehlt)**\n\n"
+                        "Mögliche Gruende:\n"
+                        "• Du hast den Bot noch nicht auf Twitch autorisiert\n"
+                        "• Die Autorisierung wurde noch nicht synchronisiert (warte 10 Sek.)\n\n"
+                        "Wichtig: Ohne Twitch-Bot-Autorisierung keine Freischaltung.\n"
+                        "Stelle sicher, dass du auf Twitch autorisiert hast und versuche es dann erneut.",
+                        ephemeral=True,
+                    )
+                except TwitchPartnerIntegrationUnavailable as exc:
+                    log.warning("Failed to check raid auth via external integration: %s", exc)
+                    await btn_interaction.followup.send(
+                        _twitch_integration_unavailable_message(),
+                        ephemeral=True,
+                    )
                 except Exception as e:
                     log.exception("Failed to check raid auth: %r", e)
                     await btn_interaction.followup.send(
@@ -1172,7 +801,18 @@ class StreamerOnboarding(commands.Cog):
         except Exception:
             log.debug("streamer_cmd defer failed", exc_info=True)
 
-        blocked, reason = _check_partner_onboarding_blacklist(discord_user_id=interaction.user.id)
+        try:
+            blocked, reason = _check_partner_onboarding_blacklist(
+                discord_user_id=interaction.user.id
+            )
+        except TwitchPartnerIntegrationUnavailable as exc:
+            log.warning("Streamer-Onboarding /streamer nicht verfuegbar: %s", exc)
+            await _safe_send(
+                interaction,
+                content=_twitch_integration_unavailable_message(),
+                ephemeral=True,
+            )
+            return
         if blocked:
             log.info(
                 "Streamer-Onboarding abgelehnt (/streamer): user=%s reason=%s",

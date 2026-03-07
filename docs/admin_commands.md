@@ -22,23 +22,6 @@ Legende: 🔴 Owner only · 🟠 Administrator · 🟢 Alle User
 
 ---
 
-## 🤖 Twitch Raid Bot
-
-| Command | Typ | Zugang | Beschreibung |
-|---|---|---|---|
-| `!traid` / `/traid` | Hybrid | 🟢 | OAuth-Link für Twitch-Autorisierung anfordern (Raid/Chat/Follower Scopes) |
-| `!raid_enable` / `/raid_enable` | Hybrid | 🟢 | Auto-Raid für eigenen Kanal aktivieren |
-| `!raid_disable` / `/raid_disable` | Hybrid | 🟢 | Auto-Raid für eigenen Kanal deaktivieren |
-| `!raid_status` / `/raid_status` | Hybrid | 🟢 | Status des Raid-Bots anzeigen (Token, letzte Raids) |
-| `!raid_history` / `/raid_history` | Hybrid | 🟢 | Letzte Raids anzeigen (Standard: 10) |
-| `!sendchatpromo` / `/sendchatpromo` | Hybrid | 🟠 | Promo-Nachricht in Twitch-Chat eines Streamers senden |
-| `!reauth_all` / `/reauth_all` | Hybrid | 🟠 | Alle Streamer zur Neu-Autorisierung auffordern (neue Scopes) |
-| `!tte` | Prefix | 🔴 | Token-Error-DM testen an sich selbst (Fake-Daten) |
-| `!tte @user` | Prefix | 🔴 | Token-Error-DM an betroffenen Streamer senden (echte DB-Daten, markiert als gesendet) |
-| `!tte @user reminder` | Prefix | 🔴 | Erinnerungs-DM senden (Rolle entzogen-Variante) |
-
----
-
 ## 🎮 Steam Bridge
 
 | Command | Typ | Zugang | Beschreibung |
@@ -187,14 +170,12 @@ Legende: 🔴 Owner only · 🟠 Administrator · 🟢 Alle User
 | `/clips_repost` | Slash | 🟠 | Clip-Submission Interface neu erstellen |
 | `/datenschutz` | Slash | 🟢 | Datenschutz-Einstellungen |
 | `/datenschutz-optin` | Slash | 🟢 | Datenschutz Opt-In |
-| `/streamer` | Slash | 🟢 | Streamer-Partner werden (Onboarding) |
+| `/streamer` | Slash | 🟢 | Partner-Onboarding starten |
 | `/nudgesend` | Slash | 🟠 | Steam-Link Voice-Nudge senden |
 
 ---
 
 ## 📝 Notizen
 
-- **`!tte @user`** setzt nach dem Senden `notified=1` und `user_dm_sent=1` in der DB → Bot schickt nicht automatisch nach
-- **Grace Period (Token Error):** 7 Tage nach Token-Fehler → stündlicher Check → Erinnerungs-DM + Admin-Ping → Rolle entzogen
-- **Re-Auth stellt Rolle automatisch wieder her** via `/traid` oder `!reauth_all`
+- **`/streamer`** bleibt absichtlich erhalten. Die externe Streamer-/Twitch-Autorisierung liegt im separaten Repo `Deadlock-Twitch-Bot`; Deadlock setzt danach nur lokal Rolle und Notify.
 - **Steam Bridge** muss laufen (GC-Verbindung aktiv) bevor Build-Publishing und Beta-Invites funktionieren

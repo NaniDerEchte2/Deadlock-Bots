@@ -158,7 +158,6 @@ Weiteres:
 - Feedback Hub: erlaubt anonymes Feedback an das Community-Team.
 - Voice Leaderboard & Stats: Befehle !vstats und !vleaderboard zeigen Voice-Aktivität.
 - Deadlock Team Balancer: !balance Befehle helfen faire Teams zu erstellen.
-- Twitch Statistik-Proxy: !twl bietet Leaderboards im Statistik-Channel.
 - Steam-Verknüpfung via /account_verknüpfen; erinnert bei Voice ohne Link. Verified-Rolle wird automatisch nach Prüfung vergeben.
 - Für ein Lane 1:1 ist @cuzyoul immer zu Haben dadurch kansnt du dich einfach duelieren und verbessern.
 - Für ein Coaching oder gernerelle Hilfe zum Server zu Deadlock ist @earlysalty immer zu Haben

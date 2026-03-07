@@ -28,7 +28,6 @@ Siehe [docs/build-publishing/](docs/build-publishing/) für Details.
 ### 🎥 Content Features
 - **Clip-Einreichung** - Wöchentliche Clip-Sammlung
 - **Feedback Hub** - Anonymes Community-Feedback
-- **Twitch-Statistiken** - Streamer-Leaderboards
 
 ## Setup
 
@@ -93,6 +92,7 @@ tail -f logs/deadlock_gc_messages.log
 |---------|---------------|
 | **Build-Publishing** | [docs/build-publishing/](docs/build-publishing/) |
 | **Community Features** | [docs/COMMUNITY_FEATURES.md](docs/COMMUNITY_FEATURES.md) |
+| **Externe Streamer-/Twitch-Integration** | [docs/TWITCH_EXTERNAL_REPO.md](docs/TWITCH_EXTERNAL_REPO.md) |
 | **Allgemein** | Siehe Code-Kommentare in `cogs/` |
 
 ## Logs

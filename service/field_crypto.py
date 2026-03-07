@@ -118,7 +118,7 @@ class FieldCrypto:
             plaintext: Value to encrypt
             aad: Associated data (table|column|row_id|version)
                  Used to bind encryption to specific context.
-                 Example: "twitch_raid_auth|access_token|123456|1"
+                 Example: "token_store|access_token|123456|1"
             kid: Key identifier (default: "v1")
 
         Returns:

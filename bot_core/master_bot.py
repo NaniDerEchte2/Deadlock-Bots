@@ -194,7 +194,7 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
 
     @staticmethod
     def _master_broker_token() -> str:
-        for key in ("MASTER_BROKER_TOKEN", "MAIN_BOT_INTERNAL_TOKEN", "TWITCH_INTERNAL_API_TOKEN"):
+        for key in ("MASTER_BROKER_TOKEN", "MAIN_BOT_INTERNAL_TOKEN"):
             value = (os.getenv(key) or "").strip()
             if value:
                 return value
@@ -208,7 +208,7 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
         if not token:
             logging.warning(
                 "Master broker disabled: missing token "
-                "(MASTER_BROKER_TOKEN/MAIN_BOT_INTERNAL_TOKEN/TWITCH_INTERNAL_API_TOKEN)."
+                "(MASTER_BROKER_TOKEN/MAIN_BOT_INTERNAL_TOKEN)."
             )
             return
 
@@ -550,13 +550,8 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
         )
         _log_secret_present("Discord Token (Master)", ["DISCORD_TOKEN", "BOT_TOKEN"], mode="off")
         _log_secret_present(
-            "Twitch Client Credentials",
+            "Streamer OAuth Credentials",
             ["TWITCH_CLIENT_ID", "TWITCH_CLIENT_SECRET"],
-            mode=secret_mode,
-        )
-        _log_secret_present(
-            "Twitch Chat Token",
-            ["TWITCH_BOT_TOKEN", "TWITCH_BOT_TOKEN_FILE"],
             mode=secret_mode,
         )
 

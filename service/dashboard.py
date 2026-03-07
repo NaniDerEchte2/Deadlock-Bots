@@ -46,8 +46,6 @@ MASTER_DASHBOARD_STEAM_PUBLIC_URL = "https://link.earlysalty.com"
 MASTER_DASHBOARD_STEAM_RETURN_URL = "https://link.earlysalty.com/steam/return"
 MASTER_DASHBOARD_STEAM_RETURN_PATH = "/steam/return"
 
-# Fester Twitch-Dashboard-Link
-MASTER_DASHBOARD_TWITCH_URL = "https://twitch.earlysalty.com/twitch/admin"
 MASTER_DASHBOARD_DEFAULT_SCHEME = "http"
 DISCORD_API_BASE_URL = "https://discord.com/api/v10"
 MASTER_DISCORD_ADMIN_LOGIN_URL = "/auth/discord/login?next=%2Fadmin"
@@ -208,9 +206,7 @@ class DashboardServer:
             self._public_base_url = self._listen_base_url
         self._allowed_request_origins = self._build_allowed_request_origins()
 
-        self._twitch_dashboard_href = self._resolve_twitch_dashboard_href()
         self._steam_return_url = self._derive_steam_return_url()
-        self._raid_health_url = self._derive_raid_health_url()
         self._health_cache: list[dict[str, Any]] = []
         self._health_cache_expiry = 0.0
         self._health_cache_lock = asyncio.Lock()
@@ -320,8 +316,6 @@ class DashboardServer:
                     web.get("/api/auth/me", self._handle_auth_me),
                     web.get("/api/status", self._handle_status),
                     web.post("/api/bot/restart", self._handle_bot_restart),
-                    web.post("/api/twitch/reload", self._handle_twitch_reload),
-                    web.get("/api/twitch/metrics", self._handle_twitch_metrics),
                     web.post("/api/dashboard/restart", self._handle_dashboard_restart),
                     web.post("/api/cogs/reload", self._handle_reload),
                     web.post("/api/cogs/load", self._handle_load),
@@ -1138,79 +1132,12 @@ class DashboardServer:
             raise web.HTTPBadRequest(text=f"Cog '{raw}' not found")
         return normalized
 
-    def _twitch_reload_manager(self) -> Any | None:
-        try:
-            twitch_cog = self.bot.get_cog("TwitchStreamCog")
-        except Exception:
-            return None
-        if twitch_cog is None:
-            return None
-        manager = getattr(twitch_cog, "_reload_manager", None)
-        if manager is None:
-            return None
-        if not callable(getattr(manager, "get_all_names", None)):
-            return None
-        if not callable(getattr(manager, "get_subsystem", None)):
-            return None
-        if not callable(getattr(manager, "reload", None)):
-            return None
-        return manager
-
-    @staticmethod
-    def _twitch_subsystem_path(name: str) -> str:
-        return f"cogs.twitch.{name}"
-
-    def _twitch_hot_reload_subsystems(self) -> dict[str, dict[str, str]]:
-        manager = self._twitch_reload_manager()
-        if manager is None:
-            return {}
-        subsystems: dict[str, dict[str, str]] = {}
-        try:
-            names = list(manager.get_all_names())
-        except Exception:
-            return {}
-        for name in names:
-            try:
-                subsystem = manager.get_subsystem(name)
-            except Exception:
-                continue
-            if subsystem is None or not bool(getattr(subsystem, "hot_reloadable", False)):
-                continue
-            display_name = str(getattr(subsystem, "display_name", "") or name)
-            subsystems[name] = {"name": name, "display_name": display_name}
-        return subsystems
-
-    def _resolve_twitch_subsystem_target(self, raw: str) -> tuple[str, str] | None:
-        text = str(raw or "").strip()
-        if not text:
-            return None
-        try:
-            normalized = self.bot.normalize_namespace(text)
-        except ValueError:
-            normalized = text
-        if not normalized.startswith("cogs.twitch."):
-            return None
-        subsystem_name = normalized.removeprefix("cogs.twitch.")
-        if not subsystem_name or "." in subsystem_name:
-            return None
-        # If this ever becomes a real extension, let normal resolution handle it.
-        if normalized in self.bot.cogs_list or normalized in self.bot.extensions:
-            return None
-        subsystems = self._twitch_hot_reload_subsystems()
-        if subsystem_name not in subsystems:
-            return None
-        return normalized, subsystem_name
-
-    def _normalize_manage_targets(self, items: Iterable[str]) -> list[tuple[str, str | None]]:
-        normalized: list[tuple[str, str | None]] = []
+    def _normalize_manage_targets(self, items: Iterable[str]) -> list[str]:
+        normalized: list[str] = []
         for raw in items:
-            twitch_target = self._resolve_twitch_subsystem_target(str(raw))
-            if twitch_target is not None:
-                normalized.append((twitch_target[0], twitch_target[1]))
-                continue
             resolved, matches = self.bot.resolve_cog_identifier(raw)
             if resolved:
-                normalized.append((resolved, None))
+                normalized.append(resolved)
                 continue
             if matches:
                 raise web.HTTPBadRequest(
@@ -1218,74 +1145,6 @@ class DashboardServer:
                 )
             raise web.HTTPBadRequest(text=f"Cog '{raw}' not found")
         return normalized
-
-    async def _reload_twitch_subsystem(self, subsystem_name: str) -> tuple[bool, str]:
-        manager = self._twitch_reload_manager()
-        if manager is None:
-            return False, "Twitch subsystem reload unavailable (TwitchStreamCog not loaded)"
-        try:
-            ok, message = await manager.reload(subsystem_name)
-            return bool(ok), str(message)
-        except Exception as exc:
-            logger.exception("Twitch subsystem reload failed for %s", subsystem_name)
-            return False, f"❌ Twitch subsystem reload failed: {exc}"
-
-    def _twitch_virtual_tree_modules(
-        self,
-        *,
-        active: set[str],
-        discovered: set[str],
-        status_map: dict[str, str],
-    ) -> list[dict[str, Any]]:
-        manager = self._twitch_reload_manager()
-        if manager is None:
-            return []
-        subsystems = self._twitch_hot_reload_subsystems()
-        if not subsystems:
-            return []
-
-        try:
-            states = manager.get_all_states()
-        except Exception:
-            states = {}
-
-        twitch_loaded = "cogs.twitch" in active
-        modules: list[dict[str, Any]] = []
-        for subsystem_name in sorted(subsystems.keys()):
-            path = self._twitch_subsystem_path(subsystem_name)
-            if path in discovered or path in active or path in self.bot.extensions:
-                continue
-            blocked = self.bot.is_namespace_blocked(path, assume_normalized=True)
-            raw_status = status_map.get(path)
-            if raw_status:
-                status = raw_status
-            else:
-                state = states.get(subsystem_name) if isinstance(states, dict) else None
-                state_error = getattr(state, "error", None) if state is not None else None
-                if state_error:
-                    safe_error = self._safe_log_value(state_error)[:180]
-                    status = f"error: {safe_error}"
-                elif blocked:
-                    status = "blocked"
-                else:
-                    status = "loaded" if twitch_loaded else "unloaded"
-
-            modules.append(
-                {
-                    "type": "module",
-                    "name": subsystems[subsystem_name]["display_name"],
-                    "path": path,
-                    "blocked": blocked,
-                    "loaded": twitch_loaded and not blocked,
-                    "discovered": True,
-                    "manageable": True,
-                    "reload_only": True,
-                    "blockable": False,
-                    "status": status,
-                    "virtual": True,
-                }
-            )
-        return modules
 
     @staticmethod
     def _format_netloc(host: str, port: int | None, scheme: str) -> str:
@@ -1657,14 +1516,8 @@ class DashboardServer:
             return {}
         return parsed if isinstance(parsed, dict) else {}
 
-    def _resolve_twitch_dashboard_href(self) -> str:
-        return MASTER_DASHBOARD_TWITCH_URL
-
     def _derive_steam_return_url(self) -> str | None:
         return MASTER_DASHBOARD_STEAM_RETURN_URL or None
-
-    def _derive_raid_health_url(self) -> str | None:
-        return "https://raid.earlysalty.com/health"
 
     def _build_health_targets(self) -> list[dict[str, Any]]:
         targets: list[dict[str, Any]] = []
@@ -1715,13 +1568,9 @@ class DashboardServer:
             }
             targets.append(entry)
 
-        if self._twitch_dashboard_href:
-            _add_target("Twitch Dashboard", self._twitch_dashboard_href, key="twitch-dashboard")
         if self._steam_return_url:
             steam_health_url = _append_query_param(self._steam_return_url, "healthcheck", "1")
             _add_target("Steam OAuth Callback", steam_health_url, key="steam-oauth-callback")
-        if self._raid_health_url:
-            _add_target("Raid Callback Host", self._raid_health_url, key="raid-callback-host")
 
         # Explicit Health Checks for Core Domains
         _add_target("Main Site", "https://earlysalty.de/health", key="main-site")
@@ -1729,13 +1578,6 @@ class DashboardServer:
             "Steam Link Service",
             "https://link.earlysalty.com/health",
             key="steam-link-service",
-        )
-        _add_target("Raid Service", "https://raid.earlysalty.com/health", key="raid-service")
-        # /twitch/stats requires auth; use a public endpoint to avoid false 401 alarms.
-        _add_target(
-            "Twitch Stats",
-            "https://twitch.earlysalty.com/twitch/api/v2/auth-status",
-            key="twitch-stats",
         )
 
         return targets
@@ -1977,10 +1819,6 @@ class DashboardServer:
         if session and str(session.get("access_level", "full")) == "turnier_only":
             raise web.HTTPFound("/turnier")
         display_name = str((session or {}).get("display_name") or "Nicht angemeldet")
-        safe_twitch_url = html.escape(
-            self._safe_template_href(self._twitch_dashboard_href or "", fallback="/twitch/admin"),
-            quote=True,
-        )
         safe_discord_login_url = html.escape(
             self._safe_template_href(
                 self._build_discord_login_url(request, next_path="/admin"),
@@ -1994,7 +1832,6 @@ class DashboardServer:
         )
         html_text = (
             _load_index_html()
-            .replace("{{TWITCH_URL}}", safe_twitch_url)
             .replace("{{AUTH_USER_LABEL}}", html.escape(display_name, quote=True))
             .replace("{{DISCORD_LOGIN_URL}}", safe_discord_login_url)
             .replace("{{AUTH_LOGOUT_URL}}", safe_auth_logout_url)
@@ -2135,375 +1972,6 @@ class DashboardServer:
             )
         sessions.sort(key=lambda s: s.get("duration_seconds", 0), reverse=True)
         return sessions
-
-    async def _handle_twitch_reload(self, request: web.Request) -> web.Response:
-        self._check_auth(request)
-        if hasattr(self.bot, "reload_cog"):
-            # MasterBot mit CogLoaderMixin -> nutzt _purge_namespace_modules
-            success, msg = await self.bot.reload_cog("cogs.twitch")
-            if success:
-                return web.json_response({"ok": True, "message": msg})
-            else:
-                return web.json_response({"ok": False, "error": msg}, status=500)
-        else:
-            try:
-                await self.bot.reload_extension("cogs.twitch")
-                return web.json_response(
-                    {"ok": True, "message": "Twitch module reloaded (no purge)"}
-                )
-            except Exception:
-                logger.exception("Failed to reload Twitch module via dashboard")
-                return web.json_response(
-                    {"ok": False, "error": "Internal server error"}, status=500
-                )
-
-    async def _handle_twitch_metrics(self, request: web.Request) -> web.Response:
-        self._check_auth(request)
-
-        raw_hours = request.query.get("hours")
-        try:
-            hours = int(raw_hours) if raw_hours else 24
-            if hours <= 0:
-                raise ValueError
-            hours = min(hours, 168)
-        except ValueError:
-            raise web.HTTPBadRequest(text="hours must be a positive integer (max 168)")
-
-        cutoff = f"-{hours} hours"
-
-        def _safe_query_all(query: str, params: tuple[Any, ...] = ()) -> list[Any]:
-            try:
-                return db.query_all(query, params)
-            except sqlite3.OperationalError as exc:
-                msg = str(exc).lower()
-                if "no such table" in msg or "no such column" in msg:
-                    return []
-                raise
-
-        def _safe_query_one(query: str, params: tuple[Any, ...] = ()) -> Any | None:
-            try:
-                return db.query_one(query, params)
-            except sqlite3.OperationalError as exc:
-                msg = str(exc).lower()
-                if "no such table" in msg or "no such column" in msg:
-                    return None
-                raise
-
-        def _as_int(row: Any, key: str, default: int = 0) -> int:
-            if row is None:
-                return default
-            try:
-                value = row[key] if hasattr(row, "keys") else row[key]
-            except Exception:
-                try:
-                    value = row[key]
-                except Exception:
-                    return default
-            try:
-                return int(value or 0)
-            except Exception:
-                return default
-
-        def _as_float(row: Any, key: str, default: float = 0.0) -> float:
-            if row is None:
-                return default
-            try:
-                value = row[key] if hasattr(row, "keys") else row[key]
-            except Exception:
-                try:
-                    value = row[key]
-                except Exception:
-                    return default
-            try:
-                return float(value or 0.0)
-            except Exception:
-                return default
-
-        try:
-            raids_hourly_rows = _safe_query_all(
-                """
-                SELECT
-                    strftime('%Y-%m-%d %H:00:00', datetime(replace(substr(executed_at, 1, 19), 'T', ' '))) AS bucket_hour,
-                    COUNT(*) AS raid_count,
-                    SUM(COALESCE(viewer_count, 0)) AS raid_viewers
-                FROM twitch_raid_history
-                WHERE datetime(replace(substr(executed_at, 1, 19), 'T', ' ')) >= datetime('now', ?)
-                GROUP BY bucket_hour
-                ORDER BY bucket_hour ASC
-                """,
-                (cutoff,),
-            )
-            raids_summary_row = _safe_query_one(
-                """
-                SELECT
-                    COUNT(*) AS raids_total,
-                    SUM(COALESCE(viewer_count, 0)) AS raid_viewers_total,
-                    COUNT(DISTINCT LOWER(COALESCE(to_broadcaster_login, ''))) AS unique_targets,
-                    COUNT(DISTINCT LOWER(COALESCE(from_broadcaster_login, ''))) AS unique_sources
-                FROM twitch_raid_history
-                WHERE datetime(replace(substr(executed_at, 1, 19), 'T', ' ')) >= datetime('now', ?)
-                """,
-                (cutoff,),
-            )
-
-            active_hourly_rows = _safe_query_all(
-                """
-                SELECT
-                    strftime('%Y-%m-%d %H:00:00', datetime(replace(substr(ts_utc, 1, 19), 'T', ' '))) AS bucket_hour,
-                    COUNT(DISTINCT LOWER(COALESCE(streamer, ''))) AS active_streamers
-                FROM twitch_stats_tracked
-                WHERE datetime(replace(substr(ts_utc, 1, 19), 'T', ' ')) >= datetime('now', ?)
-                GROUP BY bucket_hour
-                ORDER BY bucket_hour ASC
-                """,
-                (cutoff,),
-            )
-            active_now_row = _safe_query_one(
-                """
-                SELECT COUNT(*) AS active_now
-                FROM twitch_live_state
-                WHERE COALESCE(is_live, 0) = 1
-                """
-            )
-
-            eventsub_hourly_rows = _safe_query_all(
-                """
-                SELECT
-                    strftime('%Y-%m-%d %H:00:00', datetime(replace(substr(ts_utc, 1, 19), 'T', ' '))) AS bucket_hour,
-                    AVG(COALESCE(utilization_pct, 0)) AS avg_utilization_pct,
-                    MAX(COALESCE(utilization_pct, 0)) AS peak_utilization_pct,
-                    AVG(COALESCE(used_slots, 0)) AS avg_used_slots,
-                    MAX(COALESCE(used_slots, 0)) AS peak_used_slots,
-                    AVG(COALESCE(listener_count, 0)) AS avg_listener_count,
-                    COUNT(*) AS samples
-                FROM twitch_eventsub_capacity_snapshot
-                WHERE datetime(replace(substr(ts_utc, 1, 19), 'T', ' ')) >= datetime('now', ?)
-                GROUP BY bucket_hour
-                ORDER BY bucket_hour ASC
-                """,
-                (cutoff,),
-            )
-            eventsub_summary_row = _safe_query_one(
-                """
-                SELECT
-                    AVG(COALESCE(utilization_pct, 0)) AS avg_utilization_pct,
-                    MAX(COALESCE(utilization_pct, 0)) AS peak_utilization_pct,
-                    AVG(COALESCE(used_slots, 0)) AS avg_used_slots,
-                    MAX(COALESCE(used_slots, 0)) AS peak_used_slots,
-                    AVG(COALESCE(listener_count, 0)) AS avg_listener_count,
-                    MAX(COALESCE(listener_count, 0)) AS max_listener_count,
-                    SUM(COALESCE(samples, 1)) AS samples
-                FROM (
-                    SELECT utilization_pct, used_slots, listener_count, 1 AS samples
-                    FROM twitch_eventsub_capacity_snapshot
-                    WHERE datetime(replace(substr(ts_utc, 1, 19), 'T', ' ')) >= datetime('now', ?)
-                )
-                """,
-                (cutoff,),
-            )
-            eventsub_latest_row = _safe_query_one(
-                """
-                SELECT
-                    ts_utc,
-                    utilization_pct,
-                    used_slots,
-                    total_slots,
-                    listener_count,
-                    trigger_reason
-                FROM twitch_eventsub_capacity_snapshot
-                ORDER BY datetime(replace(substr(ts_utc, 1, 19), 'T', ' ')) DESC
-                LIMIT 1
-                """
-            )
-            eventsub_reason_rows = _safe_query_all(
-                """
-                SELECT
-                    trigger_reason,
-                    COUNT(*) AS samples,
-                    MAX(COALESCE(utilization_pct, 0)) AS peak_utilization_pct
-                FROM twitch_eventsub_capacity_snapshot
-                WHERE datetime(replace(substr(ts_utc, 1, 19), 'T', ' ')) >= datetime('now', ?)
-                GROUP BY trigger_reason
-                ORDER BY samples DESC, trigger_reason ASC
-                LIMIT 8
-                """,
-                (cutoff,),
-            )
-        except Exception as exc:
-            logging.exception("Failed to load twitch metrics: %s", exc)
-            raise web.HTTPInternalServerError(text="Twitch metrics unavailable") from exc
-
-        now_utc = _dt.datetime.now(tz=_dt.UTC).replace(minute=0, second=0, microsecond=0)
-        start_utc = now_utc - _dt.timedelta(hours=max(0, hours - 1))
-        bucket_keys: list[str] = []
-        labels: list[str] = []
-        for i in range(hours):
-            bucket_dt = start_utc + _dt.timedelta(hours=i)
-            bucket_keys.append(bucket_dt.strftime("%Y-%m-%d %H:00:00"))
-            labels.append(bucket_dt.strftime("%d.%m %H:%M"))
-
-        raids_map: dict[str, dict[str, float]] = {}
-        for row in raids_hourly_rows:
-            key = str(row["bucket_hour"] if hasattr(row, "keys") else row[0] or "")
-            if not key:
-                continue
-            raids_map[key] = {
-                "raid_count": float(row["raid_count"] if hasattr(row, "keys") else row[1] or 0),
-                "raid_viewers": float(row["raid_viewers"] if hasattr(row, "keys") else row[2] or 0),
-            }
-
-        active_map: dict[str, float] = {}
-        for row in active_hourly_rows:
-            key = str(row["bucket_hour"] if hasattr(row, "keys") else row[0] or "")
-            if not key:
-                continue
-            active_map[key] = float(
-                row["active_streamers"] if hasattr(row, "keys") else row[1] or 0
-            )
-
-        eventsub_map: dict[str, dict[str, float]] = {}
-        for row in eventsub_hourly_rows:
-            key = str(row["bucket_hour"] if hasattr(row, "keys") else row[0] or "")
-            if not key:
-                continue
-            eventsub_map[key] = {
-                "avg_utilization_pct": float(
-                    row["avg_utilization_pct"] if hasattr(row, "keys") else row[1] or 0.0
-                ),
-                "peak_utilization_pct": float(
-                    row["peak_utilization_pct"] if hasattr(row, "keys") else row[2] or 0.0
-                ),
-                "avg_used_slots": float(
-                    row["avg_used_slots"] if hasattr(row, "keys") else row[3] or 0.0
-                ),
-                "peak_used_slots": float(
-                    row["peak_used_slots"] if hasattr(row, "keys") else row[4] or 0.0
-                ),
-                "avg_listener_count": float(
-                    row["avg_listener_count"] if hasattr(row, "keys") else row[5] or 0.0
-                ),
-                "samples": float(row["samples"] if hasattr(row, "keys") else row[6] or 0),
-            }
-
-        raids_series: list[int] = []
-        raid_viewers_series: list[int] = []
-        active_streamers_series: list[int] = []
-        eventsub_avg_util_series: list[float | None] = []
-        eventsub_peak_util_series: list[float | None] = []
-        eventsub_used_slots_series: list[float | None] = []
-        eventsub_listener_series: list[float | None] = []
-
-        for key in bucket_keys:
-            raid_row = raids_map.get(key, {})
-            active_row = active_map.get(key, 0.0)
-            event_row = eventsub_map.get(key)
-
-            raids_series.append(int(round(float(raid_row.get("raid_count", 0.0)))))
-            raid_viewers_series.append(int(round(float(raid_row.get("raid_viewers", 0.0)))))
-            active_streamers_series.append(int(round(float(active_row or 0.0))))
-
-            if event_row:
-                eventsub_avg_util_series.append(
-                    round(float(event_row.get("avg_utilization_pct", 0.0)), 2)
-                )
-                eventsub_peak_util_series.append(
-                    round(float(event_row.get("peak_utilization_pct", 0.0)), 2)
-                )
-                eventsub_used_slots_series.append(
-                    round(float(event_row.get("avg_used_slots", 0.0)), 2)
-                )
-                eventsub_listener_series.append(
-                    round(float(event_row.get("avg_listener_count", 0.0)), 2)
-                )
-            else:
-                eventsub_avg_util_series.append(None)
-                eventsub_peak_util_series.append(None)
-                eventsub_used_slots_series.append(None)
-                eventsub_listener_series.append(None)
-
-        raids_total = _as_int(raids_summary_row, "raids_total", 0)
-        raid_viewers_total = _as_int(raids_summary_row, "raid_viewers_total", 0)
-        unique_targets = _as_int(raids_summary_row, "unique_targets", 0)
-        unique_sources = _as_int(raids_summary_row, "unique_sources", 0)
-
-        active_now = _as_int(active_now_row, "active_now", 0)
-        active_peak = max(active_streamers_series) if active_streamers_series else 0
-        active_avg = (
-            (sum(active_streamers_series) / len(active_streamers_series))
-            if active_streamers_series
-            else 0.0
-        )
-
-        eventsub_avg = _as_float(eventsub_summary_row, "avg_utilization_pct", 0.0)
-        eventsub_peak = _as_float(eventsub_summary_row, "peak_utilization_pct", 0.0)
-        eventsub_avg_slots = _as_float(eventsub_summary_row, "avg_used_slots", 0.0)
-        eventsub_peak_slots = _as_float(eventsub_summary_row, "peak_used_slots", 0.0)
-        eventsub_avg_listeners = _as_float(eventsub_summary_row, "avg_listener_count", 0.0)
-        eventsub_max_listeners = _as_int(eventsub_summary_row, "max_listener_count", 0)
-        eventsub_samples = _as_int(eventsub_summary_row, "samples", 0)
-
-        eventsub_latest = {
-            "ts_utc": (
-                eventsub_latest_row["ts_utc"]
-                if eventsub_latest_row and hasattr(eventsub_latest_row, "keys")
-                else None
-            ),
-            "utilization_pct": _as_float(eventsub_latest_row, "utilization_pct", 0.0),
-            "used_slots": _as_int(eventsub_latest_row, "used_slots", 0),
-            "total_slots": _as_int(eventsub_latest_row, "total_slots", 0),
-            "listener_count": _as_int(eventsub_latest_row, "listener_count", 0),
-            "reason": (
-                eventsub_latest_row["trigger_reason"]
-                if eventsub_latest_row and hasattr(eventsub_latest_row, "keys")
-                else None
-            ),
-        }
-
-        reason_top = []
-        for row in eventsub_reason_rows:
-            reason_top.append(
-                {
-                    "reason": str(row["trigger_reason"] if hasattr(row, "keys") else row[0] or ""),
-                    "samples": int(row["samples"] if hasattr(row, "keys") else row[1] or 0),
-                    "peak_utilization_pct": float(
-                        row["peak_utilization_pct"] if hasattr(row, "keys") else row[2] or 0.0
-                    ),
-                }
-            )
-
-        payload = {
-            "window_hours": hours,
-            "generated_at": _dt.datetime.now(tz=_dt.UTC).isoformat(timespec="seconds"),
-            "summary": {
-                "raids_total": raids_total,
-                "raid_viewers_total": raid_viewers_total,
-                "unique_targets": unique_targets,
-                "unique_sources": unique_sources,
-                "active_streamers_now": active_now,
-                "active_streamers_peak": active_peak,
-                "active_streamers_avg": round(active_avg, 2),
-                "eventsub_samples": eventsub_samples,
-                "eventsub_avg_utilization_pct": round(eventsub_avg, 2),
-                "eventsub_peak_utilization_pct": round(eventsub_peak, 2),
-                "eventsub_avg_used_slots": round(eventsub_avg_slots, 2),
-                "eventsub_peak_used_slots": round(eventsub_peak_slots, 2),
-                "eventsub_avg_listener_count": round(eventsub_avg_listeners, 2),
-                "eventsub_max_listener_count": eventsub_max_listeners,
-                "eventsub_latest": eventsub_latest,
-            },
-            "timeline": {
-                "labels": labels,
-                "raids": raids_series,
-                "raid_viewers": raid_viewers_series,
-                "active_streamers": active_streamers_series,
-                "eventsub_avg_utilization_pct": eventsub_avg_util_series,
-                "eventsub_peak_utilization_pct": eventsub_peak_util_series,
-                "eventsub_avg_used_slots": eventsub_used_slots_series,
-                "eventsub_avg_listener_count": eventsub_listener_series,
-            },
-            "reasons_top": reason_top,
-        }
-        return self._json(payload)
 
     async def _handle_voice_stats(self, request: web.Request) -> web.Response:
         self._check_auth(request)
@@ -5636,11 +5104,6 @@ class DashboardServer:
         active = set(bot.active_cogs())
         discovered = set(bot.cogs_list)
         status_map = bot.cog_status.copy()
-        twitch_virtual_modules = self._twitch_virtual_tree_modules(
-            active=active,
-            discovered=discovered,
-            status_map=status_map,
-        )
 
         def is_manageable(path: str) -> bool:
             if path == "cogs":
@@ -5721,19 +5184,6 @@ class DashboardServer:
                 if discovered_child:
                     discovered_count += 1
 
-            if module_path == "cogs.twitch" and twitch_virtual_modules:
-                existing_paths = {str(child.get("path", "")) for child in children}
-                for child in twitch_virtual_modules:
-                    child_path = str(child.get("path", ""))
-                    if not child_path or child_path in existing_paths:
-                        continue
-                    children.append(child)
-                    module_count += 1
-                    if child.get("loaded"):
-                        loaded_count += 1
-                    if child.get("discovered"):
-                        discovered_count += 1
-
             return {
                 "type": "directory",
                 "name": directory.name if parts else "cogs",
@@ -5776,7 +5226,7 @@ class DashboardServer:
         if not isinstance(names, list) or not names:
             raise web.HTTPBadRequest(text="'names' must be a non-empty list")
         targets = self._normalize_manage_targets(names)
-        safe_names = self._safe_log_value([name for name, _ in targets])
+        safe_names = self._safe_log_value(targets)
         safe_remote = self._safe_log_value(request.remote)
         logger.info(
             "AUDIT master-dashboard cog_reload: names=%s from %s",
@@ -5786,22 +5236,12 @@ class DashboardServer:
 
         results: dict[str, dict[str, Any]] = {}
         async with self._lock:
-            for name, subsystem_name in targets:
+            for name in targets:
                 if self.bot.is_namespace_blocked(name, assume_normalized=True):
                     results[name] = {
                         "ok": False,
                         "message": f"🚫 {name} ist blockiert",
                     }
-                    continue
-                if subsystem_name:
-                    if "cogs.twitch" not in self.bot.extensions:
-                        results[name] = {
-                            "ok": False,
-                            "message": "cogs.twitch is not loaded",
-                        }
-                        continue
-                    ok, message = await self._reload_twitch_subsystem(subsystem_name)
-                    results[name] = {"ok": ok, "message": message}
                     continue
                 if name not in self.bot.extensions:
                     results[name] = {
@@ -5824,24 +5264,12 @@ class DashboardServer:
 
         results: dict[str, dict[str, Any]] = {}
         async with self._lock:
-            for name, subsystem_name in targets:
+            for name in targets:
                 if self.bot.is_namespace_blocked(name, assume_normalized=True):
                     results[name] = {
                         "ok": False,
                         "message": f"🚫 {name} ist blockiert",
                     }
-                    continue
-                if subsystem_name:
-                    if "cogs.twitch" not in self.bot.extensions:
-                        ok_twitch, msg_twitch = await self.bot.reload_cog("cogs.twitch")
-                        if not ok_twitch:
-                            results[name] = {
-                                "ok": False,
-                                "message": f"❌ Failed to load cogs.twitch: {msg_twitch}",
-                            }
-                            continue
-                    ok, message = await self._reload_twitch_subsystem(subsystem_name)
-                    results[name] = {"ok": ok, "message": message}
                     continue
                 ok, message = await self.bot.reload_cog(name)
                 results[name] = {"ok": ok, "message": message}
@@ -5854,7 +5282,7 @@ class DashboardServer:
         if not isinstance(names, list) or not names:
             raise web.HTTPBadRequest(text="'names' must be a non-empty list")
         targets = self._normalize_manage_targets(names)
-        safe_names = self._safe_log_value([name for name, _ in targets])
+        safe_names = self._safe_log_value(targets)
         safe_remote = self._safe_log_value(request.remote)
         logger.warning(
             "AUDIT master-dashboard cog_unload: names=%s from %s",
@@ -5864,33 +5292,20 @@ class DashboardServer:
 
         results: dict[str, dict[str, Any]] = {}
         async with self._lock:
-            normal_targets: list[str] = []
-            for name, subsystem_name in targets:
-                if subsystem_name:
+            unload_result = await self.bot.unload_many(targets)
+            for name in targets:
+                status = unload_result.get(name, "unknown")
+                if status == "unloaded":
+                    results[name] = {"ok": True, "message": f"✅ Unloaded {name}"}
+                elif status == "timeout":
                     results[name] = {
                         "ok": False,
-                        "message": (
-                            "Twitch subsystem unload is not supported. "
-                            "Use Reload for the subsystem or unload cogs.twitch."
-                        ),
+                        "message": f"⏱️ Timeout unloading {name}",
                     }
-                    continue
-                normal_targets.append(name)
-            if normal_targets:
-                unload_result = await self.bot.unload_many(normal_targets)
-                for name in normal_targets:
-                    status = unload_result.get(name, "unknown")
-                    if status == "unloaded":
-                        results[name] = {"ok": True, "message": f"✅ Unloaded {name}"}
-                    elif status == "timeout":
-                        results[name] = {
-                            "ok": False,
-                            "message": f"⏱️ Timeout unloading {name}",
-                        }
-                    elif status.startswith("error"):
-                        results[name] = {"ok": False, "message": status}
-                    else:
-                        results[name] = {"ok": False, "message": status}
+                elif status.startswith("error"):
+                    results[name] = {"ok": False, "message": status}
+                else:
+                    results[name] = {"ok": False, "message": status}
         return self._json({"results": results})
 
     async def _handle_reload_all(self, request: web.Request) -> web.Response:
@@ -6236,3 +5651,4 @@ class DashboardServer:
 
 if TYPE_CHECKING:  # pragma: no cover - avoid runtime dependency cycle
     from main_bot import MasterBot
+

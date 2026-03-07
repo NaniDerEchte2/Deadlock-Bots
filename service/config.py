@@ -21,7 +21,6 @@ def _load_vault_secrets():
             "STEAM_API_KEY",
             "TWITCH_CLIENT_ID",
             "TWITCH_CLIENT_SECRET",
-            "TWITCH_BOT_TOKEN",
             "OPENAI_API_KEY",
             "GEMINI_API_KEY",
             "PUBLIC_BASE_URL",

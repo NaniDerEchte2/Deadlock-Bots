@@ -6,9 +6,8 @@ from dataclasses import dataclass
 
 _TRUE_VALUES = {"1", "true", "yes", "y", "on"}
 _FALSE_VALUES = {"0", "false", "no", "n", "off"}
-_ALLOWED_RUNTIME_ROLES = {"master", "twitch_worker", "dashboard"}
+_ALLOWED_RUNTIME_ROLES = {"master", "dashboard"}
 _LEGACY_ROLE_MAP = {
-    "bot": "twitch_worker",
     "dashboard": "dashboard",
 }
 
@@ -82,8 +81,6 @@ def resolve_runtime_mode() -> RuntimeMode:
 
 def split_runtime_role_for_cogs(mode: RuntimeMode | None = None) -> str:
     active_mode = mode or resolve_runtime_mode()
-    if active_mode.role == "twitch_worker":
-        return "bot"
     if active_mode.role == "dashboard":
         return "dashboard"
     return ""
@@ -108,4 +105,3 @@ __all__ = [
     "resolve_runtime_role",
     "split_runtime_role_for_cogs",
 ]
-

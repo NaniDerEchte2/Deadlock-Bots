@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
-import os
 import sys
 
 from bot_core.bootstrap import _RedactSecretsFilter
+from bot_core.runtime_mode import resolve_runtime_mode
 
 
 class LoggingMixin:
@@ -14,7 +14,7 @@ class LoggingMixin:
     def setup_logging(self):
         log_dir = self.root_dir / "logs"
         log_dir.mkdir(exist_ok=True)
-        runtime_role = str(os.getenv("TWITCH_SPLIT_RUNTIME_ROLE", "")).strip().lower()
+        runtime_role = str(resolve_runtime_mode().role or "").strip().lower()
         safe_role = "".join(ch for ch in runtime_role if ch.isalnum() or ch in {"-", "_"})
         log_prefix = f"master_bot.{safe_role}" if safe_role else "master_bot"
 
@@ -54,9 +54,6 @@ class LoggingMixin:
         logging.getLogger("discord.http").setLevel(logging.WARNING)
 
         # Suppress noisy library logs (security & clutter)
-        logging.getLogger("twitchio").setLevel(logging.INFO)
-        logging.getLogger("twitchio.http").setLevel(logging.INFO)
-        logging.getLogger("twitchio.websocket").setLevel(logging.INFO)
         logging.getLogger("aiohttp").setLevel(logging.INFO)
 
         # Immer Secrets redaktieren, ohne ENV-Flag

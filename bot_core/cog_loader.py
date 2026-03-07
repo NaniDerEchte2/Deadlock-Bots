@@ -38,14 +38,12 @@ class CogLoaderMixin:
 
     def _effective_split_runtime_role(self) -> str:
         """
-        Return the active split runtime role only when explicitly enforced.
+        Return the active dashboard runtime role only when explicitly enforced.
 
         This avoids accidental global env leakage (TWITCH_SPLIT_RUNTIME_ROLE)
-        forcing the master bot to load only one cog.
+        changing the master runtime unexpectedly.
         """
         runtime_mode = resolve_runtime_mode()
-        if runtime_mode.role == "twitch_worker":
-            return "bot"
         if runtime_mode.role == "dashboard":
             return "dashboard"
 
@@ -53,7 +51,7 @@ class CogLoaderMixin:
             return ""
 
         runtime_role = (os.getenv("TWITCH_SPLIT_RUNTIME_ROLE") or "").strip().lower()
-        if runtime_role not in {"bot", "dashboard"}:
+        if runtime_role != "dashboard":
             return ""
 
         if self._env_truthy(os.getenv("TWITCH_SPLIT_RUNTIME_ENFORCE")):
@@ -220,11 +218,7 @@ class CogLoaderMixin:
             "",
         }
         runtime_role = self._effective_split_runtime_role()
-        if runtime_role == "bot":
-            # Split runtime bot service must only load the Twitch bridge extension.
-            if module_path != "cogs.twitch":
-                return True
-        elif runtime_role == "dashboard":
+        if runtime_role == "dashboard":
             # Dashboard split runtime should not load discord cogs at all.
             return True
         if module_path in default_excludes:

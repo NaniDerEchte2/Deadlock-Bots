@@ -34,8 +34,9 @@ Diese README fasst alle Features zusammen, die auf dem Server für Community-Mit
 ## Match-Coaching
 - Der Button **„Match-Coaching starten“** erzeugt einen privaten Thread und führt dich durch Rang-, Subrang- und Heldenauswahl sowie einen Kommentar. Abschließend erhältst du eine Zusammenfassung, der Thread wird archiviert und das Coaching-Team informiert.【F:cogs/dl_coaching.py†L217-L520】
 
-## Twitch-Statistiken
-- `!twl` funktioniert als Proxy-Befehl für das Twitch-Cog: Im vorgesehenen Statistik-Channel erhältst du ein interaktives Leaderboard mit Filtern wie `samples=`, `avg=`, `partner=`, `limit=`, `sort=` und `order=`. Eine `help`-Abfrage erklärt alle Optionen.【F:cogs/twitch/__init__.py†L16-L61】【F:cogs/twitch/leaderboard.py†L323-L417】
+## Partner-Onboarding
+- Mit `/streamer` startest du den Partner-Onboarding-Flow. Deadlock vergibt die lokale Discord-Rolle und verschickt die interne Benachrichtigung erst nach bestätigter externer Autorisierung.【F:cogs/welcome_dm/step_streamer.py†L566-L797】
+- Die eigentliche Streamer-/Twitch-Integration lebt außerhalb dieses Repos. Betriebs- und Setup-Hinweise dazu stehen in [docs/TWITCH_EXTERNAL_REPO.md](./TWITCH_EXTERNAL_REPO.md).
 
 Viel Spaß beim Nutzen der Bots und Features – und danke fürs Mitgestalten der Deutschen Deadlock Community!
 
