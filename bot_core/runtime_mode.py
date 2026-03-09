@@ -8,6 +8,7 @@ _TRUE_VALUES = {"1", "true", "yes", "y", "on"}
 _FALSE_VALUES = {"0", "false", "no", "n", "off"}
 _ALLOWED_RUNTIME_ROLES = {"master", "dashboard"}
 _LEGACY_ROLE_MAP = {
+    "bot": "bot",
     "dashboard": "dashboard",
 }
 

@@ -47,6 +47,7 @@ class UserActivityAnalyzer(commands.Cog):
         self._join_vanity_snapshot: dict[int, dict[str, Any]] = {}
         self._join_source_locks: dict[int, asyncio.Lock] = {}
         self._invite_warmup_task: asyncio.Task | None = None
+        self._twitch_invite_table_available: bool | None = None
 
         logger.info("User Activity Analyzer initializing")
 
@@ -751,11 +752,7 @@ class UserActivityAnalyzer(commands.Cog):
                     existing_ids: set[int] = {int(r[0]) for r in existing_rows}
 
                     # Twitch-Invite-Lookup für Backfill-Korrelation
-                    twitch_rows = central_db.query_all(
-                        "SELECT LOWER(invite_code), streamer_login FROM twitch_streamer_invites WHERE guild_id = ?",
-                        (guild.id,),
-                    )
-                    twitch_lookup: dict[str, str] = {r[0]: r[1] for r in twitch_rows if r[0]}
+                    twitch_lookup = self._load_twitch_invite_lookup(guild.id)
 
                     inserted = 0
                     for member in guild.members:
@@ -845,6 +842,8 @@ class UserActivityAnalyzer(commands.Cog):
         code = (invite_code or "").strip()
         if not code:
             return None
+        if self._twitch_invite_table_available is False:
+            return None
         try:
             row = central_db.query_one(
                 """
@@ -857,12 +856,49 @@ class UserActivityAnalyzer(commands.Cog):
                 """,
                 (code, guild_id, guild_id),
             )
-        except Exception:
+        except Exception as exc:
+            if self._is_missing_twitch_invites_table(exc):
+                self._mark_twitch_invites_unavailable()
+                return None
             return None
+        self._twitch_invite_table_available = True
         if not row or not row[0]:
             return None
         login = str(row[0]).strip().lower()
         return login or None
+
+    @staticmethod
+    def _is_missing_twitch_invites_table(exc: BaseException) -> bool:
+        message = str(exc or "").lower()
+        return "no such table" in message and "twitch_streamer_invites" in message
+
+    def _mark_twitch_invites_unavailable(self) -> None:
+        if self._twitch_invite_table_available is False:
+            return
+        self._twitch_invite_table_available = False
+        logger.info(
+            "Legacy Twitch invite table not available; skipping Twitch invite correlation in UserActivityAnalyzer."
+        )
+
+    def _load_twitch_invite_lookup(self, guild_id: int) -> dict[str, str]:
+        if self._twitch_invite_table_available is False:
+            return {}
+        try:
+            rows = central_db.query_all(
+                """
+                SELECT LOWER(invite_code), streamer_login
+                FROM twitch_streamer_invites
+                WHERE guild_id = ?
+                """,
+                (guild_id,),
+            )
+        except Exception as exc:
+            if self._is_missing_twitch_invites_table(exc):
+                self._mark_twitch_invites_unavailable()
+                return {}
+            raise
+        self._twitch_invite_table_available = True
+        return {r[0]: r[1] for r in rows if r[0]}
 
     def _classify_join_source(
         self,

@@ -713,7 +713,7 @@ class SteamVerifiedRole(commands.Cog):
         if not ids:
             return
         if len(ids) > self._fast_lane_max:
-            log.warning(
+            log.debug(
                 "Fast-Lane: %s IDs gefunden, kappe auf %s um Rate-Limits zu vermeiden.",
                 len(ids),
                 self._fast_lane_max,
