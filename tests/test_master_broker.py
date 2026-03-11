@@ -1,0 +1,256 @@
+from __future__ import annotations
+
+import json
+import unittest
+from typing import Any
+
+import discord
+
+from service.master_broker import (
+    _IDEMPOTENCY_HEADER,
+    _INTERNAL_TOKEN_HEADER,
+    MasterBroker,
+)
+
+
+class _FakeRequest:
+    def __init__(
+        self,
+        payload: dict[str, Any],
+        *,
+        headers: dict[str, str],
+        remote: str = "127.0.0.1",
+    ) -> None:
+        self._payload = payload
+        self.headers = headers
+        self.remote = remote
+        self.transport = None
+
+    async def json(self) -> dict[str, Any]:
+        return dict(self._payload)
+
+
+class _FakeMessage:
+    def __init__(self, message_id: int) -> None:
+        self.id = message_id
+        self.edit_calls: list[dict[str, Any]] = []
+
+    async def edit(self, **kwargs: Any) -> None:
+        self.edit_calls.append(dict(kwargs))
+
+
+class _FakeChannel:
+    def __init__(self, channel_id: int, *, message: _FakeMessage | None = None) -> None:
+        self.id = channel_id
+        self.sent_calls: list[dict[str, Any]] = []
+        self._message = message or _FakeMessage(4321)
+        self.fetch_calls: list[int] = []
+
+    async def send(self, **kwargs: Any) -> _FakeMessage:
+        self.sent_calls.append(dict(kwargs))
+        return self._message
+
+    async def fetch_message(self, message_id: int) -> _FakeMessage | None:
+        self.fetch_calls.append(message_id)
+        if self._message.id == message_id:
+            return self._message
+        return None
+
+
+class _TrackingTestView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+        self.bound_channel_id: int | None = None
+        self.bound_message_id: int | None = None
+        self.add_item(
+            discord.ui.Button(
+                label="Track",
+                style=discord.ButtonStyle.primary,
+                custom_id="tests:track",
+            )
+        )
+
+    def bind_to_message(self, *, channel_id: int, message_id: int) -> None:
+        self.bound_channel_id = channel_id
+        self.bound_message_id = message_id
+
+
+class _FakeBot:
+    def __init__(self, *, channel: _FakeChannel | None = None) -> None:
+        self._channel = channel
+        self.added_views: list[tuple[discord.ui.View, int | None]] = []
+
+    def get_channel(self, channel_id: int) -> _FakeChannel | None:
+        if self._channel is not None and self._channel.id == channel_id:
+            return self._channel
+        return None
+
+    async def fetch_channel(self, channel_id: int) -> _FakeChannel | None:
+        return self.get_channel(channel_id)
+
+    def add_view(self, view: discord.ui.View, *, message_id: int | None = None) -> None:
+        self.added_views.append((view, message_id))
+
+    def is_ready(self) -> bool:
+        return True
+
+
+class MasterBrokerTests(unittest.IsolatedAsyncioTestCase):
+    def _headers(self, idempotency_key: str = "req-1") -> dict[str, str]:
+        return {
+            _INTERNAL_TOKEN_HEADER: "secret-token",
+            _IDEMPOTENCY_HEADER: idempotency_key,
+        }
+
+    @staticmethod
+    def _payload(response) -> dict[str, Any]:
+        return json.loads(response.text)
+
+    async def test_send_rich_message_builds_link_button_and_allowed_mentions(self) -> None:
+        channel = _FakeChannel(111)
+        bot = _FakeBot(channel=channel)
+        broker = MasterBroker(bot, token="secret-token")
+        request = _FakeRequest(
+            {
+                "channel_id": 111,
+                "content": "  <@&55> Stream ist live  ",
+                "embed": {"title": "Now Live"},
+                "allowed_role_ids": [55],
+                "view_spec": {
+                    "type": "link_button",
+                    "label": "Zum VOD",
+                    "url": "https://www.twitch.tv/example",
+                },
+            },
+            headers=self._headers(),
+        )
+
+        response = await broker._handle_send_rich_message(request)
+
+        self.assertEqual(response.status, 200)
+        body = self._payload(response)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["result"]["message_id"], 4321)
+        self.assertEqual(len(channel.sent_calls), 1)
+        sent = channel.sent_calls[0]
+        self.assertEqual(sent["content"], "<@&55> Stream ist live")
+        self.assertIsInstance(sent["embed"], discord.Embed)
+        self.assertIsInstance(sent["view"], discord.ui.View)
+        self.assertEqual(sent["view"].children[0].label, "Zum VOD")
+        self.assertEqual(sent["view"].children[0].url, "https://www.twitch.tv/example")
+        self.assertEqual([role.id for role in sent["allowed_mentions"].roles], [55])
+        self.assertEqual(bot.added_views, [])
+
+    async def test_send_rich_message_uses_tracking_view_resolver_and_registers_view(self) -> None:
+        channel = _FakeChannel(222)
+        bot = _FakeBot(channel=channel)
+
+        async def _resolve(spec: dict[str, Any]) -> discord.ui.View:
+            self.assertEqual(spec["type"], "twitch_live_tracking")
+            return _TrackingTestView()
+
+        bot.resolve_master_broker_view_spec = _resolve  # type: ignore[attr-defined]
+        broker = MasterBroker(bot, token="secret-token")
+        request = _FakeRequest(
+            {
+                "channel_id": 222,
+                "embed": {"title": "Tracking"},
+                "view_spec": {
+                    "type": "twitch_live_tracking",
+                    "streamer_login": "example",
+                    "tracking_token": "abc123",
+                },
+            },
+            headers=self._headers(),
+        )
+
+        response = await broker._handle_send_rich_message(request)
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(len(channel.sent_calls), 1)
+        self.assertEqual(len(bot.added_views), 1)
+        registered_view, registered_message_id = bot.added_views[0]
+        self.assertEqual(registered_message_id, 4321)
+        self.assertIsInstance(registered_view, _TrackingTestView)
+        self.assertEqual(registered_view.bound_channel_id, 222)
+        self.assertEqual(registered_view.bound_message_id, 4321)
+
+    async def test_send_rich_message_requires_tracking_view_resolver(self) -> None:
+        channel = _FakeChannel(333)
+        broker = MasterBroker(_FakeBot(channel=channel), token="secret-token")
+        request = _FakeRequest(
+            {
+                "channel_id": 333,
+                "embed": {"title": "Tracking"},
+                "view_spec": {"type": "twitch_live_tracking"},
+            },
+            headers=self._headers(),
+        )
+
+        response = await broker._handle_send_rich_message(request)
+
+        self.assertEqual(response.status, 503)
+        body = self._payload(response)
+        self.assertEqual(body["error"]["code"], "view_resolver_unavailable")
+        self.assertEqual(channel.sent_calls, [])
+
+    async def test_edit_rich_message_fetches_and_edits_message(self) -> None:
+        message = _FakeMessage(9876)
+        channel = _FakeChannel(444, message=message)
+        bot = _FakeBot(channel=channel)
+        bot.resolve_master_broker_view_spec = lambda spec: _TrackingTestView()  # type: ignore[attr-defined]
+        broker = MasterBroker(bot, token="secret-token")
+        request = _FakeRequest(
+            {
+                "channel_id": 444,
+                "message_id": 9876,
+                "content": "Offline",
+                "embed": {"title": "Offline"},
+                "allowed_role_ids": [77],
+                "view_spec": {
+                    "type": "twitch_live_tracking",
+                    "streamer_login": "example",
+                    "tracking_token": "zzz",
+                },
+            },
+            headers=self._headers("req-edit"),
+        )
+
+        response = await broker._handle_edit_rich_message(request)
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(channel.fetch_calls, [9876])
+        self.assertEqual(len(message.edit_calls), 1)
+        edit_call = message.edit_calls[0]
+        self.assertEqual(edit_call["content"], "Offline")
+        self.assertIsInstance(edit_call["embed"], discord.Embed)
+        self.assertEqual([role.id for role in edit_call["allowed_mentions"].roles], [77])
+        self.assertEqual(len(bot.added_views), 1)
+        registered_view, registered_message_id = bot.added_views[0]
+        self.assertEqual(registered_message_id, 9876)
+        self.assertIsInstance(registered_view, _TrackingTestView)
+        self.assertEqual(registered_view.bound_channel_id, 444)
+        self.assertEqual(registered_view.bound_message_id, 9876)
+
+    async def test_send_rich_message_rejects_invalid_view_spec_type(self) -> None:
+        channel = _FakeChannel(555)
+        broker = MasterBroker(_FakeBot(channel=channel), token="secret-token")
+        request = _FakeRequest(
+            {
+                "channel_id": 555,
+                "embed": {"title": "Invalid"},
+                "view_spec": {"type": "unknown"},
+            },
+            headers=self._headers("req-invalid"),
+        )
+
+        response = await broker._handle_send_rich_message(request)
+
+        self.assertEqual(response.status, 400)
+        body = self._payload(response)
+        self.assertEqual(body["error"]["code"], "bad_request")
+        self.assertIn("view_spec.type", body["error"]["message"])
+
+
+if __name__ == "__main__":
+    unittest.main()

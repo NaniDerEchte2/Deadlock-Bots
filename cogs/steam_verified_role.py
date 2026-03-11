@@ -734,7 +734,7 @@ class SteamVerifiedRole(commands.Cog):
             try:
                 ok = await self.assign_verified_role_with_retries(uid, guild=guild, role=role)
                 if ok:
-                    log.info("Fast-Lane: Verified-Rolle vergeben für %s", uid)
+                    log.debug("Fast-Lane: Verified-Rolle vergeben für %s", uid)
                 return ok
             except Exception as exc:  # noqa: PERF203
                 log.warning("Fast-Lane: Fehler bei Rolle für %s: %s", uid, exc)

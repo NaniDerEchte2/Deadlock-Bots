@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import ipaddress
 import json
 import logging
@@ -10,7 +11,9 @@ import secrets
 import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlsplit
 
+import discord
 from aiohttp import web
 
 logger = logging.getLogger(__name__)
@@ -41,6 +44,23 @@ class _IdempotencyDecision:
     cached_status: int = 0
     cached_body: dict[str, Any] | None = None
     pending_future: asyncio.Future[tuple[int, dict[str, Any]]] | None = None
+
+
+@dataclass(slots=True)
+class _RichMessagePayload:
+    channel_id: int
+    content: str | None
+    embed_dict: dict[str, Any]
+    embed: discord.Embed
+    allowed_role_ids: list[int]
+    allowed_mentions: discord.AllowedMentions
+    view_spec: dict[str, Any] | None
+
+
+@dataclass(slots=True)
+class _ResolvedBrokerView:
+    view: discord.ui.View | None
+    should_register: bool = False
 
 
 class MasterBroker:
@@ -174,6 +194,14 @@ class MasterBroker:
                 [
                     web.get("/internal/master/v1/health", self._handle_health),
                     web.post("/internal/master/v1/discord/send-message", self._handle_send_message),
+                    web.post(
+                        "/internal/master/v1/discord/send-rich-message",
+                        self._handle_send_rich_message,
+                    ),
+                    web.post(
+                        "/internal/master/v1/discord/edit-rich-message",
+                        self._handle_edit_rich_message,
+                    ),
                     web.post(
                         "/internal/master/v1/discord/member/add-role",
                         self._handle_add_role,
@@ -785,6 +813,238 @@ class MasterBroker:
             raise ValueError(f"{key} must be a positive integer")
         return value
 
+    @staticmethod
+    def _parse_optional_content(payload: dict[str, Any], key: str = "content") -> str | None:
+        raw = payload.get(key)
+        if raw is None:
+            return None
+        if not isinstance(raw, str):
+            raise ValueError(f"{key} must be a string")
+        content = raw.strip()
+        if not content:
+            return None
+        if len(content) > 2000:
+            raise ValueError(f"{key} exceeds Discord limit (2000)")
+        return content
+
+    @staticmethod
+    def _parse_embed_dict(payload: dict[str, Any]) -> tuple[dict[str, Any], discord.Embed]:
+        raw_embed = payload.get("embed")
+        if not isinstance(raw_embed, dict):
+            raise ValueError("embed must be a JSON object")
+        embed_dict = dict(raw_embed)
+        try:
+            embed = discord.Embed.from_dict(embed_dict)
+        except Exception as exc:
+            raise ValueError("embed payload is invalid") from exc
+        return embed_dict, embed
+
+    @classmethod
+    def _parse_role_id_list(cls, payload: dict[str, Any], key: str) -> list[int]:
+        raw_value = payload.get(key)
+        if raw_value is None:
+            return []
+        if not isinstance(raw_value, list):
+            raise ValueError(f"{key} must be a list of positive integers")
+
+        parsed: list[int] = []
+        seen: set[int] = set()
+        for item in raw_value:
+            if isinstance(item, bool):
+                raise ValueError(f"{key} must be a list of positive integers")
+            if isinstance(item, int):
+                value = item
+            elif isinstance(item, str) and item.strip().isdigit():
+                value = int(item.strip())
+            else:
+                raise ValueError(f"{key} must be a list of positive integers")
+            if value <= 0:
+                raise ValueError(f"{key} must be a list of positive integers")
+            if value in seen:
+                continue
+            seen.add(value)
+            parsed.append(value)
+        return parsed
+
+    @staticmethod
+    def _build_allowed_mentions(allowed_role_ids: list[int]) -> discord.AllowedMentions:
+        return discord.AllowedMentions(
+            everyone=False,
+            users=False,
+            roles=[discord.Object(id=role_id) for role_id in allowed_role_ids] if allowed_role_ids else False,
+            replied_user=False,
+        )
+
+    @staticmethod
+    def _validate_url(raw_url: str) -> str:
+        url = str(raw_url or "").strip()
+        if not url:
+            raise ValueError("view_spec.url is required")
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("view_spec.url must use http or https")
+        return url
+
+    @classmethod
+    def _parse_view_spec(cls, payload: dict[str, Any]) -> dict[str, Any] | None:
+        raw_spec = payload.get("view_spec")
+        if raw_spec is None:
+            return None
+        if not isinstance(raw_spec, dict):
+            raise ValueError("view_spec must be a JSON object")
+
+        view_type = str(raw_spec.get("type") or "").strip()
+        if view_type not in {"twitch_live_tracking", "link_button"}:
+            raise ValueError("view_spec.type is invalid")
+
+        parsed_spec = dict(raw_spec)
+        parsed_spec["type"] = view_type
+        if view_type == "link_button":
+            label = str(parsed_spec.get("label") or "").strip()
+            if not label:
+                raise ValueError("view_spec.label is required")
+            if len(label) > 80:
+                raise ValueError("view_spec.label exceeds Discord limit (80)")
+            parsed_spec["label"] = label
+            parsed_spec["url"] = cls._validate_url(str(parsed_spec.get("url") or ""))
+
+        return parsed_spec
+
+    @classmethod
+    def _parse_rich_message_payload(cls, payload: dict[str, Any]) -> _RichMessagePayload:
+        channel_id = cls._parse_positive_payload_int(payload, "channel_id")
+        content = cls._parse_optional_content(payload)
+        embed_dict, embed = cls._parse_embed_dict(payload)
+        allowed_role_ids = cls._parse_role_id_list(payload, "allowed_role_ids")
+        view_spec = cls._parse_view_spec(payload)
+        if content is None and not embed_dict:
+            raise ValueError("content or embed is required")
+        return _RichMessagePayload(
+            channel_id=channel_id,
+            content=content,
+            embed_dict=embed_dict,
+            embed=embed,
+            allowed_role_ids=allowed_role_ids,
+            allowed_mentions=cls._build_allowed_mentions(allowed_role_ids),
+            view_spec=view_spec,
+        )
+
+    async def _resolve_channel(self, channel_id: int) -> Any | None:
+        channel = None
+        try:
+            channel = self.bot.get_channel(channel_id)
+        except Exception:
+            channel = None
+
+        if channel is not None:
+            return channel
+
+        fetch_channel = getattr(self.bot, "fetch_channel", None)
+        if callable(fetch_channel):
+            try:
+                return await fetch_channel(channel_id)
+            except Exception:
+                return None
+        return None
+
+    async def _resolve_message(self, *, channel: Any, message_id: int) -> Any | None:
+        fetch_message = getattr(channel, "fetch_message", None)
+        if not callable(fetch_message):
+            return None
+        try:
+            return await fetch_message(message_id)
+        except Exception:
+            return None
+
+    async def _resolve_broker_view(
+        self,
+        *,
+        request: web.Request,
+        idempotency_key: str,
+        view_spec: dict[str, Any] | None,
+    ) -> _ResolvedBrokerView | web.Response:
+        if view_spec is None:
+            return _ResolvedBrokerView(view=None, should_register=False)
+
+        view_type = str(view_spec.get("type") or "").strip()
+        if view_type == "link_button":
+            view = discord.ui.View(timeout=None)
+            view.add_item(
+                discord.ui.Button(
+                    label=str(view_spec["label"]),
+                    style=discord.ButtonStyle.link,
+                    url=str(view_spec["url"]),
+                )
+            )
+            return _ResolvedBrokerView(view=view, should_register=False)
+
+        resolver = getattr(self.bot, "resolve_master_broker_view_spec", None)
+        if not callable(resolver):
+            return self._error_response(
+                request=request,
+                status=503,
+                code="view_resolver_unavailable",
+                message="twitch live tracking view resolver is unavailable",
+                idempotency_key=idempotency_key,
+            )
+
+        try:
+            resolved_view = resolver(dict(view_spec))
+            if inspect.isawaitable(resolved_view):
+                resolved_view = await resolved_view
+        except Exception as exc:
+            logger.error("Master broker view resolver failed (%s): %s", view_type, exc)
+            return self._error_response(
+                request=request,
+                status=502,
+                code="view_resolver_failed",
+                message="failed to resolve message view",
+                idempotency_key=idempotency_key,
+            )
+
+        if not isinstance(resolved_view, discord.ui.View):
+            return self._error_response(
+                request=request,
+                status=500,
+                code="view_resolver_invalid",
+                message="view resolver returned an invalid view",
+                idempotency_key=idempotency_key,
+            )
+
+        return _ResolvedBrokerView(view=resolved_view, should_register=True)
+
+    async def _bind_and_register_view(
+        self,
+        *,
+        view: discord.ui.View | None,
+        channel_id: int,
+        message_id: int,
+        should_register: bool,
+    ) -> None:
+        if view is None or not should_register:
+            return
+
+        bind_method = getattr(view, "bind_to_message", None)
+        if callable(bind_method):
+            try:
+                bind_result = bind_method(channel_id=channel_id, message_id=message_id)
+                if inspect.isawaitable(bind_result):
+                    await bind_result
+            except Exception:
+                logger.exception(
+                    "Master broker could not bind persistent view (channel=%s message=%s)",
+                    channel_id,
+                    message_id,
+                )
+        try:
+            self.bot.add_view(view, message_id=message_id)
+        except Exception:
+            logger.exception(
+                "Master broker could not register persistent view (channel=%s message=%s)",
+                channel_id,
+                message_id,
+            )
+
     async def _handle_health(self, request: web.Request) -> web.Response:
         rejected = self._authorize(request)
         if rejected is not None:
@@ -893,6 +1153,258 @@ class MasterBroker:
         return await self._run_idempotent_action(
             request=request,
             action="discord.send_message",
+            idempotency_key=idempotency_key,
+            payload_hash=payload_hash,
+            operation=_operation,
+        )
+
+    async def _handle_send_rich_message(self, request: web.Request) -> web.Response:
+        rejected = self._authorize(request)
+        if rejected is not None:
+            return rejected
+
+        try:
+            payload = await self._read_json_object(request)
+            idempotency_key = self._extract_idempotency_key(request, payload)
+            rich_payload = self._parse_rich_message_payload(payload)
+        except ValueError as exc:
+            return self._error_response(
+                request=request,
+                status=400,
+                code="bad_request",
+                message=str(exc),
+            )
+        except Exception:
+            return self._error_response(
+                request=request,
+                status=400,
+                code="bad_request",
+                message="invalid JSON payload",
+            )
+
+        allowlist_rejected = self._allowlist_check(
+            request=request,
+            idempotency_key=idempotency_key,
+            scope="channel",
+            value=rich_payload.channel_id,
+            enabled=self._channel_allowlist_enabled,
+            allowed_ids=self._allowed_channel_ids,
+        )
+        if allowlist_rejected is not None:
+            return allowlist_rejected
+
+        for role_id in rich_payload.allowed_role_ids:
+            role_allowlist_rejected = self._allowlist_check(
+                request=request,
+                idempotency_key=idempotency_key,
+                scope="role",
+                value=role_id,
+                enabled=self._role_allowlist_enabled,
+                allowed_ids=self._allowed_role_ids,
+            )
+            if role_allowlist_rejected is not None:
+                return role_allowlist_rejected
+
+        operation_payload = {
+            "channel_id": rich_payload.channel_id,
+            "content": rich_payload.content,
+            "embed": rich_payload.embed_dict,
+            "allowed_role_ids": rich_payload.allowed_role_ids,
+            "view_spec": rich_payload.view_spec,
+        }
+        payload_hash = self._payload_hash(operation_payload)
+
+        async def _operation() -> web.Response:
+            channel = await self._resolve_channel(rich_payload.channel_id)
+            if channel is None or not hasattr(channel, "send"):
+                return self._error_response(
+                    request=request,
+                    status=404,
+                    code="not_found",
+                    message=f"channel {rich_payload.channel_id} not found",
+                    idempotency_key=idempotency_key,
+                )
+
+            resolved_view = await self._resolve_broker_view(
+                request=request,
+                idempotency_key=idempotency_key,
+                view_spec=rich_payload.view_spec,
+            )
+            if isinstance(resolved_view, web.Response):
+                return resolved_view
+
+            try:
+                message = await channel.send(
+                    content=rich_payload.content,
+                    embed=rich_payload.embed,
+                    view=resolved_view.view,
+                    allowed_mentions=rich_payload.allowed_mentions,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Master broker send_rich_message failed (channel=%s): %s",
+                    rich_payload.channel_id,
+                    exc,
+                )
+                return self._error_response(
+                    request=request,
+                    status=502,
+                    code="discord_error",
+                    message="failed to send message",
+                    idempotency_key=idempotency_key,
+                )
+
+            message_id = int(getattr(message, "id", 0) or 0)
+            await self._bind_and_register_view(
+                view=resolved_view.view,
+                channel_id=rich_payload.channel_id,
+                message_id=message_id,
+                should_register=resolved_view.should_register,
+            )
+            return self._success_response(
+                request=request,
+                idempotency_key=idempotency_key,
+                result={
+                    "channel_id": rich_payload.channel_id,
+                    "message_id": message_id,
+                },
+            )
+
+        return await self._run_idempotent_action(
+            request=request,
+            action="discord.send_rich_message",
+            idempotency_key=idempotency_key,
+            payload_hash=payload_hash,
+            operation=_operation,
+        )
+
+    async def _handle_edit_rich_message(self, request: web.Request) -> web.Response:
+        rejected = self._authorize(request)
+        if rejected is not None:
+            return rejected
+
+        try:
+            payload = await self._read_json_object(request)
+            idempotency_key = self._extract_idempotency_key(request, payload)
+            rich_payload = self._parse_rich_message_payload(payload)
+            message_id = self._parse_positive_payload_int(payload, "message_id")
+        except ValueError as exc:
+            return self._error_response(
+                request=request,
+                status=400,
+                code="bad_request",
+                message=str(exc),
+            )
+        except Exception:
+            return self._error_response(
+                request=request,
+                status=400,
+                code="bad_request",
+                message="invalid JSON payload",
+            )
+
+        allowlist_rejected = self._allowlist_check(
+            request=request,
+            idempotency_key=idempotency_key,
+            scope="channel",
+            value=rich_payload.channel_id,
+            enabled=self._channel_allowlist_enabled,
+            allowed_ids=self._allowed_channel_ids,
+        )
+        if allowlist_rejected is not None:
+            return allowlist_rejected
+
+        for role_id in rich_payload.allowed_role_ids:
+            role_allowlist_rejected = self._allowlist_check(
+                request=request,
+                idempotency_key=idempotency_key,
+                scope="role",
+                value=role_id,
+                enabled=self._role_allowlist_enabled,
+                allowed_ids=self._allowed_role_ids,
+            )
+            if role_allowlist_rejected is not None:
+                return role_allowlist_rejected
+
+        operation_payload = {
+            "channel_id": rich_payload.channel_id,
+            "message_id": message_id,
+            "content": rich_payload.content,
+            "embed": rich_payload.embed_dict,
+            "allowed_role_ids": rich_payload.allowed_role_ids,
+            "view_spec": rich_payload.view_spec,
+        }
+        payload_hash = self._payload_hash(operation_payload)
+
+        async def _operation() -> web.Response:
+            channel = await self._resolve_channel(rich_payload.channel_id)
+            if channel is None:
+                return self._error_response(
+                    request=request,
+                    status=404,
+                    code="not_found",
+                    message=f"channel {rich_payload.channel_id} not found",
+                    idempotency_key=idempotency_key,
+                )
+
+            message = await self._resolve_message(channel=channel, message_id=message_id)
+            if message is None or not hasattr(message, "edit"):
+                return self._error_response(
+                    request=request,
+                    status=404,
+                    code="not_found",
+                    message=f"message {message_id} not found",
+                    idempotency_key=idempotency_key,
+                )
+
+            resolved_view = await self._resolve_broker_view(
+                request=request,
+                idempotency_key=idempotency_key,
+                view_spec=rich_payload.view_spec,
+            )
+            if isinstance(resolved_view, web.Response):
+                return resolved_view
+
+            try:
+                await message.edit(
+                    content=rich_payload.content,
+                    embed=rich_payload.embed,
+                    view=resolved_view.view,
+                    allowed_mentions=rich_payload.allowed_mentions,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Master broker edit_rich_message failed (channel=%s message=%s): %s",
+                    rich_payload.channel_id,
+                    message_id,
+                    exc,
+                )
+                return self._error_response(
+                    request=request,
+                    status=502,
+                    code="discord_error",
+                    message="failed to edit message",
+                    idempotency_key=idempotency_key,
+                )
+
+            await self._bind_and_register_view(
+                view=resolved_view.view,
+                channel_id=rich_payload.channel_id,
+                message_id=message_id,
+                should_register=resolved_view.should_register,
+            )
+            return self._success_response(
+                request=request,
+                idempotency_key=idempotency_key,
+                result={
+                    "channel_id": rich_payload.channel_id,
+                    "message_id": message_id,
+                },
+            )
+
+        return await self._run_idempotent_action(
+            request=request,
+            action="discord.edit_rich_message",
             idempotency_key=idempotency_key,
             payload_hash=payload_hash,
             operation=_operation,
