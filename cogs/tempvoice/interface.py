@@ -12,6 +12,7 @@ from .core import (
     MINRANK_CATEGORY_IDS,
     RANK_ORDER,
     RANKED_CATEGORY_ID,
+    _member_rank_index,
 )
 
 logger = logging.getLogger("cogs.tempvoice.interface")
@@ -65,6 +66,26 @@ def _find_rank_emoji(guild: discord.Guild | None, rank: str):
     if not guild:
         return None
     return discord.utils.get(guild.emojis, name=rank)
+
+
+def _resolve_member_rank_index(core, member: discord.Member) -> int:
+    """Nutzt bevorzugt den Rank-Manager und faellt sonst auf Rollen-Namen zurueck."""
+    bot = getattr(core, "bot", None)
+    if bot and hasattr(bot, "get_cog"):
+        rank_mgr = bot.get_cog("RolePermissionVoiceManager")
+        if rank_mgr and hasattr(rank_mgr, "get_user_rank_from_roles"):
+            try:
+                _rank_name, rank_value, _subrank = rank_mgr.get_user_rank_from_roles(member)
+            except Exception as exc:
+                logger.debug("Min-rank member lookup failed for %s: %r", member.id, exc)
+            else:
+                try:
+                    resolved = int(rank_value or 0)
+                except (TypeError, ValueError):
+                    resolved = 0
+                if resolved > 0:
+                    return min(resolved, len(RANK_ORDER) - 1)
+    return _member_rank_index(member)
 
 
 class TempVoiceInterface(commands.Cog):
@@ -984,30 +1005,11 @@ class MinRankSelect(discord.ui.Select):
             return
         choice = self.values[0]
 
-        def _idx(name: str) -> int:
-            order = [
-                "unknown",
-                "initiate",
-                "seeker",
-                "alchemist",
-                "arcanist",
-                "ritualist",
-                "emissary",
-                "archon",
-                "oracle",
-                "phantom",
-                "ascendant",
-                "eternus",
-            ]
-            try:
-                return order.index(name)
-            except ValueError:
-                return 0
-
-        member_rank_idx = 0
-        for role in m.roles:
-            member_rank_idx = max(member_rank_idx, _idx(role.name.lower()))
-        choice_idx = _idx(choice)
+        try:
+            choice_idx = RANK_ORDER.index(choice)
+        except ValueError:
+            choice_idx = 0
+        member_rank_idx = _resolve_member_rank_index(self.core, m)
         if choice_idx > member_rank_idx:
             user_rank_label = (
                 RANK_ORDER[member_rank_idx].capitalize()
