@@ -12,6 +12,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from service.discord_utils import is_transient_discord_http_error, retry_discord_http
+
 # ========== Konfiguration ==========
 MAIN_GUILD_ID = 1289721245281292288
 RULES_CHANNEL_ID = 1315684135175716975
@@ -23,6 +25,85 @@ log = logging.getLogger("RulesPanel")
 
 
 # ------------------------------ Helpers ------------------------------ #
+async def _send_interaction_notice(
+    interaction: discord.Interaction, content: str
+) -> None:
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.send_message(content, ephemeral=True)
+        else:
+            await interaction.followup.send(content, ephemeral=True)
+    except Exception as exc:
+        log.debug("Konnte Interaktionshinweis nicht senden: %s", exc)
+
+
+async def _delete_thread_quietly(thread: discord.Thread) -> None:
+    try:
+        await retry_discord_http(
+            lambda: thread.delete(),
+            log=log,
+            operation_name=f"delete failed onboarding thread {thread.id}",
+        )
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        log.debug("Konnte fehlgeschlagenen Onboarding-Thread %s nicht aufräumen.", thread.id)
+
+
+async def _create_onboarding_thread(
+    channel: discord.TextChannel,
+    *,
+    name: str,
+    invite_user: discord.abc.Snowflake | None,
+    log_context: str,
+) -> discord.Thread:
+    private_thread: discord.Thread | None = None
+    try:
+        private_thread = await retry_discord_http(
+            lambda: channel.create_thread(
+                name=name,
+                type=discord.ChannelType.private_thread,
+                invitable=True,
+                auto_archive_duration=60,
+            ),
+            log=log,
+            operation_name=f"create private onboarding thread ({log_context})",
+        )
+        if invite_user is not None:
+            await retry_discord_http(
+                lambda: private_thread.add_user(invite_user),
+                log=log,
+                operation_name=f"add user to private onboarding thread ({log_context})",
+            )
+        return private_thread
+    except discord.Forbidden as exc:
+        log.debug("Privater Thread konnte nicht erstellt/zugewiesen werden: %s", exc)
+    except discord.HTTPException as exc:
+        if is_transient_discord_http_error(exc):
+            log.warning(
+                "Temporärer Discord-Fehler beim privaten Onboarding-Thread (%s): %s. Nutze Public-Fallback.",
+                log_context,
+                exc,
+            )
+        else:
+            log.debug(
+                "Privater Onboarding-Thread nicht nutzbar (%s): %s. Nutze Public-Fallback.",
+                log_context,
+                exc,
+            )
+
+    if private_thread is not None:
+        await _delete_thread_quietly(private_thread)
+
+    return await retry_discord_http(
+        lambda: channel.create_thread(
+            name=name,
+            type=discord.ChannelType.public_thread,
+            auto_archive_duration=60,
+        ),
+        log=log,
+        operation_name=f"create public onboarding thread ({log_context})",
+    )
+
+
 async def _create_user_thread(
     interaction: discord.Interaction,
 ) -> discord.Thread | None:
@@ -43,31 +124,34 @@ async def _create_user_thread(
 
     name = f"onboarding-{interaction.user.name}".replace(" ", "-")[:90]
 
-    # Private Thread versuchen
     try:
-        thread = await channel.create_thread(
+        return await _create_onboarding_thread(
+            channel,
             name=name,
-            type=discord.ChannelType.private_thread,
-            invitable=True,
-            auto_archive_duration=60,
+            invite_user=interaction.user,
+            log_context=f"user={interaction.user.id}",
         )
-        await thread.add_user(interaction.user)
-        return thread
-    except discord.Forbidden as exc:
-        log.debug("Privater Thread konnte nicht erstellt werden: %s", exc)
-
-    # Fallback: Public Thread
-    try:
-        thread = await channel.create_thread(
-            name=name,
-            type=discord.ChannelType.public_thread,
-            auto_archive_duration=60,
+    except discord.HTTPException as exc:
+        if is_transient_discord_http_error(exc):
+            log.warning(
+                "Onboarding-Thread konnte für %s temporär nicht erstellt werden: %s",
+                interaction.user.id,
+                exc,
+            )
+            await _send_interaction_notice(
+                interaction,
+                "⚠️ Discord hat gerade Serverprobleme. Bitte versuche es in ein paar Sekunden erneut.",
+            )
+            return None
+        log.error("Thread creation failed: %r", exc)
+        await _send_interaction_notice(
+            interaction, "❌ Konnte keinen Thread erstellen."
         )
-        return thread
+        return None
     except Exception as e:
         log.error("Thread creation failed: %r", e)
-        await interaction.response.send_message(
-            "❌ Konnte keinen Thread erstellen.", ephemeral=True
+        await _send_interaction_notice(
+            interaction, "❌ Konnte keinen Thread erstellen."
         )
         return None
 
@@ -139,17 +223,39 @@ class RulesPanel(commands.Cog):
 
         # Bestehende Message editieren statt neu posten
         try:
-            msg = await ch.fetch_message(PANEL_MESSAGE_ID)
-            await msg.edit(embed=emb, view=view)
+            msg = await retry_discord_http(
+                lambda: ch.fetch_message(PANEL_MESSAGE_ID),
+                log=log,
+                operation_name=f"fetch rules panel message {PANEL_MESSAGE_ID}",
+            )
+            await retry_discord_http(
+                lambda: msg.edit(embed=emb, view=view),
+                log=log,
+                operation_name=f"edit rules panel message {PANEL_MESSAGE_ID}",
+            )
             await interaction.response.send_message("✅ Panel aktualisiert.", ephemeral=True)
         except discord.NotFound:
-            await ch.send(embed=emb, view=view)
+            await retry_discord_http(
+                lambda: ch.send(embed=emb, view=view),
+                log=log,
+                operation_name=f"send rules panel message to channel {ch.id}",
+            )
             await interaction.response.send_message(
                 "✅ Panel neu gesendet (alte Message nicht gefunden).", ephemeral=True
             )
+        except discord.HTTPException as exc:
+            if is_transient_discord_http_error(exc):
+                log.warning("Rules panel publish hit transient Discord error: %s", exc)
+                await _send_interaction_notice(
+                    interaction,
+                    "⚠️ Discord hat gerade Serverprobleme. Bitte versuche den Befehl gleich erneut.",
+                )
+                return
+            log.error("Panel-Edit fehlgeschlagen: %s", exc)
+            await _send_interaction_notice(interaction, f"❌ Fehler: {exc}")
         except Exception as e:
             log.error("Panel-Edit fehlgeschlagen: %s", e)
-            await interaction.response.send_message(f"❌ Fehler: {e}", ephemeral=True)
+            await _send_interaction_notice(interaction, f"❌ Fehler: {e}")
 
     # ----- Auto-Start nach Discord Member Screening -----
     @commands.Cog.listener()
@@ -172,31 +278,29 @@ class RulesPanel(commands.Cog):
             return
 
         name = f"onboarding-{member.name}".replace(" ", "-")[:90]
-        thread = None
         try:
-            thread = await channel.create_thread(
+            thread = await _create_onboarding_thread(
+                channel,
                 name=name,
-                type=discord.ChannelType.private_thread,
-                invitable=True,
-                auto_archive_duration=60,
+                invite_user=member,
+                log_context=f"member={member.id}",
             )
-            await thread.add_user(member)
-        except discord.Forbidden:
-            log.debug("Privater Thread für Auto-Onboarding nicht möglich für %s", member.id)
-            try:
-                thread = await channel.create_thread(
-                    name=name,
-                    type=discord.ChannelType.public_thread,
-                    auto_archive_duration=60,
+        except discord.HTTPException as exc:
+            if is_transient_discord_http_error(exc):
+                log.warning(
+                    "Thread-Erstellung temporär fehlgeschlagen beim Auto-Onboarding für %s: %s",
+                    member.id,
+                    exc,
                 )
-            except Exception:
-                log.error("Thread-Erstellung fehlgeschlagen beim Auto-Onboarding für %s", member.id)
                 return
+            log.error(
+                "Thread-Erstellung fehlgeschlagen beim Auto-Onboarding für %s: %s",
+                member.id,
+                exc,
+            )
+            return
         except Exception:
             log.error("Thread-Erstellung fehlgeschlagen beim Auto-Onboarding für %s", member.id)
-            return
-
-        if not thread:
             return
 
         onboard_cog = self.bot.get_cog("StaticOnboarding")
@@ -219,7 +323,18 @@ class RulesPanel(commands.Cog):
                 ),
                 color=0x5865F2,
             )
-            await thread.send(embed=fallback_embed)
+            try:
+                await retry_discord_http(
+                    lambda: thread.send(embed=fallback_embed),
+                    log=log,
+                    operation_name=f"send auto-onboarding fallback to thread {thread.id}",
+                )
+            except discord.HTTPException as exc:
+                log.warning(
+                    "Fallback-Onboarding-Nachricht konnte für %s nicht gesendet werden: %s",
+                    member.id,
+                    exc,
+                )
 
     # ----- Start-Flow im Thread -----
     async def start_in_thread(self, interaction: discord.Interaction):
@@ -261,7 +376,18 @@ class RulesPanel(commands.Cog):
             ),
             color=0x5865F2,
         )
-        await thread.send(embed=fallback_embed)
+        try:
+            await retry_discord_http(
+                lambda: thread.send(embed=fallback_embed),
+                log=log,
+                operation_name=f"send onboarding fallback to thread {thread.id}",
+            )
+        except discord.HTTPException as exc:
+            log.warning(
+                "Fallback-Onboarding-Nachricht konnte in Thread %s nicht gesendet werden: %s",
+                thread.id,
+                exc,
+            )
 
 
 async def setup(bot: commands.Bot):

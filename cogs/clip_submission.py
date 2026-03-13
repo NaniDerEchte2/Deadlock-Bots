@@ -15,6 +15,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from service.discord_utils import is_transient_discord_http_error, retry_discord_http
+
 # =========================
 # >>> KONFIG-KOPF (deine IDs) <<<
 SUBMIT_CHANNEL_ID = 1425215762460835931   # Kanal mit Interface (Embed + Button)
@@ -395,7 +397,14 @@ class ClipSubmissionCog(commands.Cog):
         except discord.Forbidden:
             log.warning('Clip Interface: Keine Berechtigung, Verlauf von %s zu lesen.', channel.id)
         except discord.HTTPException as exc:
-            log.warning('Clip Interface: HTTP-Fehler beim Durchsuchen von %s: %s', channel.id, exc)
+            if is_transient_discord_http_error(exc):
+                log.warning(
+                    'Clip Interface: temporärer Discord-Fehler beim Durchsuchen von %s: %s',
+                    channel.id,
+                    exc,
+                )
+            else:
+                log.warning('Clip Interface: HTTP-Fehler beim Durchsuchen von %s: %s', channel.id, exc)
         except RuntimeError as exc:
             # Happens during shutdown when the HTTP session is already closed
             log.debug('Clip Interface: Session geschlossen beim Lesen von %s: %s', channel.id, exc)
@@ -412,9 +421,29 @@ class ClipSubmissionCog(commands.Cog):
             channel = ch
         else:
             try:
-                ch = await guild.fetch_channel(SUBMIT_CHANNEL_ID)
+                ch = await retry_discord_http(
+                    lambda: guild.fetch_channel(SUBMIT_CHANNEL_ID),
+                    log=log,
+                    operation_name=f"fetch clip submit channel {SUBMIT_CHANNEL_ID} in guild {guild.id}",
+                )
                 if isinstance(ch, discord.TextChannel):
                     channel = ch
+            except discord.HTTPException as exc:
+                channel = None
+                if is_transient_discord_http_error(exc):
+                    log.warning(
+                        "Clip Interface: Submit-Channel %s in Guild %s temporär nicht abrufbar: %s",
+                        SUBMIT_CHANNEL_ID,
+                        guild.id,
+                        exc,
+                    )
+                else:
+                    log.warning(
+                        "Konnte Submit-Channel %s in Guild %s nicht abrufen: %s",
+                        SUBMIT_CHANNEL_ID,
+                        guild.id,
+                        exc,
+                    )
             except Exception as exc:
                 channel = None
                 log.warning(
@@ -432,7 +461,29 @@ class ClipSubmissionCog(commands.Cog):
         if pv and str(pv["channel_id"]).isdigit():
             try:
                 if int(pv["channel_id"]) == channel.id:
-                    message = await channel.fetch_message(int(pv["message_id"]))
+                    message = await retry_discord_http(
+                        lambda: channel.fetch_message(int(pv["message_id"])),
+                        log=log,
+                        operation_name=f"fetch persisted clip interface message {pv['message_id']}",
+                    )
+            except discord.NotFound:
+                message = None
+            except discord.HTTPException as exc:
+                message = None
+                if is_transient_discord_http_error(exc):
+                    log.warning(
+                        "Persistente Clip-Nachricht %s temporär nicht ladbar (Guild %s): %s",
+                        pv["message_id"],
+                        guild.id,
+                        exc,
+                    )
+                else:
+                    log.debug(
+                        "Persistente Clip-Nachricht %s konnte nicht geladen werden (Guild %s): %s",
+                        pv["message_id"],
+                        guild.id,
+                        exc,
+                    )
             except Exception as exc:
                 message = None
                 log.debug(
@@ -462,12 +513,45 @@ class ClipSubmissionCog(commands.Cog):
         view = ClipSubmitView(self)
 
         if message:
-            await message.edit(embed=embed, view=view, content=None)
-            pv_upsert_single(guild.id, channel.id, message.id, VIEW_TYPE)
-            return message.id
+            try:
+                await retry_discord_http(
+                    lambda: message.edit(embed=embed, view=view, content=None),
+                    log=log,
+                    operation_name=f"edit clip interface message {message.id}",
+                )
+            except discord.NotFound:
+                message = None
+            except discord.HTTPException as exc:
+                if is_transient_discord_http_error(exc):
+                    log.warning(
+                        "Clip Interface: Nachricht %s in Guild %s konnte temporär nicht aktualisiert werden: %s",
+                        message.id,
+                        guild.id,
+                        exc,
+                    )
+                    return message.id
+                raise
+            else:
+                pv_upsert_single(guild.id, channel.id, message.id, VIEW_TYPE)
+                return message.id
 
         # nicht gefunden → neu posten und persistent speichern
-        sent = await channel.send(embed=embed, view=view)
+        try:
+            sent = await retry_discord_http(
+                lambda: channel.send(embed=embed, view=view),
+                log=log,
+                operation_name=f"send clip interface message to channel {channel.id}",
+            )
+        except discord.HTTPException as exc:
+            if is_transient_discord_http_error(exc):
+                log.warning(
+                    "Clip Interface: neue Nachricht konnte in Kanal %s (Guild %s) temporär nicht erstellt werden: %s",
+                    channel.id,
+                    guild.id,
+                    exc,
+                )
+                return None
+            raise
         pv_upsert_single(guild.id, channel.id, sent.id, VIEW_TYPE)
         log.info(
             "Clip Interface: neue Nachricht %s in Kanal %s erstellt (Guild %s).",
@@ -492,6 +576,11 @@ class ClipSubmissionCog(commands.Cog):
                 return
             for g in self.bot.guilds:
                 await self.upsert_interface(g)
+        except discord.HTTPException as exc:
+            if is_transient_discord_http_error(exc):
+                log.warning("Clip-Interface Refresh wegen temporärem Discord-Fehler übersprungen: %s", exc)
+                return
+            log.exception("Clip-Interface konnte nicht aktualisiert werden")
         except Exception:
             log.exception("Clip-Interface konnte nicht aktualisiert werden")
 
@@ -601,6 +690,15 @@ class ClipSubmissionCog(commands.Cog):
             if g:
                 try:
                     await self.upsert_interface(g)
+                except discord.HTTPException as exc:
+                    if is_transient_discord_http_error(exc):
+                        log.warning(
+                            "Konnte Clip-Interface für Guild %s beim Start wegen temporärem Discord-Fehler nicht aktualisieren: %s",
+                            g.id,
+                            exc,
+                        )
+                    else:
+                        log.exception("Konnte Clip-Interface für Guild %s beim Start nicht aktualisieren", g.id)
                 except Exception:
                     log.exception("Konnte Clip-Interface für Guild %s beim Start nicht aktualisieren", g.id)
             return
@@ -608,6 +706,15 @@ class ClipSubmissionCog(commands.Cog):
         for g in self.bot.guilds:
             try:
                 await self.upsert_interface(g)
+            except discord.HTTPException as exc:
+                if is_transient_discord_http_error(exc):
+                    log.warning(
+                        "Konnte Clip-Interface für Guild %s wegen temporärem Discord-Fehler nicht aktualisieren: %s",
+                        g.id,
+                        exc,
+                    )
+                else:
+                    log.exception("Konnte Clip-Interface für Guild %s nicht aktualisieren", g.id)
             except Exception:
                 log.exception("Konnte Clip-Interface für Guild %s nicht aktualisieren", g.id)
 
@@ -621,7 +728,16 @@ class ClipSubmissionCog(commands.Cog):
             await interaction.response.send_message("Nur in einem Server nutzbar.", ephemeral=True)
             return
 
-        msg_id = await self.upsert_interface(guild)
+        try:
+            msg_id = await self.upsert_interface(guild)
+        except discord.HTTPException as exc:
+            if is_transient_discord_http_error(exc):
+                await interaction.response.send_message(
+                    "⚠️ Discord hat gerade Serverprobleme. Bitte versuche den Befehl gleich erneut.",
+                    ephemeral=True,
+                )
+                return
+            raise
         if msg_id:
             await interaction.response.send_message(f"✅ Interface aktiv. MessageID: `{msg_id}`", ephemeral=True)
         else:

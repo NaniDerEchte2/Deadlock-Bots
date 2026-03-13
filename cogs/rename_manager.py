@@ -218,6 +218,7 @@ class RenameManagerCog(commands.Cog):
             """
             UPDATE rename_requests
             SET status='PENDING',
+                created_at=CURRENT_TIMESTAMP,
                 processed_at=NULL,
                 assigned_worker_id=0,
                 last_error=?

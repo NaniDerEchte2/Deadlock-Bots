@@ -5,8 +5,9 @@ Shared Discord/Database utilities - eliminiert Duplicate Code über Cogs hinweg.
 import asyncio
 import logging
 import re
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from pathlib import Path
+from typing import TypeVar
 
 import discord
 
@@ -14,6 +15,8 @@ from service import db as central_db
 
 logger = logging.getLogger(__name__)
 _SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_DEFAULT_DISCORD_RETRY_DELAYS = (0.75, 1.5)
+_TransientResultT = TypeVar("_TransientResultT")
 
 
 # ========= Discord Member/Role Resolution =========
@@ -61,6 +64,87 @@ async def resolve_member(guild: discord.Guild, user_id: int) -> discord.Member |
         logger.debug(f"Failed to fetch member {user_id}: {exc}")
 
     return None
+
+
+def is_transient_discord_http_error(exc: BaseException) -> bool:
+    """
+    Returns True for Discord-side temporary API failures that can succeed on retry.
+    """
+    if isinstance(exc, discord.DiscordServerError):
+        return True
+    if not isinstance(exc, discord.HTTPException):
+        return False
+    status = int(getattr(exc, "status", 0) or 0)
+    return 500 <= status <= 599
+
+
+def _discord_retry_after_seconds(exc: discord.HTTPException) -> float | None:
+    retry_after = getattr(exc, "retry_after", None)
+    if retry_after is not None:
+        try:
+            return max(0.0, float(retry_after))
+        except (TypeError, ValueError):
+            return None
+
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if not headers:
+        return None
+
+    raw_retry_after = headers.get("Retry-After")
+    if raw_retry_after is None:
+        return None
+    try:
+        return max(0.0, float(raw_retry_after))
+    except (TypeError, ValueError):
+        return None
+
+
+async def retry_discord_http(
+    operation: Callable[[], Awaitable[_TransientResultT]],
+    *,
+    attempts: int = 3,
+    delays: Sequence[float] = _DEFAULT_DISCORD_RETRY_DELAYS,
+    log: logging.Logger | None = None,
+    operation_name: str = "Discord API call",
+) -> _TransientResultT:
+    """
+    Retries transient Discord HTTP 5xx failures with a short backoff.
+    """
+    total_attempts = max(1, int(attempts))
+    normalized_delays = tuple(max(0.0, float(delay)) for delay in delays)
+    attempt = 1
+
+    while True:
+        try:
+            return await operation()
+        except asyncio.CancelledError:
+            raise
+        except discord.HTTPException as exc:
+            if not is_transient_discord_http_error(exc) or attempt >= total_attempts:
+                raise
+
+            delay = _discord_retry_after_seconds(exc)
+            if delay is None:
+                if normalized_delays:
+                    idx = min(attempt - 1, len(normalized_delays) - 1)
+                    delay = normalized_delays[idx]
+                else:
+                    delay = 0.0
+
+            if log:
+                log.warning(
+                    "%s failed with Discord HTTP %s on attempt %s/%s; retrying in %.2fs",
+                    operation_name,
+                    getattr(exc, "status", "?"),
+                    attempt,
+                    total_attempts,
+                    delay,
+                )
+
+            if delay > 0:
+                await asyncio.sleep(delay)
+            attempt += 1
 
 
 # ========= Database Connection Helpers =========
