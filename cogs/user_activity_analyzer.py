@@ -765,11 +765,13 @@ class UserActivityAnalyzer(commands.Cog):
 
                         joined_ts = (
                             member.joined_at.strftime("%Y-%m-%d %H:%M:%S")
-                            if member.joined_at else None
+                            if member.joined_at
+                            else None
                         )
                         account_created = (
                             member.created_at.strftime("%Y-%m-%d %H:%M:%S")
-                            if member.created_at else None
+                            if member.created_at
+                            else None
                         )
 
                         # Quelle: Snapshot-Cache für bekannte Invite-Codes prüfen
@@ -799,16 +801,18 @@ class UserActivityAnalyzer(commands.Cog):
                             source_label = "Vor Tracking (rückwirkend)"
                             source_confidence = "none"
 
-                        metadata = json.dumps({
-                            "join_source_bucket": source_bucket,
-                            "join_source_kind": source_kind,
-                            "join_source_label": source_label,
-                            "join_source_confidence": source_confidence,
-                            "backfilled": True,
-                            "invite_code": matched_code,
-                            "twitch_streamer_login": matched_twitch,
-                            "inviter_bot": matched_bot or None,
-                        })
+                        metadata = json.dumps(
+                            {
+                                "join_source_bucket": source_bucket,
+                                "join_source_kind": source_kind,
+                                "join_source_label": source_label,
+                                "join_source_confidence": source_confidence,
+                                "backfilled": True,
+                                "invite_code": matched_code,
+                                "twitch_streamer_login": matched_twitch,
+                                "inviter_bot": matched_bot or None,
+                            }
+                        )
 
                         central_db.execute(
                             """
@@ -818,8 +822,12 @@ class UserActivityAnalyzer(commands.Cog):
                             VALUES (?, ?, 'join', ?, ?, ?, ?)
                             """,
                             (
-                                member.id, guild.id, joined_ts,
-                                member.display_name, account_created, metadata,
+                                member.id,
+                                guild.id,
+                                joined_ts,
+                                member.display_name,
+                                account_created,
+                                metadata,
                             ),
                         )
                         inserted += 1
@@ -827,7 +835,9 @@ class UserActivityAnalyzer(commands.Cog):
                     total_inserted += inserted
                     if inserted:
                         logger.info(
-                            "Backfill: %d join-Events für Guild %s nachgetragen", inserted, guild.name
+                            "Backfill: %d join-Events für Guild %s nachgetragen",
+                            inserted,
+                            guild.name,
                         )
                 except Exception as exc:
                     logger.warning("Backfill fehlgeschlagen für Guild %s: %s", guild.id, exc)
@@ -1215,7 +1225,8 @@ class UserActivityAnalyzer(commands.Cog):
             channel = getattr(invite, "channel", None)
             entry = {
                 "uses": self._to_int(getattr(invite, "uses", 0), 0) or 0,
-                "url": str(getattr(invite, "url", "") or "").strip() or f"https://discord.gg/{code}",
+                "url": str(getattr(invite, "url", "") or "").strip()
+                or f"https://discord.gg/{code}",
                 "inviter_id": self._to_int(getattr(inviter, "id", None), None),
                 "inviter_name": str(inviter) if inviter else None,
                 "inviter_bot": bool(getattr(inviter, "bot", False)) if inviter else False,
@@ -2081,7 +2092,6 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
             logger.error(f"Error in server_stats command: {e}", exc_info=True)
             await ctx.send(f"❌ Fehler beim Abrufen der Server-Statistiken: {e}")
 
-
     @commands.command(name="rawmember")
     @commands.has_permissions(manage_guild=True)
     async def raw_member_command(self, ctx, member: discord.Member):
@@ -2090,15 +2100,19 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
             raw = await self.bot.http.get_member(ctx.guild.id, member.id)
             # Nur interessante Felder ausgeben
             interesting = {
-                k: v for k, v in raw.items()
+                k: v
+                for k, v in raw.items()
                 if k not in {"user", "roles", "avatar", "banner", "avatar_decoration_data"}
             }
             import pprint
+
             text = pprint.pformat(interesting, width=80)
             # In chunks senden wenn zu lang
-            chunks = [text[i:i+1900] for i in range(0, len(text), 1900)]
+            chunks = [text[i : i + 1900] for i in range(0, len(text), 1900)]
             for i, chunk in enumerate(chunks[:3]):
-                await ctx.send(f"```python\n# Raw Member Data ({i+1}/{len(chunks)})\n{chunk}\n```")
+                await ctx.send(
+                    f"```python\n# Raw Member Data ({i + 1}/{len(chunks)})\n{chunk}\n```"
+                )
         except Exception as e:
             await ctx.send(f"❌ Fehler: {e}")
 
