@@ -137,6 +137,7 @@ async def _resolve_guild_and_member(
 
     return g1, m1
 
+
 def _check_partner_onboarding_blacklist(
     *,
     discord_user_id: int | None = None,
@@ -150,7 +151,6 @@ def _check_partner_onboarding_blacklist(
     except TwitchPartnerIntegrationUnavailable as exc:
         log.warning("Blacklist-/Opt-out-Pruefung nicht verfuegbar: %s", exc)
         raise
-
 
 
 def _blacklist_rejection_message() -> str:
@@ -603,7 +603,6 @@ class StreamerRequirementsView(StepView):
             return
 
         try:
-
             # View mit Link-Button erstellen
             view = discord.ui.View()
             view.add_item(

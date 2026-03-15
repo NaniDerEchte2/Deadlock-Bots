@@ -330,7 +330,9 @@ class TempVoiceLaneSorting(commands.Cog):
         before: discord.abc.GuildChannel,
         after: discord.abc.GuildChannel,
     ) -> None:
-        if not isinstance(before, discord.VoiceChannel) or not isinstance(after, discord.VoiceChannel):
+        if not isinstance(before, discord.VoiceChannel) or not isinstance(
+            after, discord.VoiceChannel
+        ):
             return
 
         if before.category_id != after.category_id:

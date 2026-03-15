@@ -94,6 +94,7 @@ def _safe_text_input_placeholder(value: str) -> str:
         return text
     return f"{text[: DISCORD_TEXTINPUT_PLACEHOLDER_MAX - 3].rstrip()}..."
 
+
 SYSTEM_PROMPT = dedent(
     """
     Du bist Codex, der interne Auto-Fixer der Deutschen Deadlock Community.
@@ -672,9 +673,7 @@ class BugReporter(commands.Cog):
 
                 if t == "restart_bot":
                     if reload_attempted and not reload_failed:
-                        results.append(
-                            "ℹ️ Bot-Neustart übersprungen, weil Reload erfolgreich war."
-                        )
+                        results.append("ℹ️ Bot-Neustart übersprungen, weil Reload erfolgreich war.")
                         continue
                     lifecycle = getattr(self.bot, "lifecycle", None)
                     if not lifecycle:
@@ -1054,8 +1053,7 @@ class BugReporter(commands.Cog):
         if actions:
             body = (
                 f"{body}\n\n"
-                "Automatische Bot-Aktionen:\n"
-                + "\n".join(f"- {line}" for line in actions if line)
+                "Automatische Bot-Aktionen:\n" + "\n".join(f"- {line}" for line in actions if line)
             ).strip()
         return f"{header}\n\n{body}".strip()
 
@@ -1094,9 +1092,7 @@ class BugReporter(commands.Cog):
         )
         source_jump = ""
         if guild_id and source_channel_id and interaction.id:
-            source_jump = (
-                f"https://discord.com/channels/{int(guild_id)}/{int(source_channel_id)}/{int(interaction.id)}"
-            )
+            source_jump = f"https://discord.com/channels/{int(guild_id)}/{int(source_channel_id)}/{int(interaction.id)}"
 
         ticket_channel_line = "nicht erstellt"
         ticket_channel_jump = ""
@@ -1109,9 +1105,8 @@ class BugReporter(commands.Cog):
 
         if codex_actions:
             action_plan = "\n".join(
-                f"- {item.get('type', '?')}" + (
-                    f": {item.get('target')}" if item.get("target") else ""
-                )
+                f"- {item.get('type', '?')}"
+                + (f": {item.get('target')}" if item.get("target") else "")
                 for item in codex_actions
             )
         else:
@@ -1243,8 +1238,7 @@ class BugReporter(commands.Cog):
         try:
             await interaction.followup.send(
                 "Ticket-Antwort konnte nicht in den Ticket-Kanal gepostet werden. "
-                "Ich sende sie dir vorläufig hier:\n\n"
-                + self._split_message_chunks(message)[0],
+                "Ich sende sie dir vorläufig hier:\n\n" + self._split_message_chunks(message)[0],
                 ephemeral=True,
             )
             return

@@ -3187,16 +3187,17 @@ class DashboardServer:
                     public_groups[public_kind]["count"] += 1
                 elif kind_raw in {"vanity", "vanity_url", "public_vanity"}:
                     public_kind = "vanity"
-                    vanity_key = f"vanity:{invite_code.lower()}" if invite_code else "vanity:unknown"
+                    vanity_key = (
+                        f"vanity:{invite_code.lower()}" if invite_code else "vanity:unknown"
+                    )
                     if vanity_key not in public_groups:
                         code_label = f"discord.gg/{invite_code}" if invite_code else "Vanity-Link"
                         public_groups[vanity_key] = {
                             "kind": "vanity",
                             "label": code_label,
                             "invite_code": invite_code or None,
-                            "invite_url": invite_url or (
-                                f"https://discord.gg/{invite_code}" if invite_code else None
-                            ),
+                            "invite_url": invite_url
+                            or (f"https://discord.gg/{invite_code}" if invite_code else None),
                             "count": 0,
                         }
                     public_groups[vanity_key]["count"] += 1
@@ -3284,8 +3285,10 @@ class DashboardServer:
                 inviter_id_bi = self._coerce_int(metadata.get("inviter_id"), None)
                 inviter_name_bi = str(metadata.get("inviter_name") or "").strip()
                 key_bi = (
-                    f"id:{inviter_id_bi}" if inviter_id_bi is not None
-                    else f"name:{inviter_name_bi.lower()}" if inviter_name_bi
+                    f"id:{inviter_id_bi}"
+                    if inviter_id_bi is not None
+                    else f"name:{inviter_name_bi.lower()}"
+                    if inviter_name_bi
                     else "bot_other"
                 )
                 label_bi = inviter_name_bi or (
@@ -3318,7 +3321,9 @@ class DashboardServer:
                     source_label = f"Persoenlich: {personal_label or 'Invite-Link'}"
                 elif bucket == "bot_invite":
                     inviter_name_bi = str(metadata.get("inviter_name") or "").strip()
-                    source_label = f"Bot Invite: {inviter_name_bi}" if inviter_name_bi else "Bot Invite"
+                    source_label = (
+                        f"Bot Invite: {inviter_name_bi}" if inviter_name_bi else "Bot Invite"
+                    )
                 else:
                     source_label = "Unbekannt"
 
@@ -5651,4 +5656,3 @@ class DashboardServer:
 
 if TYPE_CHECKING:  # pragma: no cover - avoid runtime dependency cycle
     from main_bot import MasterBot
-

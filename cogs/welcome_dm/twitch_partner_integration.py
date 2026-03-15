@@ -91,8 +91,7 @@ def _resolve_repo_path() -> Path:
             return candidate
     searched = ", ".join(str(path) for path in _candidate_repo_paths()) or "<none>"
     raise TwitchPartnerIntegrationUnavailable(
-        "Deadlock-Twitch-Bot wurde nicht gefunden. "
-        f"Gepruefte Pfade: {searched}"
+        f"Deadlock-Twitch-Bot wurde nicht gefunden. Gepruefte Pfade: {searched}"
     )
 
 
@@ -190,7 +189,9 @@ def get_auth_state(discord_user_id: int) -> TwitchPartnerAuthState:
                 )
 
             twitch_login = _normalize_login(_row_value(streamer_row, "twitch_login", 0)) or None
-            twitch_user_id = str(_row_value(streamer_row, "twitch_user_id", 1) or "").strip() or None
+            twitch_user_id = (
+                str(_row_value(streamer_row, "twitch_user_id", 1) or "").strip() or None
+            )
 
             authorized = bool(twitch_user_id and manager.has_enabled_auth(twitch_user_id))
             if not authorized and twitch_login:
@@ -256,7 +257,10 @@ def check_onboarding_blocklist(
                     if user_id_value:
                         candidate_user_ids.add(user_id_value)
                     if _normalize_bool(_row_value(login_row, "manual_partner_opt_out", 2)):
-                        return True, f"manual_partner_opt_out=1 fuer {login_value or normalized_login}"
+                        return (
+                            True,
+                            f"manual_partner_opt_out=1 fuer {login_value or normalized_login}",
+                        )
 
             if discord_id:
                 rows = conn.execute(
