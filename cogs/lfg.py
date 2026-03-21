@@ -1312,7 +1312,6 @@ class SmartLFGAgent(commands.Cog):
         display_name: str,
         rank_display: str,
         is_new_player: bool,
-        mode_label: str,
         has_active_lobbys: bool,
     ) -> str:
         rank_part = f" ({rank_display})" if rank_display and rank_display != "Unbekannt" else ""
@@ -1453,7 +1452,7 @@ class SmartLFGAgent(commands.Cog):
         for rank_name, rank_val in RANK_NAME_TO_VALUE.items():
             if rank_val == 0:
                 continue
-            if rank_name in content_lower:
+            if re.search(rf"\b{re.escape(rank_name)}\b", content_lower):
                 if rank_val > best_rank_val:
                     best_rank_name = rank_name.title()
                     best_rank_val = rank_val
@@ -1466,7 +1465,7 @@ class SmartLFGAgent(commands.Cog):
 
         if best_rank_val == 0:
             for short, full in SHORT_NAME_TO_RANK.items():
-                if short in content_lower:
+                if re.search(rf"\b{re.escape(short)}\b", content_lower):
                     rank_val_local = RANK_NAME_TO_VALUE.get(full.lower(), 0)
                     if rank_val_local > best_rank_val:
                         best_rank_name = full
@@ -1543,8 +1542,6 @@ class SmartLFGAgent(commands.Cog):
                 for candidate in matching_players:
                     candidate["discord_active"] = True
 
-        mode_label = self._resolve_mode_label(routing, is_new_player)
-
         # 7. Embed aufbauen
         has_active = len(suggested_lanes) > 0
 
@@ -1554,7 +1551,6 @@ class SmartLFGAgent(commands.Cog):
                 message.author.display_name,
                 rank_display,
                 is_new_player,
-                mode_label,
                 has_active,
             ),
             color=discord.Color.orange(),
