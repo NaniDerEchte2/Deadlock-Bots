@@ -45,6 +45,9 @@ MAX_MENTION_PINGS = 10
 ACTIVITY_LOOKBACK_DAYS = 14
 MIN_ACTIVITY_SCORE_SESSIONS = 3
 MIN_TIME_MATCH_SCORE = 0.5
+# Player-Matching bleibt im Code, ist für die User-Ausgabe aber deaktiviert.
+ENABLE_PLAYER_SUGGESTIONS = False
+ENABLE_PLAYER_PINGS = False
 
 # Scoring Weights (angepasst auf neues Schema)
 WEIGHT_RANK = 20
@@ -144,6 +147,7 @@ class LaneInfo:
     member_ids: list[int] = field(default_factory=list)
     co_player_ids_present: list[int] = field(default_factory=list)
     link: str = ""
+    is_staging: bool = False
 
 
 @dataclass
@@ -310,6 +314,11 @@ class SmartLFGAgent(commands.Cog):
             for vc in ranked_cat.voice_channels:
                 lanes.append(_scan_channel(vc, "Ranked", RANKED_CATEGORY_ID))
 
+        for lane in lanes:
+            ch_name = lane.channel.name.lower()
+            if lane.channel.name.startswith("➕") or "öffnen" in ch_name or "lanes" in ch_name:
+                lane.is_staging = True
+
         return lanes
 
     def _rank_fits_lane(
@@ -380,11 +389,11 @@ class SmartLFGAgent(commands.Cog):
         )
 
         # Schritt 2: Scan Summary
-        active_lanes = [l for l in lanes if l.member_count > 0]
-        casual_count = sum(1 for l in active_lanes if l.label == "Casual")
-        ranked_count = sum(1 for l in active_lanes if l.label == "Ranked")
-        sb_count = sum(1 for l in active_lanes if l.label == "Street Brawl")
-        np_count = sum(1 for l in active_lanes if l.label == "New Player")
+        active_lanes = [lane for lane in lanes if lane.member_count > 0]
+        casual_count = sum(1 for lane in active_lanes if lane.label == "Casual")
+        ranked_count = sum(1 for lane in active_lanes if lane.label == "Ranked")
+        sb_count = sum(1 for lane in active_lanes if lane.label == "Street Brawl")
+        np_count = sum(1 for lane in active_lanes if lane.label == "New Player")
         log_lines.append(
             f"Scan: {len(lanes)} Lanes ({casual_count} Casual aktiv, "
             f"{ranked_count} Ranked, {sb_count} SB, {np_count} NP, "
@@ -393,24 +402,24 @@ class SmartLFGAgent(commands.Cog):
 
         # Schritt 3: Filter nach Modus und Rang
         if sb_intent:
-            eligible = [l for l in lanes if l.label == "Street Brawl" and l.has_space]
+            eligible = [lane for lane in lanes if lane.label == "Street Brawl" and lane.has_space]
         elif ranked_intent:
             eligible = [
-                l for l in lanes
-                if l.label == "Ranked" and l.has_space
-                and self._rank_fits_lane(rank_value, rank_sub, l)
+                lane for lane in lanes
+                if lane.label == "Ranked" and lane.has_space
+                and self._rank_fits_lane(rank_value, rank_sub, lane)
             ]
         else:
             # Casual + New Player (wenn Low Elo)
             eligible = [
-                l for l in lanes
-                if l.label in ("Casual", "New Player") and l.has_space
-                and self._rank_fits_lane(rank_value, rank_sub, l)
+                lane for lane in lanes
+                if lane.label in ("Casual", "New Player") and lane.has_space
+                and self._rank_fits_lane(rank_value, rank_sub, lane)
             ]
         log_lines.append(f"Rank-Filter: {len(eligible)} Lanes passen")
 
         # Schritt 4: Co-Player Check
-        co_player_lanes = [l for l in eligible if l.co_player_ids_present]
+        co_player_lanes = [lane for lane in eligible if lane.co_player_ids_present]
         if co_player_lanes:
             for cl in co_player_lanes:
                 co_names = []
@@ -426,7 +435,10 @@ class SmartLFGAgent(commands.Cog):
         best: LaneInfo | None = None
         if co_player_lanes:
             # Co-Player Lane hat höchste Prio
-            best = max(co_player_lanes, key=lambda l: (len(l.co_player_ids_present), l.member_count))
+            best = max(
+                co_player_lanes,
+                key=lambda lane: (len(lane.co_player_ids_present), lane.member_count),
+            )
             result.mode = "co_player_lane"
             log_lines.append(
                 f"Entscheidung: co_player_lane → {best.channel.name} "
@@ -434,9 +446,9 @@ class SmartLFGAgent(commands.Cog):
             )
         elif eligible:
             # Bevorzuge nicht-leere Lanes, dann nach member_count absteigend
-            occupied = [l for l in eligible if l.member_count > 0]
+            occupied = [lane for lane in eligible if lane.member_count > 0]
             if occupied:
-                best = max(occupied, key=lambda l: l.member_count)
+                best = max(occupied, key=lambda lane: lane.member_count)
                 result.mode = "join_existing"
                 log_lines.append(
                     f"Entscheidung: join_existing → {best.channel.name} "
@@ -880,7 +892,6 @@ class SmartLFGAgent(commands.Cog):
 
         # Active now? Check if current hour matches typical hours
         current_hour = now.hour
-        current_day = now.weekday()
         if profile.typical_hours:
             profile.is_likely_active_now = any(
                 abs(current_hour - h) <= 1 or abs(current_hour - h) >= 23
@@ -1301,25 +1312,170 @@ class SmartLFGAgent(commands.Cog):
         display_name: str,
         rank_display: str,
         is_new_player: bool,
-        has_lobbies: bool,
+        mode_label: str,
+        has_active_lobbys: bool,
     ) -> str:
-        """Freundlicher Begrüßungstext für den Lobby-Finder Embed."""
+        rank_part = f" ({rank_display})" if rank_display and rank_display != "Unbekannt" else ""
+        if has_active_lobbys:
+            return f"Hey **{display_name}**!{rank_part} Hier kannst du joinen:"
+        return (
+            f"Hey **{display_name}**!{rank_part} Gerade ist keine Lobby offen.\n"
+            "Spring in eine freie Lane und leg los — andere sehen dann, wo sie joinen können."
+        )
+
+    def _resolve_mode_label(
+        self,
+        routing: LaneRoutingResult,
+        is_new_player: bool,
+    ) -> str:
+        """Leitet das Zielgebiet für die Anzeige ab."""
         if is_new_player:
-            return (
-                f"Hey **{display_name}**! Schön dass du dabei bist 🙂\n"
-                f"Als Anfänger bist du in der **New Player Lane** am besten aufgehoben — "
-                f"da findest du Leute auf deinem Level und kannst entspannt ins Spiel reinkommen."
-            )
-        elif has_lobbies:
-            return (
-                f"Hey **{display_name}**! Schau einfach in eine der Lobbys unten rein :)\n"
-                f"Ich hab dir die passendsten rausgesucht — einfach joinen und loszocken."
-            )
+            return "New Player"
+        if routing.best_join_lane:
+            return routing.best_join_lane.label
+        if routing.suggested_category_label:
+            return routing.suggested_category_label
+        return "Casual"
+
+    def _score_lobby_suggestion(
+        self,
+        lane: LaneInfo,
+        routing: LaneRoutingResult,
+        rank_value: int,
+        is_new_player: bool,
+    ) -> float:
+        """Bewertet eine Lobby für die Top-3-Auswahl."""
+        score = 0.0
+
+        if routing.best_join_lane and lane.channel.id == routing.best_join_lane.channel.id:
+            score += 1000.0
+        if lane.co_player_ids_present:
+            score += 250.0 + len(lane.co_player_ids_present) * 25.0
+        if lane.member_count > 0:
+            score += 200.0 + lane.member_count * 15.0
+        if is_new_player and lane.label == "New Player":
+            score += 300.0
+        if routing.suggested_category_id and lane.category_id == routing.suggested_category_id:
+            score += 80.0
+        if rank_value > 0 and lane.avg_rank_value > 0:
+            score += max(0.0, 80.0 - abs(lane.avg_rank_value - rank_value) * 20.0)
+
+        return score
+
+    def _select_lobby_suggestions(
+        self,
+        lanes: list[LaneInfo],
+        routing: LaneRoutingResult,
+        rank_value: int,
+        is_new_player: bool,
+    ) -> list[LaneInfo]:
+        """Wählt bis zu drei klare Lobby-Vorschläge aus."""
+        candidates = [
+            lane for lane in lanes
+            if lane.has_space and lane.member_count > 0 and not lane.is_staging
+        ]
+        ranked_candidates = sorted(
+            candidates,
+            key=lambda lane: (
+                self._score_lobby_suggestion(lane, routing, rank_value, is_new_player),
+                lane.member_count,
+                lane.slots_free,
+                -lane.channel.position,
+            ),
+            reverse=True,
+        )
+        return ranked_candidates[:MAX_JOIN_LOBBIES_SHOWN]
+
+    def _build_lobby_field_value(
+        self,
+        guild: discord.Guild,
+        lane: LaneInfo,
+    ) -> str:
+        lines = [
+            f"{lane.label} · {lane.member_count}/{lane.user_limit} Spieler · {lane.slots_free} frei · Ø {lane.avg_rank_label}",
+        ]
+        if lane.co_player_ids_present:
+            co_names = []
+            for co_id in lane.co_player_ids_present[:3]:
+                member = guild.get_member(co_id)
+                if member:
+                    co_names.append(member.display_name)
+            if co_names:
+                verb = "sind" if len(co_names) > 1 else "ist"
+                lines.append(f"👥 {', '.join(co_names)} {verb} schon drin")
+        lines.append(lane.link)
+        return "\n".join(lines)
+
+    def _build_staging_suggestions(
+        self,
+        guild: discord.Guild,
+        lanes: list[LaneInfo],
+        routing: LaneRoutingResult,
+        is_new_player: bool,
+    ) -> list[tuple[str, str]]:
+        """Gibt bis zu 2 Staging-Channels als (name, value) Tuple zurück."""
+        if is_new_player:
+            preferred_label = "New Player"
+        elif routing.suggested_category_label:
+            preferred_label = routing.suggested_category_label
         else:
-            return (
-                f"Hey **{display_name}**! Gerade ist keine passende Lobby offen, "
-                f"aber mach dir einfach eine Lane auf — vllt kommt ja jemand dazu 😉"
-            )
+            preferred_label = "Casual"
+
+        staging = [lane for lane in lanes if lane.is_staging]
+        preferred = [s for s in staging if s.label == preferred_label]
+        others = [s for s in staging if s.label != preferred_label]
+        ordered = preferred + others
+
+        result = []
+        for lane in ordered[:2]:
+            result.append((
+                f"➕ {lane.channel.name}",
+                f"{lane.label} · Starte hier deine Lobby\n{lane.link}",
+            ))
+
+        if not result:
+            empty = [lane for lane in lanes if lane.member_count == 0 and not lane.is_staging]
+            for lane in empty[:1]:
+                result.append((
+                    f"➕ {lane.channel.name}",
+                    f"{lane.label} · Spring rein und leg los\n{lane.link}",
+                ))
+
+        return result
+
+    def _parse_rank_from_message(self, content: str) -> tuple[str, int, int | None]:
+        """Versucht Rang aus Nachrichtentext zu extrahieren, z.B. 'Oracle 3' oder 'Emissary'."""
+        content_lower = content.lower()
+        best_rank_name = ""
+        best_rank_val = 0
+        best_sub = None
+
+        for rank_name, rank_val in RANK_NAME_TO_VALUE.items():
+            if rank_val == 0:
+                continue
+            if rank_name in content_lower:
+                if rank_val > best_rank_val:
+                    best_rank_name = rank_name.title()
+                    best_rank_val = rank_val
+                    pattern = re.compile(rf"{re.escape(rank_name)}\s+([1-6])", re.IGNORECASE)
+                    match = pattern.search(content)
+                    if match:
+                        best_sub = int(match.group(1))
+                    else:
+                        best_sub = None
+
+        if best_rank_val == 0:
+            for short, full in SHORT_NAME_TO_RANK.items():
+                if short in content_lower:
+                    rank_val_local = RANK_NAME_TO_VALUE.get(full.lower(), 0)
+                    if rank_val_local > best_rank_val:
+                        best_rank_name = full
+                        best_rank_val = rank_val_local
+                        pattern = re.compile(rf"{re.escape(short)}\s+([1-6])", re.IGNORECASE)
+                        match = pattern.search(content)
+                        best_sub = int(match.group(1)) if match else None
+
+        return best_rank_name, best_rank_val, best_sub
 
     async def _handle_lfg_request(self, message: discord.Message):
         """
@@ -1343,6 +1499,16 @@ class SmartLFGAgent(commands.Cog):
         sub_str = f" {rank_sub}" if rank_sub else ""
         rank_display = f"{rank_name}{sub_str}" if rank_val > 0 else "Unbekannt"
 
+        # Rang aus Nachricht extrahieren wenn keine Rolle
+        if rank_val == 0:
+            msg_rank_name, msg_rank_val, msg_rank_sub = self._parse_rank_from_message(message.content)
+            if msg_rank_val > 0:
+                rank_name = msg_rank_name
+                rank_val = msg_rank_val
+                rank_sub = msg_rank_sub
+                sub_str = f" {rank_sub}" if rank_sub else ""
+                rank_display = f"{rank_name}{sub_str}"
+
         # 2. Co-Player Stats laden
         co_player_stats = await self._fetch_co_player_stats(message.author.id)
         co_player_ids = {
@@ -1350,11 +1516,7 @@ class SmartLFGAgent(commands.Cog):
             if sessions >= COPLAYER_IN_LANE_SESSIONS_THRESHOLD
         }
 
-        # 3. Activity Profile bauen
-        now = datetime.utcnow()
-        profile = await self._build_user_activity_profile(message.author.id, now)
-
-        # 4. Lane Routing
+        # 3. Lane Routing
         content_lower = (message.content or "").lower()
         lanes = self._scan_all_lanes(guild, co_player_ids)
         routing = self._route_to_lane(
@@ -1362,147 +1524,67 @@ class SmartLFGAgent(commands.Cog):
             rank_val, rank_sub, rank_name, lanes, co_player_ids,
         )
 
-        # 5. Co-Player-in-Lanes Check
-        co_in_lanes = self._find_co_players_in_lanes(guild, profile, lanes)
-
-        # 6. Co-Players bald online
-        co_coming = await self._find_co_players_likely_coming_online(guild, profile, now)
-
-        # 7. Neue Spieler erkennen (Initiate / Seeker = Anfänger)
+        # 4. Neue Spieler erkennen (Initiate / Seeker = Anfänger)
         is_new_player = 0 < rank_val <= NEW_PLAYER_MAX_RANK
 
-        # 8. Joinbare Lobbys aus dem Lane-Scan filtern und nach Rank sortieren
-        joinable_lanes = [l for l in lanes if l.has_space and l.member_count > 0]
-        if is_new_player:
-            # Neue Spieler sehen die New-Player-Lane zuerst
-            np_first = [l for l in joinable_lanes if l.label == "New Player"]
-            rest = [l for l in joinable_lanes if l.label != "New Player"]
-            joinable_lanes = np_first + rest
-        else:
-            # Nach Rang-Nähe sortieren
-            def _rank_dist(lane: LaneInfo) -> float:
-                if lane.avg_rank_value == 0:
-                    return 999.0
-                return abs(lane.avg_rank_value - rank_val)
-            joinable_lanes.sort(key=_rank_dist)
-        joinable_lanes = joinable_lanes[:MAX_JOIN_LOBBIES_SHOWN]
+        # 5. Bis zu drei sortierte Lobby-Vorschläge
+        suggested_lanes = self._select_lobby_suggestions(
+            lanes, routing, rank_val, is_new_player
+        )
 
-        # 9. Player Matching
-        ping_lines: list[str] = []
-        visible_lines: list[str] = []
+        # 6. Player Matching bleibt vorhanden, ist für User aktuell deaktiviert.
         matching_players: list[dict] = []
-        try:
+        if ENABLE_PLAYER_SUGGESTIONS:
             matching_players = await self._find_matching_players(
                 message.author, message.content,
                 rank_val, rank_sub, routing_result=routing,
             )
-            if guild:
-                ping_lines, visible_lines, _lc, _mc = self._build_player_lines(
-                    guild, matching_players
-                )
-        except Exception as exc:
-            log.warning("Spielersuche fehlgeschlagen (%s)", exc)
+            if not ENABLE_PLAYER_PINGS:
+                for candidate in matching_players:
+                    candidate["discord_active"] = True
 
-        # 10. Embed aufbauen — freundlicher Lobby-Finder Look
+        mode_label = self._resolve_mode_label(routing, is_new_player)
+
+        # 7. Embed aufbauen
+        has_active = len(suggested_lanes) > 0
+
         embed = discord.Embed(
-            title=f"🎮 Lobby-Finder — {message.author.display_name} ({rank_display})",
+            title="\U0001f3ae Lobby-Finder",
             description=self._compose_intro_text(
                 message.author.display_name,
                 rank_display,
                 is_new_player,
-                has_lobbies=bool(joinable_lanes),
+                mode_label,
+                has_active,
             ),
-            color=discord.Color.green() if joinable_lanes else discord.Color.blurple(),
+            color=discord.Color.orange(),
         )
 
-        # Offene Lobbys zum Beitreten
-        if joinable_lanes:
-            lobby_lines = []
-            for lane in joinable_lanes:
-                co_marker = " ⭐" if any(
-                    cid in lane.member_ids for cid in co_player_ids
-                ) else ""
-                lobby_lines.append(
-                    f"**{lane.channel.name}**{co_marker} — {lane.link}\n"
-                    f"┗ {lane.member_count}/{lane.user_limit} Spieler · "
-                    f"Ø {lane.avg_rank_label} · {lane.slots_free} Platz frei"
+        if has_active:
+            for lane in suggested_lanes[:MAX_JOIN_LOBBIES_SHOWN]:
+                slots = lane.slots_free
+                if slots <= 2:
+                    status = "\U0001f7e1"
+                else:
+                    status = "\U0001f7e2"
+                embed.add_field(
+                    name=f"{status} {lane.channel.name}",
+                    value=self._build_lobby_field_value(guild, lane),
+                    inline=False,
                 )
+            cat_label = routing.suggested_category_label or "Casual"
             embed.add_field(
-                name="🔓 Offene Lobbys",
-                value="\n\n".join(lobby_lines),
+                name="Nichts dabei?",
+                value=f"Mach eine eigene **{cat_label}**-Lane auf — meist kommen schnell Leute dazu.",
                 inline=False,
             )
         else:
-            # Keine offene Lobby → Eigene aufmachen
-            cat_label = routing.suggested_category_label or "Casual"
-            if is_new_player:
-                np_chan = guild.get_channel(NEW_PLAYER_LANE_ID)
-                np_link = f"https://discord.com/channels/{guild.id}/{NEW_PLAYER_LANE_ID}"
-                embed.add_field(
-                    name="🆕 New Player Lane",
-                    value=f"Perfekt für Einsteiger!\n{np_link}",
-                    inline=False,
-                )
-            embed.add_field(
-                name="➕ Eigene Lobby aufmachen",
-                value=f"Mach eine **{cat_label}**-Lane auf — meist finden sich in wenigen Minuten Leute.",
-                inline=False,
+            staging_suggestions = self._build_staging_suggestions(
+                guild, lanes, routing, is_new_player,
             )
+            for name, value in staging_suggestions:
+                embed.add_field(name=name, value=value, inline=False)
 
-        # Bekannte Mitspieler die schon in einer Lane sind (kein Ping)
-        if co_in_lanes:
-            co_lines = []
-            for co_id, lane_names in list(co_in_lanes.items())[:4]:
-                m = guild.get_member(co_id)
-                name = m.display_name if m else str(co_id)
-                co_lines.append(f"**{name}** ist in {', '.join(lane_names)}")
-            embed.add_field(
-                name="👥 Leute die du kennst — schon drin",
-                value="\n".join(co_lines),
-                inline=False,
-            )
-
-        ping_mentions = list(dict.fromkeys(re.findall(r"<@!?\d+>", " ".join(ping_lines))))
-
-        # Spieler die gerade in Deadlock sind aber NICHT auf Discord aktiv → Ping
-        if ping_lines:
-            mention_text = " ".join(ping_mentions)
-            if mention_text:
-                invite_text = (
-                    f"Vielleicht haben {mention_text} auch noch Bock oder Lust, "
-                    "die sind auf jeden Fall auch gerade in dem Game."
-                )
-            else:
-                invite_text = (
-                    "Vielleicht haben die auch noch Bock oder Lust, "
-                    "die sind auf jeden Fall auch gerade in dem Game."
-                )
-            embed.add_field(
-                name="📲 Vielleicht haben die auch noch Bock oder Lust",
-                value=f"{invite_text}\n" + "\n".join(ping_lines),
-                inline=False,
-            )
-
-        # Discord-aktive Spieler → kein Ping, nur Info
-        if visible_lines:
-            embed.add_field(
-                name="👀 Auch verfügbar",
-                value="\n".join(visible_lines),
-                inline=False,
-            )
-
-        # Bald online (bekannte Co-Player)
-        if co_coming:
-            names = [name for _, name in co_coming[:4]]
-            embed.add_field(
-                name="🔜 Wahrscheinlich bald dabei",
-                value=", ".join(names),
-                inline=False,
-            )
-
-        embed.set_footer(text=f"Rank-Toleranz: ±{RANK_TOLERANCE} Stufen · {message.channel.mention}")
-
-        # Nur Embed senden (kein extra Text über dem Embed)
         await output_channel.send(embed=embed)
 
         # 9. Decision Log Embed (separater Log-Channel, für Admins)
@@ -1529,13 +1611,6 @@ class SmartLFGAgent(commands.Cog):
                         break
                 log_text_lines.append(f"{prefix_icon}{line}")
 
-            # Add profile info
-            if profile.sessions_count_2w > 0:
-                hours_str = ", ".join(str(h) for h in profile.typical_hours[:6]) if profile.typical_hours else "-"
-                log_text_lines.append(
-                    f"\U0001f4ca Profil: {profile.sessions_count_2w} Sessions/2W, "
-                    f"typ. {hours_str} Uhr"
-                )
             if matching_players:
                 online_cnt = sum(1 for c in matching_players if c.get("stage") in ("lobby", "match"))
                 active_cnt = len(matching_players) - online_cnt
