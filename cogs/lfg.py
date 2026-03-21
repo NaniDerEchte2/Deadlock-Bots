@@ -1391,7 +1391,7 @@ class SmartLFGAgent(commands.Cog):
         lane: LaneInfo,
     ) -> str:
         lines = [
-            f"{lane.label} · {lane.member_count}/{lane.user_limit} Spieler · {lane.slots_free} frei · Ø {lane.avg_rank_label}",
+            f"{lane.label} · {lane.member_count}/{lane.user_limit} Spieler · {lane.slots_free} Plätze frei · Ø {lane.avg_rank_label}",
         ]
         if lane.co_player_ids_present:
             co_names = []
@@ -1429,7 +1429,7 @@ class SmartLFGAgent(commands.Cog):
         for lane in ordered[:2]:
             result.append((
                 f"➕ {lane.channel.name}",
-                f"{lane.label} · Starte hier deine Lobby\n{lane.link}",
+                f"{lane.label} · Spring rein und mach ne Lobby auf — andere sehen dann direkt, wo sie joinen können.\n{lane.link}",
             ))
 
         if not result:
@@ -1437,7 +1437,7 @@ class SmartLFGAgent(commands.Cog):
             for lane in empty[:1]:
                 result.append((
                     f"➕ {lane.channel.name}",
-                    f"{lane.label} · Spring rein und leg los\n{lane.link}",
+                    f"{lane.label} · Spring rein und mach ne Lobby auf — andere sehen dann direkt, wo sie joinen können.\n{lane.link}",
                 ))
 
         return result
@@ -1570,7 +1570,7 @@ class SmartLFGAgent(commands.Cog):
                 )
             cat_label = routing.suggested_category_label or "Casual"
             embed.add_field(
-                name="Nichts dabei?",
+                name="Selbst starten?",
                 value=f"Mach eine eigene **{cat_label}**-Lane auf — meist kommen schnell Leute dazu.",
                 inline=False,
             )
