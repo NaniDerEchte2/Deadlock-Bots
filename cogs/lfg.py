@@ -1316,10 +1316,14 @@ class SmartLFGAgent(commands.Cog):
     ) -> str:
         rank_part = f" ({rank_display})" if rank_display and rank_display != "Unbekannt" else ""
         if has_active_lobbys:
-            return f"Hey **{display_name}**!{rank_part} Hier kannst du joinen:"
+            return (
+                f"Hey **{display_name}**!{rank_part}\n"
+                "Ich hab passende Lobbys für dich gefunden — schau rein und spiel mit:"
+            )
         return (
-            f"Hey **{display_name}**!{rank_part} Gerade ist keine Lobby offen.\n"
-            "Spring in eine freie Lane und leg los — andere sehen dann, wo sie joinen können."
+            f"Hey **{display_name}**!{rank_part}\n"
+            "Gerade ist noch niemand in einer Lobby, aber das heißt nicht dass keiner Bock hat!\n"
+            "Mach einfach eine Lane auf — erfahrungsgemäß kommen schnell Leute dazu."
         )
 
     def _resolve_mode_label(
@@ -1401,7 +1405,7 @@ class SmartLFGAgent(commands.Cog):
                     co_names.append(member.display_name)
             if co_names:
                 verb = "sind" if len(co_names) > 1 else "ist"
-                lines.append(f"👥 {', '.join(co_names)} {verb} schon drin")
+                lines.append(f"👥 {', '.join(co_names)} {verb} auch da")
         lines.append(lane.link)
         return "\n".join(lines)
 
@@ -1429,7 +1433,7 @@ class SmartLFGAgent(commands.Cog):
         for lane in ordered[:2]:
             result.append((
                 f"➕ {lane.channel.name}",
-                f"{lane.label} · Spring rein und mach ne Lobby auf — andere sehen dann direkt, wo sie joinen können.\n{lane.link}",
+                f"{lane.label} · Einfach joinen und loslegen — sobald du drin bist, sehen andere dass hier was geht.\n{lane.link}",
             ))
 
         if not result:
@@ -1437,7 +1441,7 @@ class SmartLFGAgent(commands.Cog):
             for lane in empty[:1]:
                 result.append((
                     f"➕ {lane.channel.name}",
-                    f"{lane.label} · Spring rein und mach ne Lobby auf — andere sehen dann direkt, wo sie joinen können.\n{lane.link}",
+                    f"{lane.label} · Einfach joinen und loslegen — sobald du drin bist, sehen andere dass hier was geht.\n{lane.link}",
                 ))
 
         return result
@@ -1570,8 +1574,8 @@ class SmartLFGAgent(commands.Cog):
                 )
             cat_label = routing.suggested_category_label or "Casual"
             embed.add_field(
-                name="Selbst starten?",
-                value=f"Mach eine eigene **{cat_label}**-Lane auf — meist kommen schnell Leute dazu.",
+                name="Oder eigene Lobby aufmachen?",
+                value=f"Wenn nichts passt, mach einfach eine **{cat_label}**-Lane auf — erfahrungsgemäß kommen schnell Leute dazu.",
                 inline=False,
             )
         else:
