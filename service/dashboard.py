@@ -222,6 +222,8 @@ class DashboardServer:
         )
         self._health_targets = self._build_health_targets()
         self._log_dir = Path(__file__).resolve().parent.parent / "logs"
+        self._public_stats_cache: dict | None = None
+        self._public_stats_cache_time: float = 0.0
         if self._discord_auth_enabled and not self._is_discord_oauth_configured():
             logging.error(
                 "Dashboard Auth-Konfiguration ungültig: Discord OAuth aktiviert, aber Client ID/Secret "
@@ -366,6 +368,9 @@ class DashboardServer:
                         self._handle_standalone_autostart,
                     ),
                     web.post("/api/standalone/{key}/command", self._handle_standalone_command),
+                    # Public endpoints (no auth required)
+                    web.get("/api/public/guild-stats", self._handle_public_guild_stats),
+                    web.route("OPTIONS", "/api/public/guild-stats", self._handle_public_cors),
                 ]
             )
 
@@ -5646,6 +5651,73 @@ class DashboardServer:
                 "standalone": status,
             },
             status=201,
+        )
+
+    # ------------------------------------------------------------------
+    # Public endpoints (no auth required)
+    # ------------------------------------------------------------------
+
+    async def _handle_public_guild_stats(self, request: web.Request) -> web.Response:
+        """Public endpoint for live guild stats (no auth required)."""
+        headers = {
+            "Access-Control-Allow-Origin": "https://earlysalty.de",
+            "Access-Control-Allow-Methods": "GET",
+            "Cache-Control": "public, max-age=30",
+        }
+
+        # Cache check (30 seconds)
+        now = time.time()
+        if self._public_stats_cache and (now - self._public_stats_cache_time) < 30:
+            return web.json_response(self._public_stats_cache, headers=headers)
+
+        # Get guild data
+        if not self.bot.guilds:
+            return web.json_response(
+                {"error": "No guild data available"},
+                status=503,
+                headers=headers,
+            )
+
+        # Use first/primary guild
+        guild = self.bot.guilds[0]
+
+        # Count members in voice channels
+        voice_count = sum(
+            len(vc.members) for vc in guild.voice_channels if vc.members
+        )
+
+        # Build response
+        try:
+            import discord as _discord
+
+            online_count = guild.approximate_presence_count or sum(
+                1 for m in guild.members if m.status != _discord.Status.offline
+            )
+        except Exception:
+            online_count = guild.approximate_presence_count or 0
+
+        data = {
+            "member_count": guild.member_count or len(guild.members),
+            "online_count": online_count,
+            "voice_count": voice_count,
+            "cached_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        }
+
+        # Update cache
+        self._public_stats_cache = data
+        self._public_stats_cache_time = now
+
+        return web.json_response(data, headers=headers)
+
+    async def _handle_public_cors(self, request: web.Request) -> web.Response:
+        """CORS preflight handler for public endpoints."""
+        return web.Response(
+            headers={
+                "Access-Control-Allow-Origin": "https://earlysalty.de",
+                "Access-Control-Allow-Methods": "GET, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type",
+                "Access-Control-Max-Age": "86400",
+            }
         )
 
 
