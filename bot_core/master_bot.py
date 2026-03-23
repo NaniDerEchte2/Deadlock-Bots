@@ -194,7 +194,11 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
 
     @staticmethod
     def _master_broker_token() -> str:
-        for key in ("MASTER_BROKER_TOKEN", "MAIN_BOT_INTERNAL_TOKEN"):
+        for key in (
+            "MASTER_BROKER_TOKEN",
+            "MAIN_BOT_INTERNAL_TOKEN",
+            "TWITCH_INTERNAL_API_TOKEN",
+        ):
             value = (os.getenv(key) or "").strip()
             if value:
                 return value
@@ -208,7 +212,7 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
         if not token:
             logging.warning(
                 "Master broker disabled: missing token "
-                "(MASTER_BROKER_TOKEN/MAIN_BOT_INTERNAL_TOKEN)."
+                "(MASTER_BROKER_TOKEN/MAIN_BOT_INTERNAL_TOKEN/TWITCH_INTERNAL_API_TOKEN)."
             )
             return
 
@@ -219,6 +223,44 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
         except Exception as exc:
             logging.error("Master broker init failed: %s", exc, exc_info=True)
             self.master_broker = None
+
+    async def _ensure_master_broker_view_resolver(self) -> bool:
+        if self.runtime_mode.role != "master" or self.master_broker is None:
+            return False
+
+        resolver = getattr(self, "resolve_master_broker_view_spec", None)
+        if callable(resolver):
+            return True
+
+        bridge_extension = "cogs.twitch.live_bridge"
+        if bridge_extension in self.extensions:
+            return callable(getattr(self, "resolve_master_broker_view_spec", None))
+
+        try:
+            await self.load_extension(bridge_extension)
+        except commands.ExtensionAlreadyLoaded:
+            pass
+        except Exception as exc:
+            logging.warning(
+                "Could not load Twitch live bridge required by master broker: %s",
+                exc,
+                exc_info=True,
+            )
+            return False
+
+        if bridge_extension in self.cogs_list:
+            self.cogs_list = [name for name in self.cogs_list if name != bridge_extension]
+        self.cog_status[bridge_extension] = "loaded"
+
+        resolver = getattr(self, "resolve_master_broker_view_spec", None)
+        if callable(resolver):
+            logging.info("Loaded Twitch live bridge for master broker view resolution.")
+            return True
+
+        logging.warning(
+            "Twitch live bridge loaded but master broker view resolver is still unavailable."
+        )
+        return False
 
     @staticmethod
     def _parse_id_list(raw: str) -> list[int]:
@@ -558,6 +600,8 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
         db_span = measure("db.init")
         _init_db_if_available()
         db_span.finish()
+
+        await self._ensure_master_broker_view_resolver()
 
         if self.master_broker:
             broker_span = measure("broker.start")

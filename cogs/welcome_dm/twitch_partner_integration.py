@@ -9,8 +9,6 @@ from typing import Any
 
 log = logging.getLogger("StreamerOnboarding.TwitchIntegration")
 
-_BLOCKING_TOKEN_BLACKLIST_THRESHOLD = 1
-
 
 class TwitchPartnerIntegrationUnavailable(RuntimeError):
     """Raised when the external Deadlock-Twitch-Bot integration cannot be used."""
@@ -26,8 +24,8 @@ class TwitchPartnerAuthState:
 @dataclass(frozen=True, slots=True)
 class _ExternalModules:
     repo_path: Path
-    get_conn: Any
     raid_auth_manager_cls: Any
+    raid_integration_state_resolver_cls: Any
     default_redirect_uri: str
 
 
@@ -35,25 +33,8 @@ _EXTERNAL_MODULES: _ExternalModules | None = None
 _AUTH_MANAGER: Any | None = None
 
 
-def _normalize_bool(value: object) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    text = str(value or "").strip().lower()
-    return text in {"1", "true", "yes", "y", "on", "t"}
-
-
 def _normalize_login(value: object) -> str:
     return str(value or "").strip().lower()
-
-
-def _row_value(row: Any, key: str, index: int) -> Any:
-    if row is None:
-        return None
-    if hasattr(row, "keys"):
-        return row[key]
-    return row[index]
 
 
 def _candidate_repo_paths() -> list[Path]:
@@ -109,7 +90,7 @@ def _load_external_modules() -> _ExternalModules:
     try:
         from bot.core.constants import TWITCH_RAID_REDIRECT_URI
         from bot.raid.auth import RaidAuthManager
-        from bot.storage import get_conn
+        from bot.raid.integration_state import RaidIntegrationStateResolver
     except Exception as exc:
         raise TwitchPartnerIntegrationUnavailable(
             "Deadlock-Twitch-Bot konnte nicht geladen werden."
@@ -117,8 +98,8 @@ def _load_external_modules() -> _ExternalModules:
 
     _EXTERNAL_MODULES = _ExternalModules(
         repo_path=repo_path,
-        get_conn=get_conn,
         raid_auth_manager_cls=RaidAuthManager,
+        raid_integration_state_resolver_cls=RaidIntegrationStateResolver,
         default_redirect_uri=str(TWITCH_RAID_REDIRECT_URI or "").strip(),
     )
     return _EXTERNAL_MODULES
@@ -156,7 +137,13 @@ def _auth_manager() -> Any:
 
 
 def generate_discord_auth_url(discord_user_id: int) -> str:
-    auth_url = str(_auth_manager().generate_discord_button_url(f"discord:{discord_user_id}") or "")
+    auth_url = str(
+        _auth_manager().generate_discord_button_url(
+            f"discord:{discord_user_id}",
+            discord_user_id=discord_user_id,
+        )
+        or ""
+    )
     auth_url = auth_url.strip()
     if not auth_url:
         raise TwitchPartnerIntegrationUnavailable(
@@ -171,52 +158,16 @@ def get_auth_state(discord_user_id: int) -> TwitchPartnerAuthState:
     discord_id = str(discord_user_id)
 
     try:
-        with modules.get_conn() as conn:
-            streamer_row = conn.execute(
-                """
-                SELECT twitch_login, twitch_user_id
-                FROM twitch_streamers
-                WHERE discord_user_id = ?
-                ORDER BY manual_verified_at DESC NULLS LAST, created_at DESC NULLS LAST
-                LIMIT 1
-                """,
-                (discord_id,),
-            ).fetchone()
-            if streamer_row is None:
-                return TwitchPartnerAuthState(
-                    twitch_login=None,
-                    twitch_user_id=None,
-                    authorized=False,
-                )
-
-            twitch_login = _normalize_login(_row_value(streamer_row, "twitch_login", 0)) or None
-            twitch_user_id = str(_row_value(streamer_row, "twitch_user_id", 1) or "").strip() or None
-
-            authorized = bool(twitch_user_id and manager.has_enabled_auth(twitch_user_id))
-            if not authorized and twitch_login:
-                auth_row = conn.execute(
-                    """
-                    SELECT twitch_user_id, raid_enabled, authorized_at
-                    FROM twitch_raid_auth
-                    WHERE LOWER(twitch_login) = LOWER(?)
-                    LIMIT 1
-                    """,
-                    (twitch_login,),
-                ).fetchone()
-                if auth_row is not None:
-                    if not twitch_user_id:
-                        twitch_user_id = (
-                            str(_row_value(auth_row, "twitch_user_id", 0) or "").strip() or None
-                        )
-                    raid_enabled = _normalize_bool(_row_value(auth_row, "raid_enabled", 1))
-                    authorized_at = str(_row_value(auth_row, "authorized_at", 2) or "").strip()
-                    authorized = raid_enabled or bool(authorized_at)
-
-            return TwitchPartnerAuthState(
-                twitch_login=twitch_login,
-                twitch_user_id=twitch_user_id,
-                authorized=authorized,
-            )
+        resolver = modules.raid_integration_state_resolver_cls(
+            auth_manager=manager,
+            token_error_handler=getattr(manager, "token_error_handler", None),
+        )
+        state = resolver.resolve_auth_state(discord_id)
+        return TwitchPartnerAuthState(
+            twitch_login=_normalize_login(state.twitch_login) or None,
+            twitch_user_id=str(state.twitch_user_id or "").strip() or None,
+            authorized=bool(state.authorized),
+        )
     except Exception as exc:
         raise TwitchPartnerIntegrationUnavailable(
             "Autorisierungsstatus aus Deadlock-Twitch-Bot konnte nicht gelesen werden."
@@ -229,89 +180,27 @@ def check_onboarding_blocklist(
     twitch_login: str | None = None,
 ) -> tuple[bool, str | None]:
     modules = _load_external_modules()
-    normalized_login = _normalize_login(twitch_login)
-    discord_id = str(discord_user_id) if discord_user_id is not None else ""
-    candidate_logins: set[str] = set()
-    candidate_user_ids: set[str] = set()
-    if normalized_login:
-        candidate_logins.add(normalized_login)
+    normalized_login = _normalize_login(twitch_login) or None
+    normalized_discord_id = str(discord_user_id) if discord_user_id is not None else None
 
     try:
-        with modules.get_conn() as conn:
-            if normalized_login:
-                login_row = conn.execute(
-                    """
-                    SELECT twitch_login, twitch_user_id, manual_partner_opt_out
-                    FROM twitch_streamers
-                    WHERE LOWER(twitch_login) = LOWER(?)
-                    LIMIT 1
-                    """,
-                    (normalized_login,),
-                ).fetchone()
-                if login_row is not None:
-                    login_value = _normalize_login(_row_value(login_row, "twitch_login", 0))
-                    user_id_value = str(_row_value(login_row, "twitch_user_id", 1) or "").strip()
-                    if login_value:
-                        candidate_logins.add(login_value)
-                    if user_id_value:
-                        candidate_user_ids.add(user_id_value)
-                    if _normalize_bool(_row_value(login_row, "manual_partner_opt_out", 2)):
-                        return True, f"manual_partner_opt_out=1 fuer {login_value or normalized_login}"
-
-            if discord_id:
-                rows = conn.execute(
-                    """
-                    SELECT twitch_login, twitch_user_id, manual_partner_opt_out
-                    FROM twitch_streamers
-                    WHERE discord_user_id = ?
-                    """,
-                    (discord_id,),
-                ).fetchall()
-                for row in rows:
-                    login_value = _normalize_login(_row_value(row, "twitch_login", 0))
-                    user_id_value = str(_row_value(row, "twitch_user_id", 1) or "").strip()
-                    if login_value:
-                        candidate_logins.add(login_value)
-                    if user_id_value:
-                        candidate_user_ids.add(user_id_value)
-                    if _normalize_bool(_row_value(row, "manual_partner_opt_out", 2)):
-                        blocked_login = login_value or normalized_login or "unbekannt"
-                        return True, f"manual_partner_opt_out=1 fuer {blocked_login}"
-
-            for twitch_user_id in sorted(candidate_user_ids):
-                blacklist_row = conn.execute(
-                    """
-                    SELECT error_count
-                    FROM twitch_token_blacklist
-                    WHERE twitch_user_id = ?
-                    LIMIT 1
-                    """,
-                    (twitch_user_id,),
-                ).fetchone()
-                if blacklist_row is None:
-                    continue
-                error_count = _row_value(blacklist_row, "error_count", 0)
-                try:
-                    parsed_error_count = int(error_count or 0)
-                except Exception:
-                    parsed_error_count = _BLOCKING_TOKEN_BLACKLIST_THRESHOLD
-                if parsed_error_count >= _BLOCKING_TOKEN_BLACKLIST_THRESHOLD:
-                    return True, f"twitch_token_blacklist fuer {twitch_user_id}"
-
-            for login_value in sorted(candidate_logins):
-                legacy_row = conn.execute(
-                    """
-                    SELECT reason
-                    FROM twitch_raid_blacklist
-                    WHERE LOWER(target_login) = LOWER(?)
-                    LIMIT 1
-                    """,
-                    (login_value,),
-                ).fetchone()
-                if legacy_row is None:
-                    continue
-                reason = str(_row_value(legacy_row, "reason", 0) or "").strip() or "kein Grund"
-                return True, f"twitch_raid_blacklist fuer {login_value} ({reason})"
+        resolver = modules.raid_integration_state_resolver_cls(
+            auth_manager=_AUTH_MANAGER,
+            token_error_handler=getattr(_AUTH_MANAGER, "token_error_handler", None),
+        )
+        state = resolver.resolve_block_state(
+            discord_user_id=normalized_discord_id,
+            twitch_login=normalized_login,
+        )
+        if state.partner_opt_out:
+            blocked_login = _normalize_login(state.twitch_login) or normalized_login or "unbekannt"
+            return True, f"manual_partner_opt_out=1 fuer {blocked_login}"
+        if state.token_blacklisted:
+            blocked_user_id = str(state.twitch_user_id or "").strip() or "unbekannt"
+            return True, f"twitch_token_blacklist fuer {blocked_user_id}"
+        if state.raid_blacklisted:
+            blocked_login = _normalize_login(state.twitch_login) or normalized_login or "unbekannt"
+            return True, f"twitch_raid_blacklist fuer {blocked_login}"
     except Exception as exc:
         raise TwitchPartnerIntegrationUnavailable(
             "Opt-out-/Blacklist-Status aus Deadlock-Twitch-Bot konnte nicht gelesen werden."
@@ -327,3 +216,4 @@ __all__ = [
     "generate_discord_auth_url",
     "get_auth_state",
 ]
+

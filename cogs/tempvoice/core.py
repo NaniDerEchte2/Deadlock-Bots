@@ -1159,16 +1159,16 @@ class TempVoiceCore(commands.Cog):
                                 desired_name,
                                 reason=reason or "TempVoice: Name Update",
                             )
+                            self._last_name_desired[lane.id] = desired_name
                             self._last_name_patch_ts[lane.id] = now
-                            return  # Exit as rename is queued
                     else:
                         await self.bot.queue_channel_rename(
                             lane.id,
                             desired_name,
                             reason=reason or "TempVoice: Name Update",
                         )
+                        self._last_name_desired[lane.id] = desired_name
                         self._last_name_patch_ts[lane.id] = now
-                        return  # Exit as rename is queued
                 # sonst: Name bleibt in Ruhe
 
             if desired_limit is not None:
@@ -1177,31 +1177,18 @@ class TempVoiceCore(commands.Cog):
             if desired_limit is not None and desired_limit != lane.user_limit:
                 kwargs["user_limit"] = max(0, min(99, desired_limit))
 
-                if not kwargs:
-                    return
+            if not kwargs:
+                return
 
-                try:
-                    # Non-name edits still go directly, or if forced name edit but not handled by queue
-                    if "name" in kwargs and (
-                        not may_rename or force_name
-                    ):  # Handle forced renames explicitly here if needed
-                        await self.bot.queue_channel_rename(
-                            lane.id,
-                            kwargs["name"],
-                            reason=reason or "TempVoice: Update",
-                        )
-                        self._last_name_patch_ts[lane.id] = now
-                    else:
-                        await lane.edit(**kwargs, reason=reason or "TempVoice: Update")
-                        if "name" in kwargs:
-                            self._last_name_patch_ts[lane.id] = now
-                except discord.HTTPException as e:
-                    log.warning(
-                        "TempVoice: lane.edit failed for %s (payload=%s): %s",
-                        lane.id,
-                        kwargs,
-                        e,
-                    )
+            try:
+                await lane.edit(**kwargs, reason=reason or "TempVoice: Update")
+            except discord.HTTPException as e:
+                log.warning(
+                    "TempVoice: lane.edit failed for %s (payload=%s): %s",
+                    lane.id,
+                    kwargs,
+                    e,
+                )
 
     async def set_lane_template(
         self, lane: discord.VoiceChannel, *, base_name: str, limit: int
