@@ -767,6 +767,50 @@
             align-items: center;
             gap: 0.4rem;
         }
+        .dl-build-status {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+            min-width: 180px;
+        }
+        .dl-build-status-pill {
+            display: inline-flex;
+            align-items: center;
+            width: fit-content;
+            padding: 0.15rem 0.5rem;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 600;
+            border: 1px solid rgba(255,255,255,0.14);
+            color: #cbd5e1;
+            background: rgba(255,255,255,0.05);
+        }
+        .dl-build-status-pill.ok {
+            color: #86efac;
+            border-color: rgba(74, 222, 128, 0.35);
+            background: rgba(74, 222, 128, 0.12);
+        }
+        .dl-build-status-pill.queued {
+            color: #7dd3fc;
+            border-color: rgba(125, 211, 252, 0.35);
+            background: rgba(125, 211, 252, 0.12);
+        }
+        .dl-build-status-pill.missing,
+        .dl-build-status-pill.error {
+            color: #fca5a5;
+            border-color: rgba(248, 113, 113, 0.35);
+            background: rgba(248, 113, 113, 0.12);
+        }
+        .dl-build-status-pill.deleted {
+            color: #fcd34d;
+            border-color: rgba(252, 211, 77, 0.35);
+            background: rgba(252, 211, 77, 0.12);
+        }
+        .dl-build-status-note {
+            color: #9aa0a6;
+            font-size: 11px;
+            line-height: 1.35;
+        }
         .dl-build-empty {
             color: #9aa0a6;
             padding: 0.75rem 0.85rem;
@@ -1590,6 +1634,7 @@
                                         <th>Build-ID</th>
                                         <th>Build-Name</th>
                                         <th>Autor</th>
+                                        <th>Status</th>
                                         <th>Aktiv</th>
                                         <th>Sortierung</th>
                                         <th>Aktion</th>
@@ -1865,8 +1910,34 @@
             author_name: raw.author_name ?? raw.authorName ?? '',
             is_active: Boolean(raw.is_active ?? raw.isActive ?? true),
             sort_order: raw.sort_order ?? raw.sortOrder ?? 100,
+            sync_status: raw.sync_status ?? raw.syncStatus ?? '',
+            sync_message: raw.sync_message ?? raw.syncMessage ?? '',
+            clone_build_id: raw.clone_build_id ?? raw.cloneBuildId ?? '',
+            clone_version: raw.clone_version ?? raw.cloneVersion ?? '',
             suggested: Boolean(raw.suggested),
         };
+    }
+
+    function deadlockBuildStatusMeta(row = {}) {
+        const status = String(row.sync_status || '').trim().toLowerCase();
+        if (status === 'ok') return { label: 'Aktuell', className: 'ok' };
+        if (status === 'queued') return { label: 'Eingeplant', className: 'queued' };
+        if (status === 'missing') return { label: 'Quelle fehlt', className: 'missing' };
+        if (status === 'error') return { label: 'Fehler', className: 'error' };
+        if (status === 'deleted') return { label: 'Geloescht', className: 'deleted' };
+        return { label: row.suggested ? 'Legacy' : 'Unbekannt', className: '' };
+    }
+
+    function deadlockBuildStatusNote(row = {}) {
+        const parts = [];
+        if (row.sync_message) {
+            parts.push(String(row.sync_message));
+        }
+        if (row.clone_build_id) {
+            const version = row.clone_version ? ` v${row.clone_version}` : '';
+            parts.push(`Clone #${row.clone_build_id}${version}`);
+        }
+        return parts.join(' ');
     }
 
     function setHeroBuildDraftRows(rows) {
@@ -1917,6 +1988,23 @@
             });
             tdAuthor.appendChild(authorInput);
 
+            const tdStatus = document.createElement('td');
+            const statusWrap = document.createElement('div');
+            statusWrap.className = 'dl-build-status';
+            const statusPill = document.createElement('span');
+            const statusMeta = deadlockBuildStatusMeta(row);
+            statusPill.className = 'dl-build-status-pill' + (statusMeta.className ? ` ${statusMeta.className}` : '');
+            statusPill.textContent = statusMeta.label;
+            statusWrap.appendChild(statusPill);
+            const statusNote = deadlockBuildStatusNote(row);
+            if (statusNote) {
+                const note = document.createElement('div');
+                note.className = 'dl-build-status-note';
+                note.textContent = statusNote;
+                statusWrap.appendChild(note);
+            }
+            tdStatus.appendChild(statusWrap);
+
             const tdActive = document.createElement('td');
             const activeWrap = document.createElement('label');
             activeWrap.className = 'toggle';
@@ -1955,6 +2043,7 @@
             tr.appendChild(tdBuildId);
             tr.appendChild(tdBuildName);
             tr.appendChild(tdAuthor);
+            tr.appendChild(tdStatus);
             tr.appendChild(tdActive);
             tr.appendChild(tdSort);
             tr.appendChild(tdAction);
@@ -2164,8 +2253,9 @@
             if (sync && sync.unavailable_target_schema) {
                 setHeroMessage('Gespeichert. Sync nicht möglich: Ziel-Schema fehlt.', 'error');
             } else if (sync) {
-                const msg = `Gespeichert. ${sync.queued || 0} synchronisiert, ${sync.skipped_missing_source || 0} Quelle fehlt, ${sync.errors || 0} Fehler.`;
-                setHeroMessage(msg, (sync.errors || 0) > 0 ? 'error' : 'success');
+                const timedOut = sync.timed_out ? ' Sync läuft noch im Hintergrund.' : '';
+                const msg = `Gespeichert. ${sync.queued || 0} Tasks, ${sync.builds_to_clone || 0} neue Clones, ${sync.builds_to_update || 0} Updates, ${sync.missing_sources || 0} fehlende Quellen, ${sync.errors || 0} Fehler.${timedOut}`;
+                setHeroMessage(msg, (sync.errors || 0) > 0 || !sync.ok ? 'error' : 'success');
             } else {
                 setHeroMessage('Gespeichert.', 'success');
             }
@@ -2182,8 +2272,12 @@
             return;
         }
         try {
-            await fetchJSON(`/api/deadlock/heroes/${selectedHeroId}`, { method: 'DELETE' });
-            setHeroMessage('Hero gelöscht.', 'success');
+            const res = await fetchJSON(`/api/deadlock/heroes/${selectedHeroId}`, { method: 'DELETE' });
+            const sync = res.sync_summary || null;
+            const msg = sync
+                ? `Hero gelöscht. ${sync.delete_tasks_created || 0} Delete-Tasks, ${sync.removed_clones || 0} lokale Clones entfernt.`
+                : 'Hero gelöscht.';
+            setHeroMessage(msg, 'success');
             selectedHeroId = null;
             await loadDeadlockHeroes();
         } catch (err) {

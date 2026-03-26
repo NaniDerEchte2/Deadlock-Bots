@@ -641,8 +641,10 @@ class OwnerClaimButton(discord.ui.Button):
         if not lane:
             await itx.response.send_message("Tritt zuerst deiner Lane bei.", ephemeral=True)
             return
+        # Interaction sofort bestätigen, damit das Token nicht abläuft
+        await itx.response.defer(ephemeral=True)
         await self.core.transfer_owner(lane, m.id)
-        await itx.response.send_message("Du bist jetzt Owner dieser Lane.", ephemeral=True)
+        await itx.followup.send("Du bist jetzt Owner dieser Lane.", ephemeral=True)
 
 
 class LimitButton(discord.ui.Button):
@@ -1194,7 +1196,41 @@ class KickSelectView(discord.ui.View):
         self.add_item(KickSelect(options))
 
     async def handle_kick(self, itx: discord.Interaction, target_id: int):
-        ok, msg = await self.util.kick(self.lane, target_id)
+        actor = itx.user if isinstance(itx.user, (discord.Member, discord.User)) else None
+        actor_member = None
+        if actor is not None:
+            actor_member = self.lane.guild.get_member(actor.id)
+        if actor_member is None:
+            logger.warning(
+                "TempVoice kick denied: actor missing in guild actor=%s actor_id=%s target_id=%s lane_id=%s",
+                str(actor) if actor else "unknown",
+                getattr(actor, "id", None),
+                target_id,
+                self.lane.id,
+            )
+            await itx.response.send_message("Konnte deine Berechtigung nicht mehr prüfen.", ephemeral=True)
+            return
+        owner_id = itx.client.get_cog("TempVoiceCore").lane_owner.get(self.lane.id, actor_member.id)  # type: ignore
+        perms = self.lane.permissions_for(actor_member)
+        if not (owner_id == actor_member.id or perms.manage_channels or perms.administrator):
+            logger.warning(
+                "TempVoice kick denied: actor lacks permission actor=%s actor_id=%s target_id=%s lane_id=%s",
+                str(actor_member),
+                actor_member.id,
+                target_id,
+                self.lane.id,
+            )
+            await itx.response.send_message("Nur Owner/Mods dürfen kicken.", ephemeral=True)
+            return
+        logger.info(
+            "TempVoice kick requested: actor=%s actor_id=%s target_id=%s lane=%s lane_id=%s",
+            str(actor_member),
+            actor_member.id,
+            target_id,
+            self.lane.name,
+            self.lane.id,
+        )
+        ok, msg = await self.util.kick(self.lane, target_id, actor=actor_member)
         await itx.response.send_message(msg, ephemeral=True)
 
 

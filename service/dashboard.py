@@ -35,6 +35,8 @@ LOG_TAIL_MAX_BYTES = 4 * 1024 * 1024
 DEFAULT_DASHBOARD_MODERATOR_ROLE_ID = 1337518124647579661
 TURNIER_MOD_ROLE_ID = 1401891955931222110  # Community-Moderator: nur Turnier-Zugriff
 DEFAULT_DASHBOARD_OWNER_USER_ID = 662995601738170389
+DEADLOCK_MISSING_BUILD_ALERT_CHANNEL_ID = 1374364800817303632
+DEADLOCK_MISSING_BUILD_ALERT_INTERVAL_SECONDS = 300
 KEYRING_SERVICE_NAME = "DeadlockBot"
 MASTER_DASHBOARD_PUBLIC_URL = "https://admin.earlysalty.de"
 MASTER_DASHBOARD_DISCORD_REDIRECT_URI = (
@@ -224,6 +226,7 @@ class DashboardServer:
         self._log_dir = Path(__file__).resolve().parent.parent / "logs"
         self._public_stats_cache: dict | None = None
         self._public_stats_cache_time: float = 0.0
+        self._deadlock_alert_task: asyncio.Task | None = None
         if self._discord_auth_enabled and not self._is_discord_oauth_configured():
             logging.error(
                 "Dashboard Auth-Konfiguration ungültig: Discord OAuth aktiviert, aber Client ID/Secret "
@@ -280,6 +283,9 @@ class DashboardServer:
         return True
 
     async def _cleanup(self) -> None:
+        if self._deadlock_alert_task:
+            self._deadlock_alert_task.cancel()
+            self._deadlock_alert_task = None
         if self._site:
             await self._site.stop()
         if self._runner:
@@ -444,6 +450,10 @@ class DashboardServer:
                     raise RuntimeError("Dashboard konnte nicht gestartet werden")
 
             self._started = True
+            if self._deadlock_alert_task is None:
+                self._deadlock_alert_task = asyncio.create_task(
+                    self._deadlock_missing_build_alert_loop()
+                )
             base_no_slash = self._public_base_url.rstrip("/")
             if base_no_slash.lower().endswith("/admin"):
                 admin_path = base_no_slash
@@ -3594,6 +3604,15 @@ class DashboardServer:
             "author_name": str(_get("author_name", 4) or ""),
             "is_active": bool(int(_get("is_active", 5) or 0)),
             "sort_order": int(_get("sort_order", 6) or 100),
+            "sync_status": _get("sync_status"),
+            "sync_message": _get("sync_message"),
+            "last_checked_at": _get("last_checked_at"),
+            "last_synced_at": _get("last_synced_at"),
+            "last_alerted_at": _get("last_alerted_at"),
+            "source_version": _get("source_version"),
+            "source_last_updated_ts": _get("source_last_updated_ts"),
+            "clone_build_id": _get("clone_build_id"),
+            "clone_version": _get("clone_version"),
             "created_at": _get("created_at", 7),
             "updated_at": _get("updated_at", 8),
         }
@@ -3706,7 +3725,11 @@ class DashboardServer:
              WHERE hero_id = ?
         """
         select_builds_sql = """
-            SELECT id, hero_id, build_id, build_name, author_name, is_active, sort_order, created_at, updated_at
+            SELECT
+                id, hero_id, build_id, build_name, author_name, is_active, sort_order,
+                sync_status, sync_message, last_checked_at, last_synced_at, last_alerted_at,
+                source_version, source_last_updated_ts, clone_build_id, clone_version,
+                created_at, updated_at
               FROM deadlock_hero_builds
              WHERE hero_id = ?
              ORDER BY sort_order ASC, build_id ASC
@@ -3773,6 +3796,282 @@ class DashboardServer:
             )
         else:
             conn.execute("DELETE FROM deadlock_hero_builds WHERE hero_id = ?", (hero_id,))
+
+    async def _run_steam_task(
+        self,
+        task_type: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        timeout: float = 45.0,
+        poll_interval: float = 0.5,
+    ) -> dict[str, Any]:
+        payload_json = json.dumps(payload) if payload is not None else None
+        async with db.transaction() as conn:
+            cur = conn.execute(
+                "INSERT INTO steam_tasks(type, payload, status) VALUES(?, ?, 'PENDING')",
+                (task_type, payload_json),
+            )
+            task_id = int(cur.lastrowid or 0)
+
+        deadline = time.monotonic() + max(float(timeout), float(poll_interval))
+        while True:
+            row = await db.query_one_async(
+                "SELECT status, result, error FROM steam_tasks WHERE id = ?",
+                (task_id,),
+            )
+            if row is None:
+                return {
+                    "task_id": task_id,
+                    "status": "MISSING",
+                    "ok": False,
+                    "timed_out": False,
+                    "result": None,
+                    "error": "Steam task disappeared",
+                }
+
+            status = str(row["status"] or "UNKNOWN").upper()
+            raw_result = row["result"]
+            result: Any = raw_result
+            if isinstance(raw_result, str):
+                try:
+                    result = json.loads(raw_result)
+                except json.JSONDecodeError:
+                    result = raw_result
+            error = str(row["error"]) if row["error"] is not None else None
+
+            if status in {"DONE", "FAILED"}:
+                return {
+                    "task_id": task_id,
+                    "status": status,
+                    "ok": status == "DONE",
+                    "timed_out": False,
+                    "result": result,
+                    "error": error,
+                }
+
+            if time.monotonic() >= deadline:
+                return {
+                    "task_id": task_id,
+                    "status": status,
+                    "ok": False,
+                    "timed_out": True,
+                    "result": result,
+                    "error": error or f"Timed out waiting for {task_type}",
+                }
+
+            await asyncio.sleep(max(0.1, float(poll_interval)))
+
+    async def _deadlock_missing_build_alert_loop(self) -> None:
+        await self.bot.wait_until_ready()
+        while True:
+            try:
+                await self._dispatch_deadlock_missing_build_alerts()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Deadlock missing-build alert loop failed: %s", exc)
+            await asyncio.sleep(DEADLOCK_MISSING_BUILD_ALERT_INTERVAL_SECONDS)
+
+    async def _dispatch_deadlock_missing_build_alerts(self) -> int:
+        claim_ts = int(time.time())
+        claim_marker = -claim_ts
+        stale_cutoff = -(claim_ts - 900)
+        db.execute(
+            """
+            UPDATE deadlock_hero_builds
+               SET last_alerted_at = NULL
+             WHERE last_alerted_at < 0
+               AND last_alerted_at > ?
+            """,
+            (stale_cutoff,),
+        )
+        async with db.transaction() as conn:
+            rows = conn.execute(
+                """
+                UPDATE deadlock_hero_builds
+                   SET last_alerted_at = ?
+                 WHERE (hero_id, build_id) IN (
+                    SELECT hb.hero_id, hb.build_id
+                    FROM deadlock_hero_builds hb
+                    LEFT JOIN deadlock_heroes h ON h.hero_id = hb.hero_id
+                    WHERE hb.is_active = 1
+                      AND COALESCE(h.is_active, 1) = 1
+                      AND hb.sync_status = 'missing'
+                      AND hb.last_alerted_at IS NULL
+                 )
+                 RETURNING hero_id, build_id, build_name, author_name, sync_message
+                """,
+                (claim_marker,),
+            ).fetchall()
+        if not rows:
+            return 0
+
+        sent = 0
+        channel = self.bot.get_channel(DEADLOCK_MISSING_BUILD_ALERT_CHANNEL_ID)
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(DEADLOCK_MISSING_BUILD_ALERT_CHANNEL_ID)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to fetch Deadlock alert channel: %s", exc)
+                db.execute(
+                    """
+                    UPDATE deadlock_hero_builds
+                       SET last_alerted_at = NULL
+                     WHERE last_alerted_at = ?
+                    """,
+                    (claim_marker,),
+                )
+                return 0
+
+        for row in rows:
+            hero_row = db.query_one(
+                "SELECT name FROM deadlock_heroes WHERE hero_id = ? LIMIT 1",
+                (int(row["hero_id"]),),
+            )
+            message = (
+                "Deadlock Build fehlt im GC\n"
+                f"Hero: {(hero_row['name'] if hero_row else row['hero_id'])} ({row['hero_id']})\n"
+                f"Build: {row['build_name']} ({row['build_id']})\n"
+                f"Autor: {row['author_name']}\n"
+                f"Status: {row['sync_message'] or 'Quell-Build nicht gefunden.'}"
+            )
+            try:
+                await channel.send(message)
+                db.execute(
+                    """
+                    UPDATE deadlock_hero_builds
+                       SET last_alerted_at = ?
+                     WHERE hero_id = ?
+                       AND build_id = ?
+                       AND last_alerted_at = ?
+                    """,
+                    (claim_ts, int(row["hero_id"]), int(row["build_id"]), claim_marker),
+                )
+                sent += 1
+            except Exception as exc:  # noqa: BLE001
+                db.execute(
+                    """
+                    UPDATE deadlock_hero_builds
+                       SET last_alerted_at = NULL
+                     WHERE hero_id = ?
+                       AND build_id = ?
+                       AND last_alerted_at = ?
+                    """,
+                    (int(row["hero_id"]), int(row["build_id"]), claim_marker),
+                )
+                logger.warning(
+                    "Failed to send Deadlock missing-build alert (hero_id=%s, build_id=%s): %s",
+                    row["hero_id"],
+                    row["build_id"],
+                    exc,
+                )
+
+        return sent
+
+    async def _refresh_deadlock_build_sources(self, *, hero_id: int) -> dict[str, Any]:
+        build_rows = await db.query_all_async(
+            """
+            SELECT build_id, build_name, author_name
+              FROM deadlock_hero_builds
+             WHERE hero_id = ?
+               AND is_active = 1
+             ORDER BY sort_order ASC, build_id ASC
+            """,
+            (hero_id,),
+        )
+
+        build_ids = [int(row["build_id"]) for row in build_rows if self._coerce_int(row["build_id"], None)]
+        summary: dict[str, Any] = {
+            "requested": len(build_ids),
+            "refreshed": 0,
+            "failed": 0,
+            "timed_out": 0,
+            "bridge_ready": True,
+            "details": [],
+        }
+        if not build_ids:
+            return summary
+
+        state_row = await db.query_one_async(
+            """
+            SELECT payload
+              FROM standalone_bot_state
+             WHERE bot = 'steam'
+             LIMIT 1
+            """
+        )
+        state_payload = self._parse_metadata_json(state_row["payload"]) if state_row else {}
+        runtime = state_payload.get("runtime", {}) if isinstance(state_payload, dict) else {}
+        if not runtime.get("logged_on") or not runtime.get("deadlock_gc_ready"):
+            summary["bridge_ready"] = False
+            summary["failed"] = len(build_ids)
+            summary["details"].append(
+                {
+                    "status": "bridge_not_ready",
+                    "logged_on": bool(runtime.get("logged_on")),
+                    "deadlock_gc_ready": bool(runtime.get("deadlock_gc_ready")),
+                }
+            )
+            return summary
+
+        task_result = await self._run_steam_task(
+            "GC_SEARCH_BUILDS",
+            {"hero_id": int(hero_id)},
+            timeout=45.0,
+            poll_interval=0.5,
+        )
+        task_payload = task_result.get("result")
+        task_data = task_payload.get("data") if isinstance(task_payload, dict) else None
+        total_results = None
+        if isinstance(task_data, dict):
+            total_results = self._coerce_int(task_data.get("totalResults"), None)
+
+        if task_result.get("timed_out"):
+            summary["timed_out"] += 1
+
+        available_ids = {
+            int(row["hero_build_id"])
+            for row in await db.query_all_async(
+                f"""
+                SELECT hero_build_id
+                  FROM hero_build_sources
+                 WHERE hero_build_id IN ({", ".join("?" for _ in build_ids)})
+                """,
+                tuple(build_ids),
+            )
+        }
+        summary["refreshed"] = len(available_ids)
+        summary["failed"] = max(0, summary["requested"] - summary["refreshed"])
+
+        if summary["failed"] > 0:
+            for row in build_rows:
+                build_id = int(row["build_id"])
+                if build_id in available_ids:
+                    continue
+                summary["details"].append(
+                    {
+                        "status": "source_refresh_failed",
+                        "build_id": build_id,
+                        "build_name": str(row["build_name"]),
+                        "author_name": str(row["author_name"]),
+                        "task_id": task_result.get("task_id"),
+                        "task_status": task_result.get("status"),
+                        "timed_out": bool(task_result.get("timed_out")),
+                        "error": task_result.get("error"),
+                        "total_results": total_results,
+                    }
+                )
+
+        if summary["refreshed"] > 0 or summary["failed"] > 0:
+            logger.info(
+                "Deadlock source refresh finished (hero_id=%s): requested=%s refreshed=%s failed=%s timed_out=%s",
+                hero_id,
+                summary["requested"],
+                summary["refreshed"],
+                summary["failed"],
+                summary["timed_out"],
+            )
+        return summary
 
     def _sync_deadlock_hero_builds_conn(self, conn: Any, *, hero_id: int) -> dict[str, Any]:
         summary: dict[str, Any] = {
@@ -4012,27 +4311,46 @@ class DashboardServer:
         return summary
 
     async def _sync_deadlock_hero_builds(self, *, hero_id: int) -> dict[str, Any]:
-        fallback_summary: dict[str, Any] = {
+        task_result = await self._run_steam_task(
+            "MAINTAIN_BUILD_CATALOG",
+            {"hero_id": int(hero_id)},
+            timeout=180.0,
+            poll_interval=1.0,
+        )
+        result_payload = task_result.get("result")
+        result_data = result_payload.get("data") if isinstance(result_payload, dict) else {}
+        if not isinstance(result_data, dict):
+            result_data = {}
+
+        summary: dict[str, Any] = {
             "hero_id": int(hero_id),
-            "checked": 0,
-            "queued": 0,
-            "skipped_missing_source": 0,
-            "errors": 1,
+            "task_id": task_result.get("task_id"),
+            "task_status": task_result.get("status"),
+            "ok": bool(task_result.get("ok")),
+            "timed_out": bool(task_result.get("timed_out")),
+            "error": task_result.get("error"),
+            "checked": int(result_data.get("checked") or 0),
+            "queued": int(result_data.get("tasks_created") or 0),
+            "builds_to_clone": int(result_data.get("builds_to_clone") or 0),
+            "builds_to_update": int(result_data.get("builds_to_update") or 0),
+            "delete_tasks_created": int(result_data.get("delete_tasks_created") or 0),
+            "removed_clones": int(result_data.get("removed_clones") or 0),
+            "missing_sources": int(result_data.get("missing_sources") or 0),
+            "errors": int(result_data.get("errors") or 0),
+            "unchanged": int(result_data.get("unchanged") or 0),
             "unavailable_target_schema": False,
-            "details": [
-                {
-                    "status": "error",
-                    "reason": "sync_exception",
-                }
-            ],
+            "details": [],
         }
-        try:
-            async with db.transaction() as conn:
-                return self._sync_deadlock_hero_builds_conn(conn, hero_id=hero_id)
-        except Exception as exc:  # noqa: BLE001
-            fallback_summary["details"][0]["error"] = str(exc)
-            logger.exception("Deadlock sync failed (hero_id=%s): %s", hero_id, exc)
-            return fallback_summary
+
+        if summary["timed_out"]:
+            summary["details"].append({"status": "timeout", "reason": summary["error"]})
+        elif not summary["ok"] and summary["error"]:
+            summary["details"].append({"status": "error", "reason": summary["error"]})
+
+        if summary["ok"]:
+            await self._dispatch_deadlock_missing_build_alerts()
+
+        return summary
 
     async def _handle_deadlock_heroes(self, request: web.Request) -> web.Response:
         """List all Deadlock heroes including their build snapshots."""
@@ -4047,7 +4365,11 @@ class DashboardServer:
             )
             build_rows = db.query_all(
                 """
-                SELECT id, hero_id, build_id, build_name, author_name, is_active, sort_order, created_at, updated_at
+                SELECT
+                    id, hero_id, build_id, build_name, author_name, is_active, sort_order,
+                    sync_status, sync_message, last_checked_at, last_synced_at, last_alerted_at,
+                    source_version, source_last_updated_ts, clone_build_id, clone_version,
+                    created_at, updated_at
                   FROM deadlock_hero_builds
                  ORDER BY hero_id ASC, sort_order ASC, build_id ASC
                 """
@@ -4181,11 +4503,16 @@ class DashboardServer:
         if sync_on_save:
             sync_summary = await self._sync_deadlock_hero_builds(hero_id=hero_id)
             logger.info(
-                "Deadlock hero saved+synced (hero_id=%s): queued=%s missing_source=%s errors=%s",
+                "Deadlock hero saved+synced (hero_id=%s): queued=%s missing_sources=%s "
+                "errors=%s clones=%s updates=%s deletes=%s timed_out=%s",
                 hero_id,
                 sync_summary.get("queued"),
-                sync_summary.get("skipped_missing_source"),
+                sync_summary.get("missing_sources"),
                 sync_summary.get("errors"),
+                sync_summary.get("builds_to_clone"),
+                sync_summary.get("builds_to_update"),
+                sync_summary.get("delete_tasks_created"),
+                sync_summary.get("timed_out"),
             )
         else:
             logger.info("Deadlock hero saved without sync (hero_id=%s)", hero_id)
@@ -4206,7 +4533,8 @@ class DashboardServer:
                 cur = conn.execute("DELETE FROM deadlock_heroes WHERE hero_id = ?", (hero_id,))
                 deleted = int(cur.rowcount or 0)
             logger.info("Deadlock hero deleted (hero_id=%s, deleted=%s)", hero_id, bool(deleted))
-            return self._json({"deleted": bool(deleted)})
+            sync_summary = await self._sync_deadlock_hero_builds(hero_id=hero_id)
+            return self._json({"deleted": bool(deleted), "sync_summary": sync_summary})
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to delete deadlock hero: %s", exc)
             raise web.HTTPInternalServerError(text="Delete hero failed") from exc

@@ -1883,22 +1883,14 @@ class TempVoiceCore(commands.Cog):
         # Auto-Lane bei Join in Staging (+ Fallback: Name beginnt mit '(+)' oder '+')
         try:
             joined_staging = False
-            staging_reason = ""
             if joined_new_channel and after_channel:
                 if after_channel.id in STAGING_CHANNEL_IDS:
                     joined_staging = True
-                    staging_reason = "id-match"
-                else:
-                    nm = after_channel.name.strip().lower()
-                    if nm.startswith("(+)") or nm.startswith("+"):
-                        joined_staging = True
-                        staging_reason = "name-fallback"
             if joined_staging:
                 log.info(
-                    "TempVoice: %s joined staging %s (%s, set=%s) -> create_lane",
+                    "TempVoice: %s joined staging %s (configured-id, set=%s) -> create_lane",
                     member.id,
                     after_channel.id,
-                    staging_reason,
                     ",".join(str(s) for s in STAGING_CHANNEL_IDS),
                 )
                 await self._create_lane(member, after_channel)

@@ -4,8 +4,6 @@ import logging
 
 import discord
 
-from .core import STAGING_CHANNEL_IDS
-
 logger = logging.getLogger(__name__)
 
 
@@ -14,36 +12,62 @@ class TempVoiceUtil:
         self.core = core  # TempVoiceCore
 
     # ---------- Helpers ----------
-    async def _find_staging(self, guild: discord.Guild) -> discord.VoiceChannel | None:
-        for cid in STAGING_CHANNEL_IDS:
-            ch = guild.get_channel(cid)
-            if isinstance(ch, discord.VoiceChannel):
-                return ch
-        return None
+    @staticmethod
+    def _actor_reason_suffix(actor: discord.abc.User | None) -> str:
+        if actor is None:
+            return ""
+        return f" by {actor} ({actor.id})"
 
     # ---------- Actions ----------
-    async def kick(self, lane: discord.VoiceChannel, target_id: int) -> tuple[bool, str]:
+    async def kick(
+        self,
+        lane: discord.VoiceChannel,
+        target_id: int,
+        actor: discord.abc.User | None = None,
+    ) -> tuple[bool, str]:
         target = lane.guild.get_member(int(target_id))
         if not target or not target.voice or target.voice.channel != lane:
             return False, "User ist nicht (mehr) in der Lane."
-        staging = await self._find_staging(lane.guild)
-        if not staging:
-            return False, "Staging-Channel nicht gefunden."
+        reason = f"TempVoice: Kick{self._actor_reason_suffix(actor)}"
         try:
-            await target.move_to(staging, reason="TempVoice: Kick")
-            return True, f"KICK {target.display_name} -> {staging.name}"
+            await target.move_to(None, reason=reason)
+            logger.info(
+                "TempVoice kick: actor=%s actor_id=%s target=%s target_id=%s lane=%s lane_id=%s",
+                str(actor) if actor else "unknown",
+                getattr(actor, "id", None),
+                target.display_name,
+                target.id,
+                lane.name,
+                lane.id,
+            )
+            return True, f"KICK {target.display_name} wurde getrennt."
         except discord.Forbidden:
             logger.warning(
-                "Kick fehlgeschlagen: fehlende Rechte (member=%s, lane=%s)",
+                "Kick fehlgeschlagen: fehlende Rechte (actor=%s actor_id=%s member=%s lane=%s)",
+                str(actor) if actor else "unknown",
+                getattr(actor, "id", None),
                 target_id,
                 lane.id,
             )
             return False, "Keine Berechtigung, um Nutzer zu verschieben."
         except discord.HTTPException as e:
-            logger.error("Kick HTTPException (member=%s, lane=%s): %s", target_id, lane.id, e)
+            logger.error(
+                "Kick HTTPException (actor=%s actor_id=%s member=%s lane=%s): %s",
+                str(actor) if actor else "unknown",
+                getattr(actor, "id", None),
+                target_id,
+                lane.id,
+                e,
+            )
             return False, "Konnte nicht verschieben (HTTP-Fehler)."
         except Exception:
-            logger.exception("Kick unerwarteter Fehler (member=%s, lane=%s)", target_id, lane.id)
+            logger.exception(
+                "Kick unerwarteter Fehler (actor=%s actor_id=%s member=%s, lane=%s)",
+                str(actor) if actor else "unknown",
+                getattr(actor, "id", None),
+                target_id,
+                lane.id,
+            )
             return False, "Konnte nicht verschieben."
 
     async def ban(self, lane: discord.VoiceChannel, owner_id: int, raw: str) -> tuple[bool, str]:

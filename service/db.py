@@ -463,6 +463,15 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
               author_name TEXT NOT NULL,
               is_active INTEGER NOT NULL DEFAULT 1,
               sort_order INTEGER NOT NULL DEFAULT 100,
+              sync_status TEXT,
+              sync_message TEXT,
+              last_checked_at INTEGER,
+              last_synced_at INTEGER,
+              last_alerted_at INTEGER,
+              source_version INTEGER,
+              source_last_updated_ts INTEGER,
+              clone_build_id INTEGER,
+              clone_version INTEGER,
               created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
               updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
               UNIQUE(hero_id, build_id)
@@ -919,6 +928,22 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
             except sqlite3.OperationalError as exc:
                 if "duplicate column name" not in str(exc).lower():
                     raise
+        for alter_sql in (
+            "ALTER TABLE deadlock_hero_builds ADD COLUMN sync_status TEXT",
+            "ALTER TABLE deadlock_hero_builds ADD COLUMN sync_message TEXT",
+            "ALTER TABLE deadlock_hero_builds ADD COLUMN last_checked_at INTEGER",
+            "ALTER TABLE deadlock_hero_builds ADD COLUMN last_synced_at INTEGER",
+            "ALTER TABLE deadlock_hero_builds ADD COLUMN last_alerted_at INTEGER",
+            "ALTER TABLE deadlock_hero_builds ADD COLUMN source_version INTEGER",
+            "ALTER TABLE deadlock_hero_builds ADD COLUMN source_last_updated_ts INTEGER",
+            "ALTER TABLE deadlock_hero_builds ADD COLUMN clone_build_id INTEGER",
+            "ALTER TABLE deadlock_hero_builds ADD COLUMN clone_version INTEGER",
+        ):
+            try:
+                c.execute(alter_sql)
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
         # Ko-fi pending payments: token Spalte hinzufügen
         try:
             c.execute("ALTER TABLE beta_invite_pending_payments ADD COLUMN token TEXT")
@@ -1055,6 +1080,9 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
             )
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_deadlock_hero_builds_build_id ON deadlock_hero_builds(build_id)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_deadlock_hero_builds_sync_status ON deadlock_hero_builds(sync_status, last_alerted_at)"
             )
             # Performance Indexes (2026-02-20)
             c.execute(
