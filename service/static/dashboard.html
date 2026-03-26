@@ -1595,6 +1595,19 @@
                 </div>
             </div>
 
+            <div class="card" style="margin-bottom:1rem;">
+                <div class="form-grid" style="display:grid;grid-template-columns:minmax(260px,1fr) auto;gap:0.75rem;align-items:end;">
+                    <label>
+                        Globaler Build-Name
+                        <input type="text" id="deadlock-global-build-name" placeholder="Optionaler globaler Name">
+                    </label>
+                    <button id="deadlock-global-build-name-save" style="background:#1c7ed6;color:#fff;">Global speichern</button>
+                </div>
+                <small style="display:block;margin-top:0.5rem;color:#9aa0a6;">
+                    Priorität: Build-Name &gt; Hero-Override &gt; Globaler Name &gt; Code-Default
+                </small>
+            </div>
+
             <div class="dl-heroes-grid">
                 <div>
                     <div class="dl-hero-list" id="deadlock-hero-list"></div>
@@ -1613,6 +1626,10 @@
                         <label>
                             Name
                             <input type="text" id="deadlock-hero-name" placeholder="z.B. Lady Geist">
+                        </label>
+                        <label style="grid-column:1 / -1;">
+                            Hero-Override Build-Name
+                            <input type="text" id="deadlock-hero-target-build-name-override" placeholder="Optionaler Hero-Override">
                         </label>
                         <label>
                             Status
@@ -1751,8 +1768,11 @@
     const heroRefreshBtn = document.getElementById('deadlock-hero-refresh');
     const heroNewBtn = document.getElementById('deadlock-hero-new');
     const heroMsg = document.getElementById('deadlock-hero-message');
+    const globalBuildNameInput = document.getElementById('deadlock-global-build-name');
+    const globalBuildNameSaveBtn = document.getElementById('deadlock-global-build-name-save');
     const heroIdInput = document.getElementById('deadlock-hero-id');
     const heroNameInput = document.getElementById('deadlock-hero-name');
+    const heroTargetBuildNameOverrideInput = document.getElementById('deadlock-hero-target-build-name-override');
     const heroActiveInput = document.getElementById('deadlock-hero-active');
     const heroSaveBtn = document.getElementById('deadlock-hero-save');
     const heroDeleteBtn = document.getElementById('deadlock-hero-delete');
@@ -1848,6 +1868,7 @@
     let showHiddenCogs = false;
     let lastTreeData = null;
     let deadlockHeroes = [];
+    let deadlockConfig = { global_target_build_name: '' };
     let selectedHeroId = null;
     let heroesLoading = false;
     let heroBuildDraftRows = [];
@@ -1972,7 +1993,7 @@
             const buildNameInput = document.createElement('input');
             buildNameInput.type = 'text';
             buildNameInput.value = row.build_name || '';
-            buildNameInput.placeholder = 'Build-Name';
+            buildNameInput.placeholder = 'Optionaler Build-Name';
             buildNameInput.addEventListener('input', () => {
                 heroBuildDraftRows[idx].build_name = buildNameInput.value;
             });
@@ -2088,9 +2109,6 @@
             if (!Number.isFinite(buildId)) {
                 throw new Error(`Build-ID in Zeile ${rowNo} ist ungültig.`);
             }
-            if (!rawName) {
-                throw new Error(`Build-Name in Zeile ${rowNo} fehlt.`);
-            }
             if (!rawAuthor) {
                 throw new Error(`Autor in Zeile ${rowNo} fehlt.`);
             }
@@ -2120,6 +2138,7 @@
         selectedHeroId = null;
         heroIdInput.value = '';
         heroNameInput.value = '';
+        if (heroTargetBuildNameOverrideInput) heroTargetBuildNameOverrideInput.value = '';
         heroActiveInput.checked = true;
         setHeroBuildDraftRows([]);
         setHeroMessage('', 'success');
@@ -2134,6 +2153,9 @@
         selectedHeroId = hero.hero_id || hero.heroId || hero.id || null;
         heroIdInput.value = hero.hero_id ?? hero.heroId ?? '';
         heroNameInput.value = hero.name || '';
+        if (heroTargetBuildNameOverrideInput) {
+            heroTargetBuildNameOverrideInput.value = hero.target_build_name_override || hero.targetBuildNameOverride || '';
+        }
         heroActiveInput.checked = Boolean(hero.is_active ?? hero.isActive ?? true);
         let builds = Array.isArray(hero.builds) ? hero.builds : [];
         if ((!builds || builds.length === 0) && hero.legacy_build_suggestion) {
@@ -2200,6 +2222,10 @@
             heroesLoading = true;
             const res = await fetchJSON('/api/deadlock/heroes');
             deadlockHeroes = res.heroes || [];
+            deadlockConfig = res.config || { global_target_build_name: '' };
+            if (globalBuildNameInput) {
+                globalBuildNameInput.value = deadlockConfig.global_target_build_name || '';
+            }
             if (selectedHeroId) {
                 const match = deadlockHeroes.find(h => h.hero_id === selectedHeroId);
                 if (match) {
@@ -2225,6 +2251,9 @@
         if (!heroIdInput || !heroNameInput) return;
         const heroId = parseInt(heroIdInput.value, 10);
         const name = (heroNameInput.value || '').trim();
+        const targetBuildNameOverride = heroTargetBuildNameOverrideInput
+            ? (heroTargetBuildNameOverrideInput.value || '').trim()
+            : '';
         const isActive = heroActiveInput ? !!heroActiveInput.checked : true;
 
         if (!Number.isFinite(heroId)) {
@@ -2240,6 +2269,7 @@
             const payload = {
                 hero_id: heroId,
                 name,
+                target_build_name_override: targetBuildNameOverride,
                 is_active: isActive,
                 builds,
                 sync_on_save: true,
@@ -2262,6 +2292,27 @@
             await loadDeadlockHeroes();
         } catch (err) {
             setHeroMessage(err.message || 'Speichern fehlgeschlagen', 'error');
+        }
+    }
+
+    async function saveDeadlockGlobalBuildName(ev) {
+        if (ev) ev.preventDefault();
+        try {
+            const payload = {
+                global_target_build_name: globalBuildNameInput ? (globalBuildNameInput.value || '').trim() : '',
+            };
+            const res = await fetchJSON('/api/deadlock/config', {
+                method: 'POST',
+                body: JSON.stringify(payload),
+            });
+            deadlockConfig.global_target_build_name = res.global_target_build_name || '';
+            if (globalBuildNameInput) {
+                globalBuildNameInput.value = deadlockConfig.global_target_build_name;
+            }
+            setHeroMessage('Globaler Build-Name gespeichert.', 'success');
+            await loadDeadlockHeroes();
+        } catch (err) {
+            setHeroMessage(err.message || 'Globaler Build-Name konnte nicht gespeichert werden', 'error');
         }
     }
 
@@ -2513,6 +2564,9 @@
             ev.preventDefault();
             addHeroBuildDraftRow();
         });
+    }
+    if (globalBuildNameSaveBtn) {
+        globalBuildNameSaveBtn.addEventListener('click', saveDeadlockGlobalBuildName);
     }
     if (heroSaveBtn) {
         heroSaveBtn.addEventListener('click', saveDeadlockHero);

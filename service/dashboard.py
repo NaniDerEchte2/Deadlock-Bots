@@ -262,6 +262,22 @@ class DashboardServer:
     def _json(self, payload: Any, **kwargs: Any) -> web.Response:
         return web.json_response(self._sanitize(payload), **kwargs)
 
+    @staticmethod
+    def _normalize_deadlock_target_name(raw_value: Any, *, field_name: str) -> str:
+        if raw_value is None:
+            return ""
+        if isinstance(raw_value, bool) or not isinstance(raw_value, str):
+            raise web.HTTPBadRequest(text=f"{field_name} must be string")
+
+        value = raw_value.strip()
+        if not value:
+            return ""
+        if len(value) > 120:
+            raise web.HTTPBadRequest(text=f"{field_name} must be at most 120 characters")
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+            raise web.HTTPBadRequest(text=f"{field_name} contains unsupported control characters")
+        return value
+
     def _check_auth_rate_limit(
         self,
         request: web.Request,
@@ -340,6 +356,8 @@ class DashboardServer:
                     web.get("/api/co-player-network", self._handle_co_player_network),
                     web.get("/api/co-player-network/", self._handle_co_player_network),
                     web.get("/api/server-stats", self._handle_server_stats),
+                    web.get("/api/deadlock/config", self._handle_deadlock_config),
+                    web.post("/api/deadlock/config", self._handle_deadlock_config_update),
                     web.get("/api/deadlock/heroes", self._handle_deadlock_heroes),
                     web.post("/api/deadlock/heroes", self._handle_deadlock_upsert_hero),
                     web.delete("/api/deadlock/heroes/{hero_id}", self._handle_deadlock_delete_hero),
@@ -1037,7 +1055,13 @@ class DashboardServer:
     def _has_valid_auth(self, request: web.Request) -> bool:
         return bool(self._discord_auth_required and self._get_discord_auth_session(request))
 
-    def _check_auth(self, request: web.Request, *, required: bool = False) -> None:
+    def _check_auth(
+        self,
+        request: web.Request,
+        *,
+        required: bool = False,
+        require_full_access: bool = False,
+    ) -> None:
         enforce = required or self._is_auth_enforced()
         if not enforce:
             return
@@ -1055,12 +1079,40 @@ class DashboardServer:
                     raise web.HTTPForbidden(text="Origin validation failed")
                 if not self._check_csrf(request, session):
                     raise web.HTTPForbidden(text="CSRF validation failed")
+            if require_full_access and str(session.get("access_level", "full")) != "full":
+                raise web.HTTPForbidden(text="Full dashboard access required")
             return
 
         next_path = "/admin" if request.path.startswith("/api/") else None
         login_url = self._build_discord_login_url(request, next_path=next_path)
         headers: dict[str, str] = {"X-Auth-Login": login_url}
         raise web.HTTPUnauthorized(text="Authentication required", headers=headers)
+
+    def _log_deadlock_audit(
+        self,
+        request: web.Request,
+        action: str,
+        *,
+        hero_id: int | None = None,
+        changes: dict[str, Any] | None = None,
+    ) -> None:
+        session = self._get_discord_auth_session(request) if self._discord_auth_required else None
+        user_id = session.get("user_id") if session else None
+        access_level = str(session.get("access_level", "")) if session else ""
+        display_name = str(session.get("display_name") or session.get("username") or "") if session else ""
+        safe_changes = self._safe_log_value(
+            json.dumps(self._sanitize(changes or {}), ensure_ascii=True, separators=(",", ":"))
+        )
+        logger.info(
+            "AUDIT deadlock %s: discord_user=%s display_name=%s access=%s peer=%s hero_id=%s changes=%s",
+            self._safe_log_value(action),
+            self._safe_log_value(user_id),
+            self._safe_log_value(display_name),
+            self._safe_log_value(access_level),
+            self._safe_log_value(self._peer_host(request)),
+            hero_id if hero_id is not None else "-",
+            safe_changes,
+        )
 
     def _list_log_files(self) -> list[dict[str, Any]]:
         log_dir = self._log_dir
@@ -3576,9 +3628,10 @@ class DashboardServer:
             "hero_id": int(_get("hero_id", 1) or 0),
             "name": str(_get("name", 2) or ""),
             "origin_build_id": origin_build_id,
-            "is_active": bool(int(_get("is_active", 4) or 0)),
-            "created_at": _get("created_at", 5),
-            "updated_at": _get("updated_at", 6),
+            "target_build_name_override": str(_get("target_build_name_override") or ""),
+            "is_active": bool(int(_get("is_active", 5) or 0)),
+            "created_at": _get("created_at", 6),
+            "updated_at": _get("updated_at", 7),
         }
 
     @staticmethod
@@ -3628,7 +3681,7 @@ class DashboardServer:
             return None
         return {
             "build_id": legacy_build_id,
-            "build_name": f"Legacy Build {legacy_build_id}",
+            "build_name": "",
             "author_name": "Legacy",
             "is_active": bool(hero.get("is_active", True)),
             "sort_order": 100,
@@ -3657,9 +3710,10 @@ class DashboardServer:
         if build_id is None:
             raise web.HTTPBadRequest(text=f"builds[{index}].build_id must be integer")
 
-        build_name = str(raw_build.get("build_name", raw_build.get("buildName")) or "").strip()
-        if not build_name:
-            raise web.HTTPBadRequest(text=f"builds[{index}].build_name is required")
+        build_name = self._normalize_deadlock_target_name(
+            raw_build.get("build_name", raw_build.get("buildName")),
+            field_name=f"builds[{index}].build_name",
+        )
 
         author_name = str(raw_build.get("author_name", raw_build.get("authorName")) or "").strip()
         if not author_name:
@@ -3720,7 +3774,9 @@ class DashboardServer:
         conn: Any | None = None,
     ) -> dict[str, Any] | None:
         select_hero_sql = """
-            SELECT id, hero_id, name, origin_build_id, is_active, created_at, updated_at
+            SELECT
+                id, hero_id, name, origin_build_id, target_build_name_override,
+                is_active, created_at, updated_at
               FROM deadlock_heroes
              WHERE hero_id = ?
         """
@@ -4354,11 +4410,16 @@ class DashboardServer:
 
     async def _handle_deadlock_heroes(self, request: web.Request) -> web.Response:
         """List all Deadlock heroes including their build snapshots."""
-        self._check_auth(request, required=True)
+        self._check_auth(request, required=True, require_full_access=True)
         try:
+            global_target_build_name = (
+                db.get_kv("deadlock", "global_target_build_name") or ""
+            )
             hero_rows = db.query_all(
                 """
-                SELECT id, hero_id, name, origin_build_id, is_active, created_at, updated_at
+                SELECT
+                    id, hero_id, name, origin_build_id, target_build_name_override,
+                    is_active, created_at, updated_at
                   FROM deadlock_heroes
                  ORDER BY hero_id
                 """
@@ -4391,14 +4452,61 @@ class DashboardServer:
                         hero["legacy_build_suggestion"] = suggestion
                 heroes.append(hero)
 
-            return self._json({"heroes": heroes})
+            return self._json(
+                {
+                    "heroes": heroes,
+                    "config": {
+                        "global_target_build_name": global_target_build_name,
+                    },
+                }
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to load deadlock heroes: %s", exc)
             raise web.HTTPInternalServerError(text="Deadlock heroes unavailable") from exc
 
+    async def _handle_deadlock_config(self, request: web.Request) -> web.Response:
+        self._check_auth(request, required=True, require_full_access=True)
+        return self._json(
+            {
+                "global_target_build_name": (
+                    db.get_kv("deadlock", "global_target_build_name") or ""
+                )
+            }
+        )
+
+    async def _handle_deadlock_config_update(self, request: web.Request) -> web.Response:
+        self._check_auth(request, required=True, require_full_access=True)
+        try:
+            payload = await request.json()
+        except Exception:
+            raise web.HTTPBadRequest(text="Invalid JSON body")
+        if not isinstance(payload, dict):
+            raise web.HTTPBadRequest(text="Invalid JSON body")
+
+        global_target_build_name = self._normalize_deadlock_target_name(
+            payload.get(
+                "global_target_build_name",
+                payload.get("globalTargetBuildName"),
+            ),
+            field_name="global_target_build_name",
+        )
+        previous_global_target_build_name = str(
+            db.get_kv("deadlock", "global_target_build_name") or ""
+        )
+        db.set_kv("deadlock", "global_target_build_name", global_target_build_name)
+        self._log_deadlock_audit(
+            request,
+            "config.global_target_build_name",
+            changes={
+                "from": previous_global_target_build_name,
+                "to": global_target_build_name,
+            },
+        )
+        return self._json({"global_target_build_name": global_target_build_name})
+
     async def _handle_deadlock_upsert_hero(self, request: web.Request) -> web.Response:
         """Create or update a Deadlock hero entry, optionally replacing its build snapshot and syncing."""
-        self._check_auth(request, required=True)
+        self._check_auth(request, required=True, require_full_access=True)
         try:
             payload = await request.json()
         except Exception:
@@ -4435,6 +4543,16 @@ class DashboardServer:
                 default=True,
                 field_name="is_active",
             )
+        has_target_build_name_override = (
+            "target_build_name_override" in payload or "targetBuildNameOverride" in payload
+        )
+        target_build_name_override = self._normalize_deadlock_target_name(
+            payload.get(
+                "target_build_name_override",
+                payload.get("targetBuildNameOverride"),
+            ),
+            field_name="target_build_name_override",
+        )
 
         builds_snapshot = self._extract_deadlock_builds_payload(payload)
         sync_on_save = self._coerce_request_bool(
@@ -4450,7 +4568,7 @@ class DashboardServer:
             async with db.transaction() as conn:
                 existing = conn.execute(
                     """
-                    SELECT origin_build_id, is_active
+                    SELECT name, origin_build_id, is_active, target_build_name_override
                       FROM deadlock_heroes
                      WHERE hero_id = ?
                     """,
@@ -4462,6 +4580,11 @@ class DashboardServer:
                     if has_origin_build
                     else (existing["origin_build_id"] if existing else None)
                 )
+                resolved_target_build_name_override = (
+                    target_build_name_override
+                    if has_target_build_name_override
+                    else str(existing["target_build_name_override"] or "") if existing else ""
+                )
                 is_active = (
                     bool(parsed_is_active)
                     if has_is_active and parsed_is_active is not None
@@ -4472,15 +4595,27 @@ class DashboardServer:
 
                 conn.execute(
                     """
-                    INSERT INTO deadlock_heroes (hero_id, name, origin_build_id, is_active, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO deadlock_heroes (
+                        hero_id, name, origin_build_id, target_build_name_override,
+                        is_active, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(hero_id) DO UPDATE SET
                         name = excluded.name,
                         origin_build_id = excluded.origin_build_id,
+                        target_build_name_override = excluded.target_build_name_override,
                         is_active = excluded.is_active,
                         updated_at = excluded.updated_at
                     """,
-                    (hero_id, name, origin_build_id, 1 if is_active else 0, ts, ts),
+                    (
+                        hero_id,
+                        name,
+                        origin_build_id,
+                        resolved_target_build_name_override,
+                        1 if is_active else 0,
+                        ts,
+                        ts,
+                    ),
                 )
 
                 if builds_snapshot is not None:
@@ -4517,11 +4652,28 @@ class DashboardServer:
         else:
             logger.info("Deadlock hero saved without sync (hero_id=%s)", hero_id)
 
+        previous_name = str(existing["name"] or "") if existing else ""
+        previous_override = str(existing["target_build_name_override"] or "") if existing else ""
+        self._log_deadlock_audit(
+            request,
+            "hero.upsert",
+            hero_id=hero_id,
+            changes={
+                "name": {"from": previous_name, "to": name},
+                "target_build_name_override": {
+                    "from": previous_override,
+                    "to": resolved_target_build_name_override,
+                },
+                "sync_on_save": sync_on_save,
+                "build_count": len(builds_snapshot) if builds_snapshot is not None else None,
+            },
+        )
+
         return self._json({"hero": saved_hero, "sync_summary": sync_summary})
 
     async def _handle_deadlock_delete_hero(self, request: web.Request) -> web.Response:
         """Delete a hero and its associated build snapshot by hero_id."""
-        self._check_auth(request, required=True)
+        self._check_auth(request, required=True, require_full_access=True)
         try:
             hero_id = int(request.match_info.get("hero_id", "0"))
         except ValueError:
@@ -4541,7 +4693,7 @@ class DashboardServer:
 
     async def _handle_deadlock_sync_hero(self, request: web.Request) -> web.Response:
         """Run manual sync/copy for one hero without changing admin fields."""
-        self._check_auth(request, required=True)
+        self._check_auth(request, required=True, require_full_access=True)
         try:
             hero_id = int(request.match_info.get("hero_id", "0"))
         except ValueError:

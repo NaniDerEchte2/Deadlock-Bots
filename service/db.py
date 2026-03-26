@@ -447,6 +447,7 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
               hero_id INTEGER NOT NULL,
               name TEXT NOT NULL,
               origin_build_id INTEGER,
+              target_build_name_override TEXT,
               is_active INTEGER NOT NULL DEFAULT 1,
               created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
               updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
@@ -944,6 +945,11 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
             except sqlite3.OperationalError as exc:
                 if "duplicate column name" not in str(exc).lower():
                     raise
+        try:
+            c.execute("ALTER TABLE deadlock_heroes ADD COLUMN target_build_name_override TEXT")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
         # Ko-fi pending payments: token Spalte hinzufügen
         try:
             c.execute("ALTER TABLE beta_invite_pending_payments ADD COLUMN token TEXT")
