@@ -66,8 +66,11 @@ ACTIVITY_UPCOMING_WINDOW_HOURS = 2
 ACTIVITY_UPCOMING_MIN_SCORE = 4
 LOG_CHANNEL_ID = 1374364800817303632  # Decision Logs (separater Admin-Channel)
 
-# Neue Spieler: Initiate (1) und Seeker (2) gelten als Anfänger
-NEW_PLAYER_MAX_RANK = 2
+# Neue Spieler: Initiate bis Arcanist gelten als Anfänger
+NEW_PLAYER_MAX_RANK = 4
+NEW_PLAYER_FALLBACK_RANK_NAME = "Alchemist"
+NEW_PLAYER_FALLBACK_RANK_VALUE = 3
+NEW_PLAYER_FALLBACK_SUBRANK = 1
 # Maximal angezeigte Lobbys im Finder
 MAX_JOIN_LOBBIES_SHOWN = 3
 
@@ -130,6 +133,21 @@ SHORT_LFG_COUNT_RE = re.compile(
     re.IGNORECASE,
 )
 PLUS_PLAYER_RE = re.compile(r"\+\s*[1-6](?:\D|$)")
+MESSAGE_RANK_ALIASES = {
+    "ini": "Initiate",
+    "seek": "Seeker",
+    "alch": "Alchemist",
+    "arc": "Arcanist",
+    "rit": "Ritualist",
+    "emi": "Emissary",
+    "emiss": "Emissary",
+    "arch": "Archon",
+    "asc": "Ascendant",
+    "et": "Eternus",
+    "arkanist": "Arcanist",
+    "ascendent": "Ascendant",
+    "ethernus": "Eternus",
+}
 
 
 @dataclass
@@ -338,7 +356,7 @@ class SmartLFGAgent(commands.Cog):
             return abs(req_val - lane_val) <= LANE_RANK_TOLERANCE_CASUAL
         # New Player: Unbekannt oder Low Rank immer OK
         if lane.label == "New Player":
-            return requester_rank <= 5 or requester_rank == 0
+            return requester_rank <= NEW_PLAYER_MAX_RANK or requester_rank == 0
         return True
 
     # --- Routing Engine (Phase 3) ---
@@ -796,7 +814,7 @@ class SmartLFGAgent(commands.Cog):
             lanes.extend(vc.id for vc in primary_cat.voice_channels)
 
         # Low-Elo / unbekannt: New Player Lane zusätzlich
-        if author_rank_value <= 5 and NEW_PLAYER_LANE_ID not in lanes:
+        if author_rank_value <= NEW_PLAYER_MAX_RANK and NEW_PLAYER_LANE_ID not in lanes:
             lanes.append(NEW_PLAYER_LANE_ID)
 
         # Wenn Rank erkennbar: Casual als Fallback ergänzen (mehr Kandidaten)
@@ -1309,7 +1327,7 @@ class SmartLFGAgent(commands.Cog):
 
     def _compose_intro_text(
         self,
-        display_name: str,
+        user_mention: str,
         rank_display: str,
         is_new_player: bool,
         has_active_lobbys: bool,
@@ -1317,11 +1335,11 @@ class SmartLFGAgent(commands.Cog):
         rank_part = f" ({rank_display})" if rank_display and rank_display != "Unbekannt" else ""
         if has_active_lobbys:
             return (
-                f"Hey **{display_name}**!{rank_part}\n"
+                f"Hey {user_mention}!{rank_part}\n"
                 "Ich hab passende Lobbys für dich gefunden — schau rein und spiel mit:"
             )
         return (
-            f"Hey **{display_name}**!{rank_part}\n"
+            f"Hey {user_mention}!{rank_part}\n"
             "Gerade ist noch niemand in einer Lobby, aber das heißt nicht dass keiner Bock hat!\n"
             "Mach einfach eine Lane auf — erfahrungsgemäß kommen schnell Leute dazu."
         )
@@ -1330,14 +1348,21 @@ class SmartLFGAgent(commands.Cog):
         self,
         routing: LaneRoutingResult,
         is_new_player: bool,
+        has_active_lobbys: bool,
+        has_explicit_rank: bool,
+        rank_value: int,
     ) -> str:
         """Leitet das Zielgebiet für die Anzeige ab."""
         if is_new_player:
             return "New Player"
-        if routing.best_join_lane:
+        if has_active_lobbys and routing.best_join_lane:
             return routing.best_join_lane.label
         if routing.suggested_category_label:
+            if routing.suggested_category_label == "Casual" and has_explicit_rank and rank_value >= 6:
+                return "Ranked"
             return routing.suggested_category_label
+        if has_explicit_rank and rank_value >= 6:
+            return "Ranked"
         return "Casual"
 
     def _score_lobby_suggestion(
@@ -1345,7 +1370,9 @@ class SmartLFGAgent(commands.Cog):
         lane: LaneInfo,
         routing: LaneRoutingResult,
         rank_value: int,
+        rank_sub: int | None,
         is_new_player: bool,
+        has_explicit_rank: bool,
     ) -> float:
         """Bewertet eine Lobby für die Top-3-Auswahl."""
         score = 0.0
@@ -1357,11 +1384,19 @@ class SmartLFGAgent(commands.Cog):
         if lane.member_count > 0:
             score += 200.0 + lane.member_count * 15.0
         if is_new_player and lane.label == "New Player":
-            score += 300.0
+            score += 1200.0
         if routing.suggested_category_id and lane.category_id == routing.suggested_category_id:
             score += 80.0
         if rank_value > 0 and lane.avg_rank_value > 0:
-            score += max(0.0, 80.0 - abs(lane.avg_rank_value - rank_value) * 20.0)
+            rank_diff = abs(
+                lane.avg_rank_value - (rank_value + (rank_sub or 5) / 10.0)
+            )
+            if has_explicit_rank:
+                score += max(0.0, 140.0 - rank_diff * 35.0)
+            else:
+                score += max(0.0, 80.0 - rank_diff * 20.0)
+        if has_explicit_rank and lane.label == "Ranked":
+            score += 50.0
 
         return score
 
@@ -1370,17 +1405,64 @@ class SmartLFGAgent(commands.Cog):
         lanes: list[LaneInfo],
         routing: LaneRoutingResult,
         rank_value: int,
+        rank_sub: int | None,
         is_new_player: bool,
+        has_explicit_rank: bool,
     ) -> list[LaneInfo]:
         """Wählt bis zu drei klare Lobby-Vorschläge aus."""
-        candidates = [
-            lane for lane in lanes
-            if lane.has_space and lane.member_count > 0 and not lane.is_staging
-        ]
+        candidates: list[LaneInfo] = []
+        seen_lane_ids: set[int] = set()
+        use_rank_filtering = has_explicit_rank or (is_new_player and rank_value > 0)
+
+        if is_new_player:
+            np_lane = next(
+                (
+                    lane for lane in lanes
+                    if lane.label == "New Player" and lane.has_space and not lane.is_staging
+                ),
+                None,
+            )
+            if np_lane:
+                candidates.append(np_lane)
+                seen_lane_ids.add(np_lane.channel.id)
+
+        for lane in lanes:
+            if not lane.has_space or lane.is_staging or lane.channel.id in seen_lane_ids:
+                continue
+
+            if not use_rank_filtering:
+                if lane.member_count > 0:
+                    candidates.append(lane)
+                continue
+
+            if lane.member_count == 0:
+                continue
+
+            if lane.label == "New Player":
+                if is_new_player:
+                    candidates.append(lane)
+                continue
+
+            if lane.label == "Street Brawl":
+                wants_brawl = routing.best_join_lane and routing.best_join_lane.label == "Street Brawl"
+                if wants_brawl and self._rank_fits_lane(rank_value, rank_sub, lane):
+                    candidates.append(lane)
+                continue
+
+            if lane.label not in ("Casual", "Ranked"):
+                continue
+
+            if rank_value > 0 and not self._rank_fits_lane(rank_value, rank_sub, lane):
+                continue
+
+            candidates.append(lane)
+
         ranked_candidates = sorted(
             candidates,
             key=lambda lane: (
-                self._score_lobby_suggestion(lane, routing, rank_value, is_new_player),
+                self._score_lobby_suggestion(
+                    lane, routing, rank_value, rank_sub, is_new_player, use_rank_filtering
+                ),
                 lane.member_count,
                 lane.slots_free,
                 -lane.channel.position,
@@ -1413,17 +1495,9 @@ class SmartLFGAgent(commands.Cog):
         self,
         guild: discord.Guild,
         lanes: list[LaneInfo],
-        routing: LaneRoutingResult,
-        is_new_player: bool,
+        preferred_label: str,
     ) -> list[tuple[str, str]]:
         """Gibt bis zu 2 Staging-Channels als (name, value) Tuple zurück."""
-        if is_new_player:
-            preferred_label = "New Player"
-        elif routing.suggested_category_label:
-            preferred_label = routing.suggested_category_label
-        else:
-            preferred_label = "Casual"
-
         staging = [lane for lane in lanes if lane.is_staging]
         preferred = [s for s in staging if s.label == preferred_label]
         others = [s for s in staging if s.label != preferred_label]
@@ -1446,6 +1520,51 @@ class SmartLFGAgent(commands.Cog):
 
         return result
 
+    def _parse_subrank_token(self, raw_token: str | None) -> int | None:
+        if not raw_token:
+            return None
+        token = raw_token.strip().rstrip("+").casefold()
+        if token.isdigit():
+            value = int(token)
+            return value if 1 <= value <= 6 else None
+        roman_map = {
+            "i": 1,
+            "ii": 2,
+            "iii": 3,
+            "iv": 4,
+            "v": 5,
+            "vi": 6,
+        }
+        return roman_map.get(token)
+
+    def _detect_new_player_text(self, content_lower: str) -> bool:
+        normalized = re.sub(r"\s+", " ", content_lower)
+        phrases = (
+            "neuling",
+            "neuer spieler",
+            "bin neu",
+            "neu im spiel",
+            "anfänger",
+            "anfanger",
+            "noch nicht so gut",
+            "mit einem neuling",
+            "mit nem neuling",
+            "mit 'nem neuling",
+        )
+        return any(phrase in normalized for phrase in phrases)
+
+    def _is_new_player_request(
+        self,
+        content_lower: str,
+        rank_value: int,
+        has_rank_role: bool,
+    ) -> bool:
+        if 0 < rank_value <= NEW_PLAYER_MAX_RANK:
+            return True
+        if rank_value > NEW_PLAYER_MAX_RANK or has_rank_role:
+            return False
+        return self._detect_new_player_text(content_lower)
+
     def _parse_rank_from_message(self, content: str) -> tuple[str, int, int | None]:
         """Versucht Rang aus Nachrichtentext zu extrahieren, z.B. 'Oracle 3' oder 'Emissary'."""
         content_lower = content.lower()
@@ -1453,30 +1572,29 @@ class SmartLFGAgent(commands.Cog):
         best_rank_val = 0
         best_sub = None
 
-        for rank_name, rank_val in RANK_NAME_TO_VALUE.items():
+        rank_tokens = {
+            **{name.lower(): name for name, value in DISCORD_RANK_ROLES.values() if value > 0},
+            **MESSAGE_RANK_ALIASES,
+        }
+
+        for token, full_name in rank_tokens.items():
+            rank_val = RANK_NAME_TO_VALUE.get(full_name.lower(), 0)
             if rank_val == 0:
                 continue
-            if re.search(rf"\b{re.escape(rank_name)}\b", content_lower):
-                if rank_val > best_rank_val:
-                    best_rank_name = rank_name.title()
-                    best_rank_val = rank_val
-                    pattern = re.compile(rf"{re.escape(rank_name)}\s+([1-6])", re.IGNORECASE)
-                    match = pattern.search(content)
-                    if match:
-                        best_sub = int(match.group(1))
-                    else:
-                        best_sub = None
 
-        if best_rank_val == 0:
-            for short, full in SHORT_NAME_TO_RANK.items():
-                if re.search(rf"\b{re.escape(short)}\b", content_lower):
-                    rank_val_local = RANK_NAME_TO_VALUE.get(full.lower(), 0)
-                    if rank_val_local > best_rank_val:
-                        best_rank_name = full
-                        best_rank_val = rank_val_local
-                        pattern = re.compile(rf"{re.escape(short)}\s+([1-6])", re.IGNORECASE)
-                        match = pattern.search(content)
-                        best_sub = int(match.group(1)) if match else None
+            pattern = re.compile(
+                rf"\b{re.escape(token)}\b(?:\s*[-~]?\s*(?:([1-6])\+?|\b(vi|iv|v|iii|ii|i)\b))?",
+                re.IGNORECASE,
+            )
+            match = pattern.search(content_lower)
+            if not match:
+                continue
+
+            parsed_sub = self._parse_subrank_token(match.group(1) or match.group(2))
+            if rank_val > best_rank_val or (rank_val == best_rank_val and parsed_sub is not None):
+                best_rank_name = full_name
+                best_rank_val = rank_val
+                best_sub = parsed_sub
 
         return best_rank_name, best_rank_val, best_sub
 
@@ -1499,6 +1617,8 @@ class SmartLFGAgent(commands.Cog):
 
         # 1. Rank ermitteln
         rank_name, rank_val, rank_sub = self._get_user_rank_info(message.author)
+        has_rank_role = rank_val > 0
+        has_explicit_rank = has_rank_role
         sub_str = f" {rank_sub}" if rank_sub else ""
         rank_display = f"{rank_name}{sub_str}" if rank_val > 0 else "Unbekannt"
 
@@ -1509,6 +1629,7 @@ class SmartLFGAgent(commands.Cog):
                 rank_name = msg_rank_name
                 rank_val = msg_rank_val
                 rank_sub = msg_rank_sub
+                has_explicit_rank = True
                 sub_str = f" {rank_sub}" if rank_sub else ""
                 rank_display = f"{rank_name}{sub_str}"
 
@@ -1519,20 +1640,38 @@ class SmartLFGAgent(commands.Cog):
             if sessions >= COPLAYER_IN_LANE_SESSIONS_THRESHOLD
         }
 
-        # 3. Lane Routing
         content_lower = (message.content or "").lower()
+        is_new_player = self._is_new_player_request(content_lower, rank_val, has_rank_role)
+
+        routing_rank_name = rank_name
+        routing_rank_val = rank_val
+        routing_rank_sub = rank_sub
+        suggestion_rank_strict = has_explicit_rank
+        if is_new_player and not has_rank_role and rank_val == 0:
+            routing_rank_name = NEW_PLAYER_FALLBACK_RANK_NAME
+            routing_rank_val = NEW_PLAYER_FALLBACK_RANK_VALUE
+            routing_rank_sub = NEW_PLAYER_FALLBACK_SUBRANK
+            suggestion_rank_strict = True
+
+        # 3. Lane Routing
         lanes = self._scan_all_lanes(guild, co_player_ids)
         routing = self._route_to_lane(
             guild, message.author, content_lower,
-            rank_val, rank_sub, rank_name, lanes, co_player_ids,
+            routing_rank_val, routing_rank_sub, routing_rank_name, lanes, co_player_ids,
         )
-
-        # 4. Neue Spieler erkennen (Initiate / Seeker = Anfänger)
-        is_new_player = 0 < rank_val <= NEW_PLAYER_MAX_RANK
 
         # 5. Bis zu drei sortierte Lobby-Vorschläge
         suggested_lanes = self._select_lobby_suggestions(
-            lanes, routing, rank_val, is_new_player
+            lanes,
+            routing,
+            routing_rank_val,
+            routing_rank_sub,
+            is_new_player,
+            suggestion_rank_strict,
+        )
+        has_active = len(suggested_lanes) > 0
+        preferred_label = self._resolve_mode_label(
+            routing, is_new_player, has_active, suggestion_rank_strict, routing_rank_val
         )
 
         # 6. Player Matching bleibt vorhanden, ist für User aktuell deaktiviert.
@@ -1547,12 +1686,10 @@ class SmartLFGAgent(commands.Cog):
                     candidate["discord_active"] = True
 
         # 7. Embed aufbauen
-        has_active = len(suggested_lanes) > 0
-
         embed = discord.Embed(
             title="\U0001f3ae Lobby-Finder",
             description=self._compose_intro_text(
-                message.author.display_name,
+                message.author.mention,
                 rank_display,
                 is_new_player,
                 has_active,
@@ -1572,20 +1709,27 @@ class SmartLFGAgent(commands.Cog):
                     value=self._build_lobby_field_value(guild, lane),
                     inline=False,
                 )
-            cat_label = routing.suggested_category_label or "Casual"
             embed.add_field(
                 name="Oder eigene Lobby aufmachen?",
-                value=f"Wenn nichts passt, mach einfach eine **{cat_label}**-Lane auf — erfahrungsgemäß kommen schnell Leute dazu.",
+                value=f"Wenn nichts passt, mach einfach eine **{preferred_label}**-Lane auf — erfahrungsgemäß kommen schnell Leute dazu.",
                 inline=False,
             )
         else:
             staging_suggestions = self._build_staging_suggestions(
-                guild, lanes, routing, is_new_player,
+                guild, lanes, preferred_label,
             )
             for name, value in staging_suggestions:
                 embed.add_field(name=name, value=value, inline=False)
 
-        await output_channel.send(embed=embed)
+        await output_channel.send(
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions(
+                users=True,
+                roles=False,
+                everyone=False,
+                replied_user=False,
+            ),
+        )
 
         # 9. Decision Log Embed (separater Log-Channel, für Admins)
         log_channel = guild.get_channel(LOG_CHANNEL_ID)
