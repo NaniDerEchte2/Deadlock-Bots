@@ -75,7 +75,9 @@ NEW_PLAYER_FALLBACK_SUBRANK = 1
 MAX_JOIN_LOBBIES_SHOWN = 3
 
 # Spezielle Channel / Kategorien
+NEW_PLAYER_CATEGORY_ID = 1465839366634209361
 NEW_PLAYER_LANE_ID = 1465839460485697556
+NEW_PLAYER_MAX_MEMBERS = 6
 STREET_BRAWL_LANE_ID = 1357422958544420944
 # Vorgabe des Users: Casual & Ranked Kategorien
 CASUAL_CATEGORY_ID = 1289721245281292290
@@ -289,6 +291,8 @@ class SmartLFGAgent(commands.Cog):
                 avg_label = f"High (~{avg_rank:.1f})"
 
             limit = ch.user_limit or 99
+            if label == "New Player":
+                limit = min(limit, NEW_PLAYER_MAX_MEMBERS)
             count = len(members)
             co_present = [mid for mid in member_ids if mid in requester_co_player_ids]
             return LaneInfo(
@@ -306,9 +310,12 @@ class SmartLFGAgent(commands.Cog):
                 link=f"https://discord.com/channels/{guild.id}/{ch.id}",
             )
 
-        # New Player Lane
-        np_ch = guild.get_channel(NEW_PLAYER_LANE_ID)
-        if isinstance(np_ch, discord.VoiceChannel):
+        # New Player Kategorie
+        np_cat = guild.get_channel(NEW_PLAYER_CATEGORY_ID)
+        if isinstance(np_cat, discord.CategoryChannel):
+            for vc in np_cat.voice_channels:
+                lanes.append(_scan_channel(vc, "New Player", NEW_PLAYER_CATEGORY_ID))
+        elif isinstance(np_ch := guild.get_channel(NEW_PLAYER_LANE_ID), discord.VoiceChannel):
             lanes.append(_scan_channel(np_ch, "New Player", np_ch.category_id or 0))
 
         # Street Brawl
@@ -584,6 +591,22 @@ class SmartLFGAgent(commands.Cog):
         if "möchte" in text and ("jemand" in text or "wer" in text):
             return True
 
+        # --- "Interesse" mit Such- und Spielkontext ---
+        # Beispiele: "hat noch wer interesse?", "hat ein anderer anfänger interesse?"
+        if "interesse" in text and any(
+            w in text for w in (
+                "jemand", "wer", "jmd", "iwer", "irgendwer", "anderer", "andere",
+                "noch", "hat", "hätte",
+            )
+        ) and any(
+            w in text for w in (
+                "spielen", "zocken", "grinden", "gamen", "runde", "runden",
+                "game", "games", "match", "matches", "anfänger", "anfanger",
+                "neuling", "neu",
+            )
+        ):
+            return True
+
         # --- English LFG patterns ---
         if "hmu" in text:
             return True
@@ -813,9 +836,13 @@ class SmartLFGAgent(commands.Cog):
         if isinstance(primary_cat, discord.CategoryChannel):
             lanes.extend(vc.id for vc in primary_cat.voice_channels)
 
-        # Low-Elo / unbekannt: New Player Lane zusätzlich
-        if author_rank_value <= NEW_PLAYER_MAX_RANK and NEW_PLAYER_LANE_ID not in lanes:
-            lanes.append(NEW_PLAYER_LANE_ID)
+        # Low-Elo / unbekannt: New Player Kategorie zusätzlich
+        if author_rank_value <= NEW_PLAYER_MAX_RANK:
+            np_cat = guild.get_channel(NEW_PLAYER_CATEGORY_ID)
+            if isinstance(np_cat, discord.CategoryChannel):
+                lanes.extend(vc.id for vc in np_cat.voice_channels)
+            elif NEW_PLAYER_LANE_ID not in lanes:
+                lanes.append(NEW_PLAYER_LANE_ID)
 
         # Wenn Rank erkennbar: Casual als Fallback ergänzen (mehr Kandidaten)
         if has_rank and primary_cat_id != CASUAL_CATEGORY_ID:
@@ -1288,10 +1315,20 @@ class SmartLFGAgent(commands.Cog):
             link = f"https://discord.com/channels/{guild.id}/{channel.id}"
             return f"- {label}: {channel.name} - {link} (User: {count}, Skill: {avg_rank_str}, ID: {channel.id})"
 
-        # 1. New Player Lane
-        np_chan = guild.get_channel(NEW_PLAYER_LANE_ID)
-        if np_chan and isinstance(np_chan, discord.VoiceChannel):
-            lines.append(analyze_channel(np_chan, "New Player Lane"))
+        # 1. New Player Kategorie
+        np_cat = guild.get_channel(NEW_PLAYER_CATEGORY_ID)
+        if np_cat and isinstance(np_cat, discord.CategoryChannel):
+            empty_shown = 0
+            for vc in np_cat.voice_channels:
+                if len(vc.members) > 0:
+                    lines.append(analyze_channel(vc, "New Player Lane"))
+                elif empty_shown < 2:
+                    lines.append(analyze_channel(vc, "New Player Lane (Leer)"))
+                    empty_shown += 1
+        else:
+            np_chan = guild.get_channel(NEW_PLAYER_LANE_ID)
+            if np_chan and isinstance(np_chan, discord.VoiceChannel):
+                lines.append(analyze_channel(np_chan, "New Player Lane"))
 
         # 2. Street Brawl
         sb_chan = guild.get_channel(STREET_BRAWL_LANE_ID)
@@ -1413,18 +1450,6 @@ class SmartLFGAgent(commands.Cog):
         candidates: list[LaneInfo] = []
         seen_lane_ids: set[int] = set()
         use_rank_filtering = has_explicit_rank or (is_new_player and rank_value > 0)
-
-        if is_new_player:
-            np_lane = next(
-                (
-                    lane for lane in lanes
-                    if lane.label == "New Player" and lane.has_space and not lane.is_staging
-                ),
-                None,
-            )
-            if np_lane:
-                candidates.append(np_lane)
-                seen_lane_ids.add(np_lane.channel.id)
 
         for lane in lanes:
             if not lane.has_space or lane.is_staging or lane.channel.id in seen_lane_ids:
