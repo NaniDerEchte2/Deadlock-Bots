@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from discord.ext import commands
 
@@ -19,6 +19,11 @@ except Exception:  # pragma: no cover - optional dependency
 
 log = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from openai import OpenAI as OpenAIClient
+else:
+    OpenAIClient = Any
+
 DEFAULT_OPENAI_MODEL = os.getenv("AI_OPENAI_MODEL", "gpt-4o-mini")
 DEFAULT_GEMINI_MODEL = os.getenv("AI_GEMINI_MODEL", "gemini-2.0-flash")
 DEFAULT_MAX_OUTPUT_TOKENS = int(os.getenv("AI_MAX_OUTPUT_TOKENS", "800") or "800")
@@ -29,13 +34,13 @@ class AIConnector(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self._openai_client: OpenAI | None = None
+        self._openai_client: OpenAIClient | None = None
         self._openai_init_failed = False
         self._gemini_client: object | None = None
         self._gemini_init_failed = False
 
     # ---------- Clients ----------
-    def _get_openai_client(self) -> OpenAI | None:
+    def _get_openai_client(self) -> OpenAIClient | None:
         if self._openai_init_failed:
             return None
         if self._openai_client:

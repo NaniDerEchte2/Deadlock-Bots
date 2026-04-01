@@ -544,6 +544,9 @@ class DashboardServer:
         secret_key = (key or "").strip()
         if not secret_key:
             return ""
+        env_value = (os.getenv(secret_key) or "").strip()
+        if env_value:
+            return env_value
         try:
             import keyring
         except Exception:
@@ -6203,4 +6206,3 @@ class DashboardServer:
 
 if TYPE_CHECKING:  # pragma: no cover - avoid runtime dependency cycle
     from main_bot import MasterBot
-

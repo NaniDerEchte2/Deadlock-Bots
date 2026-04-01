@@ -71,3 +71,4 @@ Gemini.ps1
 !cogs/twitch/dashboard_v2/package-lock.json
 master_bot.pid
 master_bot.bot.pid
+.runtime/master_bot_infisical.pid
