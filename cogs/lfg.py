@@ -516,6 +516,34 @@ class SmartLFGAgent(commands.Cog):
         if not text:
             return False
 
+        rank_tokens = (
+            tuple(RANK_NAME_TO_VALUE.keys())
+            + tuple(SHORT_NAME_TO_RANK.keys())
+            + tuple(MESSAGE_RANK_ALIASES.keys())
+        )
+
+        # Rang-Kontext + Spielwunsch, auch bei lockerer Schreibweise wie "hääte bock auf ründchen".
+        if any(token in text for token in rank_tokens) and (
+            "bock" in text or "lust" in text
+        ) and any(
+            token in text
+            for token in (
+                "runde",
+                "runden",
+                "ründchen",
+                "rundchen",
+                "game",
+                "games",
+                "match",
+                "matches",
+                "spielen",
+                "zocken",
+                "grinden",
+                "gamen",
+            )
+        ):
+            return True
+
         # --- Sehr kurze LFG-Formate ---
         # "suchen +3", "suche+2", "lfm +1" oder nur "+3"
         if SHORT_LFG_COUNT_RE.match(text):
