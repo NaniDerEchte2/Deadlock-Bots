@@ -243,9 +243,15 @@ class TempVoiceLaneSorting(commands.Cog):
         return 0, 0
 
     async def _resolve_chill_rank(self, lane: discord.VoiceChannel) -> tuple[int, int]:
-        owner_id = self.core.lane_owner.get(lane.id)
-        owner = lane.guild.get_member(int(owner_id)) if owner_id else None
         manager = self.bot.get_cog("RolePermissionVoiceManager")
+        initial_owner_id = None
+        if hasattr(self.core, "get_initial_owner_id"):
+            try:
+                initial_owner_id = self.core.get_initial_owner_id(lane)
+            except Exception as exc:
+                log.debug("initial owner lookup failed for %s: %r", lane.id, exc)
+        owner_id = initial_owner_id or self.core.lane_owner.get(lane.id)
+        owner = lane.guild.get_member(int(owner_id)) if owner_id else None
 
         if owner and manager and hasattr(manager, "get_user_rank_from_roles"):
             try:
@@ -267,8 +273,16 @@ class TempVoiceLaneSorting(commands.Cog):
             if owner_rank > 0:
                 return owner_rank, 0
 
+        relevant_members: list[discord.Member] = []
+        if manager and hasattr(manager, "get_rank_relevant_members"):
+            try:
+                relevant_members = await manager.get_rank_relevant_members(lane)
+            except Exception as exc:
+                log.debug("relevant member lookup failed for %s: %r", lane.id, exc)
         try:
-            average_label = self.core._average_rank_prefix_for_lane(lane)
+            average_label = self.core._average_rank_prefix_for_members(relevant_members)
+            if average_label is None:
+                average_label = self.core._average_rank_prefix_for_lane(lane)
         except Exception as exc:
             log.debug("average rank lookup failed for %s: %r", lane.id, exc)
             average_label = None

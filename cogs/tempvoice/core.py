@@ -335,6 +335,7 @@ class TempVoiceCore(commands.Cog):
         # Laufzeit-State
         self.created_channels: set[int] = set()
         self.lane_owner: dict[int, int] = {}
+        self.lane_initial_owner: dict[int, int] = {}
         self.lane_base: dict[int, str] = {}
         self.lane_min_rank: dict[int, str] = {}
         self.join_time: dict[int, dict[int, float]] = {}
@@ -399,6 +400,10 @@ class TempVoiceCore(commands.Cog):
     def _average_rank_prefix_for_lane(self, lane: discord.VoiceChannel) -> str | None:
         """Berechnet den Durchschnittsrang der Lane-Mitglieder (nur bekannte Ränge)."""
         members = [m for m in getattr(lane, "members", []) if isinstance(m, discord.Member)]
+        return self._average_rank_prefix_for_members(members)
+
+    def _average_rank_prefix_for_members(self, members: list[discord.Member]) -> str | None:
+        """Berechnet den Durchschnittsrang der Member-Liste (nur bekannte Ränge)."""
         if not members:
             return None
         total = 0
@@ -415,6 +420,14 @@ class TempVoiceCore(commands.Cog):
         avg_idx = int((total / count) + 0.5)
         avg_idx = max(1, min(avg_idx, len(RANK_ORDER) - 1))
         return RANK_ORDER[avg_idx].capitalize()
+
+    def get_initial_owner_id(self, lane: discord.VoiceChannel | int | None) -> int | None:
+        try:
+            lane_id = int(lane) if isinstance(lane, int) else int(getattr(lane, "id", 0))
+        except Exception:
+            return None
+        owner_id = self.lane_initial_owner.get(lane_id)
+        return int(owner_id) if owner_id else None
 
     def _desired_prefix_for_rules(self, lane: discord.VoiceChannel, rules: dict[str, Any]) -> str:
         if rules.get("prefix_from_rank"):
@@ -574,6 +587,7 @@ class TempVoiceCore(commands.Cog):
                 channel_id  INTEGER PRIMARY KEY,
                 guild_id    INTEGER NOT NULL,
                 owner_id    INTEGER NOT NULL,
+                initial_owner_id INTEGER,
                 base_name   TEXT NOT NULL,
                 category_id INTEGER NOT NULL,
                 source_staging_id INTEGER,
@@ -612,6 +626,13 @@ class TempVoiceCore(commands.Cog):
         try:
             cols = await db.query_all_async("PRAGMA table_info(tempvoice_lanes)")
             col_names = {str(c["name"]) for c in cols}
+            if "initial_owner_id" not in col_names:
+                await db.execute_async(
+                    "ALTER TABLE tempvoice_lanes ADD COLUMN initial_owner_id INTEGER"
+                )
+                await db.execute_async(
+                    "UPDATE tempvoice_lanes SET initial_owner_id=owner_id WHERE initial_owner_id IS NULL"
+                )
             if "source_staging_id" not in col_names:
                 await db.execute_async(
                     "ALTER TABLE tempvoice_lanes ADD COLUMN source_staging_id INTEGER"
@@ -748,7 +769,7 @@ class TempVoiceCore(commands.Cog):
             return
         try:
             rows = await db.query_all_async(
-                "SELECT channel_id, owner_id, base_name, category_id, source_staging_id FROM tempvoice_lanes WHERE guild_id=?",
+                "SELECT channel_id, owner_id, initial_owner_id, base_name, category_id, source_staging_id FROM tempvoice_lanes WHERE guild_id=?",
                 (int(guild.id),),
             )
         except Exception as e:
@@ -772,6 +793,7 @@ class TempVoiceCore(commands.Cog):
 
             self.created_channels.add(lane.id)
             self.lane_owner[lane.id] = int(r["owner_id"])
+            self.lane_initial_owner[lane.id] = int(r["initial_owner_id"] or r["owner_id"])
             self.lane_base[lane.id] = str(r["base_name"])
             self.lane_min_rank.setdefault(lane.id, "unknown")
             self.join_time.setdefault(lane.id, {})
@@ -875,6 +897,7 @@ class TempVoiceCore(commands.Cog):
         self.created_channels.discard(lane_id)
         for mapping in (
             self.lane_owner,
+            self.lane_initial_owner,
             self.lane_base,
             self.lane_min_rank,
             self.join_time,
@@ -1834,6 +1857,7 @@ class TempVoiceCore(commands.Cog):
 
                 self.created_channels.add(lane.id)
                 self.lane_owner[lane.id] = member.id
+                self.lane_initial_owner[lane.id] = member.id
                 self.lane_base[lane.id] = base
                 self.lane_min_rank[lane.id] = "unknown"
                 self.join_time.setdefault(lane.id, {})
@@ -1849,11 +1873,12 @@ class TempVoiceCore(commands.Cog):
 
                 try:
                     await db.execute_async(
-                        "INSERT OR REPLACE INTO tempvoice_lanes(channel_id, guild_id, owner_id, base_name, category_id, source_staging_id) "
-                        "VALUES(?,?,?,?,?,?)",
+                        "INSERT OR REPLACE INTO tempvoice_lanes(channel_id, guild_id, owner_id, initial_owner_id, base_name, category_id, source_staging_id) "
+                        "VALUES(?,?,?,?,?,?,?)",
                         (
                             int(lane.id),
                             int(guild.id),
+                            int(member.id),
                             int(member.id),
                             base,
                             int(cat.id) if cat else 0,
@@ -2142,6 +2167,7 @@ class TempVoiceCore(commands.Cog):
                 if _is_managed_lane(ch) and ch.id not in self.lane_owner:
                     base_name = self.lane_base.get(ch.id) or _strip_suffixes(ch.name)
                     self.lane_owner[ch.id] = member.id
+                    self.lane_initial_owner.setdefault(ch.id, member.id)
                     self.lane_base[ch.id] = base_name
                     self.created_channels.add(ch.id)
                     self.lane_min_rank.setdefault(ch.id, "unknown")
@@ -2171,10 +2197,11 @@ class TempVoiceCore(commands.Cog):
                     try:
                         await db.execute_async(
                             """
-                            INSERT INTO tempvoice_lanes(channel_id, guild_id, owner_id, base_name, category_id, source_staging_id)
-                            VALUES(?,?,?,?,?,?)
+                            INSERT INTO tempvoice_lanes(channel_id, guild_id, owner_id, initial_owner_id, base_name, category_id, source_staging_id)
+                            VALUES(?,?,?,?,?,?,?)
                             ON CONFLICT(channel_id) DO UPDATE SET
                                 owner_id=excluded.owner_id,
+                                initial_owner_id=COALESCE(tempvoice_lanes.initial_owner_id, excluded.initial_owner_id),
                                 base_name=excluded.base_name,
                                 category_id=excluded.category_id,
                                 source_staging_id=COALESCE(tempvoice_lanes.source_staging_id, excluded.source_staging_id)
@@ -2182,6 +2209,7 @@ class TempVoiceCore(commands.Cog):
                             (
                                 int(ch.id),
                                 int(ch.guild.id),
+                                int(member.id),
                                 int(member.id),
                                 base_name,
                                 int(ch.category_id) if ch.category_id else 0,

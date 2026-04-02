@@ -1,14 +1,20 @@
 import asyncio
+import json
 import logging
 import re
 import time
 from pathlib import Path
+from typing import Any
 
 import discord
 from discord.ext import commands
 
 from service import db
 from service.config import settings
+from service.deadlock_voice_cohort import (
+    select_best_deadlock_presence,
+    select_deadlock_channel_cohort,
+)
 from service.db import db_path
 
 try:
@@ -378,6 +384,95 @@ class RolePermissionVoiceManager(commands.Cog):
             logger.warning("get_user_score_from_db Fehler für %s: %s", member.id, e)
         return None
 
+    async def _get_member_rank_tuple(self, member: discord.Member) -> tuple[str, int, int]:
+        rank_name, rank_value, subrank = self.get_user_rank_from_roles(member)
+        if subrank is None:
+            subrank = await self.get_user_subrank_from_db(member)
+        return rank_name, rank_value, int(subrank or 3)
+
+    async def _fetch_presence_context_for_members(
+        self,
+        members: list[discord.Member],
+    ) -> tuple[dict[int, list[str]], dict[str, Any]]:
+        user_ids = [int(member.id) for member in members if not member.bot]
+        if not user_ids:
+            return {}, {}
+
+        ids_json = json.dumps(user_ids)
+        steam_rows = await db.query_all_async(
+            """
+            SELECT user_id, steam_id, primary_account, verified, updated_at
+            FROM steam_links
+            WHERE user_id IN (SELECT value FROM json_each(?))
+              AND steam_id IS NOT NULL AND steam_id != ''
+            ORDER BY primary_account DESC, verified DESC, updated_at DESC
+            """,
+            (ids_json,),
+        )
+
+        steam_map: dict[int, list[str]] = {}
+        for row in steam_rows:
+            user_id = int(row["user_id"])
+            steam_id = str(row["steam_id"])
+            steam_map.setdefault(user_id, [])
+            if steam_id not in steam_map[user_id]:
+                steam_map[user_id].append(steam_id)
+
+        steam_ids = sorted({steam_id for values in steam_map.values() for steam_id in values})
+        if not steam_ids:
+            return steam_map, {}
+
+        steam_ids_json = json.dumps(steam_ids)
+        presence_rows = await db.query_all_async(
+            """
+            SELECT steam_id, deadlock_stage, deadlock_minutes, deadlock_localized,
+                   deadlock_updated_at, last_seen_ts, in_deadlock_now, in_match_now_strict,
+                   last_server_id, deadlock_party_hint
+            FROM live_player_state
+            WHERE steam_id IN (SELECT value FROM json_each(?))
+            """,
+            (steam_ids_json,),
+        )
+        presence_map = {str(row["steam_id"]): row for row in presence_rows}
+        return steam_map, presence_map
+
+    async def get_rank_relevant_members(self, channel: discord.VoiceChannel) -> list[discord.Member]:
+        members = [member for member in channel.members if not member.bot]
+        if not members:
+            return []
+
+        steam_map, presence_map = await self._fetch_presence_context_for_members(members)
+        if not steam_map or not presence_map:
+            return []
+
+        now = int(time.time())
+        presence_entries: list[dict[str, object]] = []
+        for member in members:
+            best_presence = select_best_deadlock_presence(
+                steam_map.get(member.id, []),
+                presence_map,
+                now,
+                stale_seconds=180,
+            )
+            if not best_presence:
+                continue
+            stage, minutes, server_id, _chosen_sid = best_presence
+            presence_entries.append(
+                {
+                    "member_id": int(member.id),
+                    "stage": stage,
+                    "minutes": int(minutes or 0),
+                    "server_id": server_id,
+                }
+            )
+
+        cohort = select_deadlock_channel_cohort(presence_entries, min_active_players=1)
+        if not cohort:
+            return []
+
+        relevant_ids = {int(member_id) for member_id in cohort["member_ids"]}
+        return [member for member in members if int(member.id) in relevant_ids]
+
     # -------------------- Lifecycle --------------------
 
     async def cog_load(self):
@@ -481,14 +576,11 @@ class RolePermissionVoiceManager(commands.Cog):
     async def get_channel_members_ranks(
         self, channel: discord.VoiceChannel
     ) -> dict[discord.Member, tuple[str, int, int]]:
+        relevant_members = await self.get_rank_relevant_members(channel)
+        members = relevant_members if relevant_members else []
         members_ranks: dict[discord.Member, tuple[str, int, int]] = {}
-        for member in channel.members:
-            if member.bot:
-                continue
-            rn, rv, rs = self.get_user_rank_from_roles(member)
-            if rs is None:
-                rs = await self.get_user_subrank_from_db(member)
-            members_ranks[member] = (rn, rv, rs)
+        for member in members:
+            members_ranks[member] = await self._get_member_rank_tuple(member)
         return members_ranks
 
     def calculate_balancing_range_from_anchor(
@@ -581,7 +673,7 @@ class RolePermissionVoiceManager(commands.Cog):
 
             members_ranks = await self.get_channel_members_ranks(channel)
             # Falls force=True (z.B. bei Channel-Erstellung), machen wir weiter auch wenn Cache noch leer ist
-            if not members_ranks and not force:
+            if not members_ranks and not force and self.get_channel_anchor(channel) is None:
                 # leer -> Anker entfernen + Rollen-Overwrites entfernen
                 await self.remove_channel_anchor(channel)
                 await self.reset_everyone_connect(channel)
@@ -729,27 +821,25 @@ class RolePermissionVoiceManager(commands.Cog):
                 return
 
             members_ranks = await self.get_channel_members_ranks(channel)
-            if not members_ranks:
-                new_name = "Rang-Sprachkanal"
+            anchor = self.get_channel_anchor(channel)
+            if anchor:
+                (
+                    _uid,
+                    anchor_rank_name,
+                    _anchor_rank_value,
+                    _allowed_min,
+                    _allowed_max,
+                    anchor_subrank,
+                    _score_min,
+                    _score_max,
+                ) = anchor
+                new_name = f"{anchor_rank_name} {anchor_subrank}"
+            elif members_ranks:
+                first_member = next(iter(members_ranks.keys()))
+                rank_name, _rv2, subrank = members_ranks[first_member]
+                new_name = f"{rank_name} {subrank}"
             else:
-                anchor = self.get_channel_anchor(channel)
-                if anchor:
-                    (
-                        _uid,
-                        anchor_rank_name,
-                        anchor_rank_value,
-                        allowed_min,
-                        allowed_max,
-                        anchor_subrank,
-                        score_min,
-                        score_max,
-                    ) = anchor
-                    new_name = f"{anchor_rank_name} {anchor_subrank}"
-                else:
-                    # Fallback: erster User
-                    first_member = next(iter(members_ranks.keys()))
-                    rank_name, _rv2, subrank = members_ranks[first_member]
-                    new_name = f"{rank_name} {subrank}"
+                new_name = "Rang-Sprachkanal"
 
             # Prüfe zuerst ob Name schon passt - vermeidet redundante API-Calls
             if channel.name == new_name:
@@ -917,13 +1007,47 @@ class RolePermissionVoiceManager(commands.Cog):
     ) -> tuple[int, str, int, int, int] | None:
         return self.channel_anchors.get(channel.id)
 
+    async def _resolve_initial_owner_anchor(
+        self,
+        channel: discord.VoiceChannel,
+    ) -> tuple[discord.Member, tuple[str, int, int]] | None:
+        core = self.bot.get_cog("TempVoiceCore")
+        if not core or not hasattr(core, "get_initial_owner_id"):
+            return None
+        try:
+            initial_owner_id = core.get_initial_owner_id(channel)
+        except Exception as exc:
+            logger.debug("Initial owner lookup failed for %s: %s", channel.id, exc)
+            return None
+        if not initial_owner_id:
+            return None
+        member = channel.guild.get_member(int(initial_owner_id))
+        if not member or member.bot:
+            return None
+        rank_name, rank_value, subrank = await self._get_member_rank_tuple(member)
+        if int(rank_value or 0) <= 0:
+            return None
+        return member, (rank_name, rank_value, subrank)
+
     async def _ensure_valid_anchor(
         self,
         channel: discord.VoiceChannel,
         members_ranks: dict[discord.Member, tuple[str, int, int]],
     ) -> bool:
-        """Stellt sicher, dass der Anker zu einem aktuell anwesenden Member gehört."""
+        """Stellt sicher, dass der Anker zur gewuenschten Rang-Basis passt."""
         anchor = self.get_channel_anchor(channel)
+        initial_owner_anchor = await self._resolve_initial_owner_anchor(channel)
+        if initial_owner_anchor is not None:
+            member, (rank_name, rank_value, subrank) = initial_owner_anchor
+            if anchor is not None and (
+                int(anchor[0]) == int(member.id)
+                and int(anchor[2]) == int(rank_value)
+                and int(anchor[5]) == int(subrank)
+            ):
+                return False
+            await self.set_channel_anchor(channel, member, rank_name, rank_value, subrank)
+            return True
+
         if not members_ranks:
             if anchor is not None:
                 await self.remove_channel_anchor(channel)
@@ -940,7 +1064,14 @@ class RolePermissionVoiceManager(commands.Cog):
                 anchor_user_id,
             )
 
-        first_member = next(iter(members_ranks.keys()))
+        first_member = next(
+            (
+                member
+                for member, (_rank_name, rank_value, _subrank) in members_ranks.items()
+                if int(rank_value or 0) > 0
+            ),
+            next(iter(members_ranks.keys())),
+        )
         rank_name, rank_value, subrank = members_ranks[first_member]
         await self.set_channel_anchor(channel, first_member, rank_name, rank_value, subrank)
         return True
@@ -983,7 +1114,7 @@ class RolePermissionVoiceManager(commands.Cog):
             if not self.is_channel_system_enabled(channel):
                 continue
             members_ranks = await self.get_channel_members_ranks(channel)
-            if not members_ranks and self.get_channel_anchor(channel) is None:
+            if not channel.members and self.get_channel_anchor(channel) is None:
                 continue
             anchor_changed = await self._ensure_valid_anchor(channel, members_ranks)
             await self.update_channel_permissions_via_roles(channel, force=anchor_changed)
@@ -1040,15 +1171,12 @@ class RolePermissionVoiceManager(commands.Cog):
                 return
 
             members_ranks = await self.get_channel_members_ranks(channel)
-            if not members_ranks:
-                return
             anchor_changed = await self._ensure_valid_anchor(channel, members_ranks)
 
             # Rank-Info für den beitretenden Member (3er-Tupel)
             member_info = members_ranks.get(member)
             if not member_info:
-                rn, rv, rs = self.get_user_rank_from_roles(member)
-                member_info = (rn, rv, rs or 3)
+                member_info = await self._get_member_rank_tuple(member)
 
             rank_name, rank_value, _subrank = member_info
             anchor = self.get_channel_anchor(channel)

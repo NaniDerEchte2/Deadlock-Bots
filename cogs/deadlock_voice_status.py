@@ -16,6 +16,11 @@ from discord.ext import commands
 
 from service import db
 from service.config import settings
+from service.deadlock_voice_cohort import (
+    evaluate_deadlock_presence_row,
+    select_best_deadlock_presence,
+    select_deadlock_channel_cohort,
+)
 
 log = logging.getLogger("DeadlockVoiceStatus")
 trace_log = logging.getLogger("DeadlockVoiceStatus.trace")
@@ -38,12 +43,6 @@ _SUFFIX_REGEX = re.compile(
     r"\s*-\s*(?:in der Lobby(?:\s*\(\d+/\d+\))?|im Match Min (?:\d+|\d+\+)\s*\(\d+/\d+\))$",
     re.IGNORECASE,
 )
-
-_MATCH_STATUS_REGEX = re.compile(
-    r"\{deadlock[:}][^}]*\}.*?\((\d{1,3})[.,]?\s*min\.?\)",
-    re.IGNORECASE | re.DOTALL,
-)
-
 
 class DeadlockVoiceStatus(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
@@ -369,7 +368,14 @@ class DeadlockVoiceStatus(commands.Cog):
                 continue
             if stage not in {"lobby", "match"}:
                 continue
-            presence_entries.append((stage, minutes or 0, server_id))
+            presence_entries.append(
+                {
+                    "member_id": member.id,
+                    "stage": stage,
+                    "minutes": minutes or 0,
+                    "server_id": server_id,
+                }
+            )
 
         if not presence_entries:
             trace_payload["decision"] = {"reason": "no_presence_entries"}
@@ -386,57 +392,14 @@ class DeadlockVoiceStatus(commands.Cog):
                 trace_payload,
             )
             return
-        candidate_stage: str | None = None
-        candidate_minutes: list[int] = []
-        candidate_count = 0
-        chosen_server_id: str | None = None
-
-        lobby_groups: dict[str, list[int]] = {}
-        lobby_unknown: list[int] = []
-        match_groups: dict[str, list[int]] = {}
-        match_unknown: list[int] = []
-
-        for stage, minutes, server_id in presence_entries:
-            if stage == "match":
-                if server_id:
-                    match_groups.setdefault(server_id, []).append(minutes)
-                else:
-                    match_unknown.append(minutes)
-            elif stage == "lobby":
-                if server_id:
-                    lobby_groups.setdefault(server_id, []).append(minutes)
-                else:
-                    lobby_unknown.append(minutes)
-
-        if match_groups:
-            server_id, minute_values = max(match_groups.items(), key=lambda item: len(item[1]))
-            if len(minute_values) >= MIN_ACTIVE_PLAYERS:
-                candidate_stage = "match"
-                candidate_minutes = minute_values
-                candidate_count = len(minute_values)
-                chosen_server_id = server_id
-
-        if candidate_stage != "match" and len(match_unknown) >= MIN_ACTIVE_PLAYERS:
-            candidate_stage = "match"
-            candidate_minutes = match_unknown
-            candidate_count = len(match_unknown)
-            chosen_server_id = None
-
-        if lobby_groups:
-            lobby_server_id, lobby_values = max(lobby_groups.items(), key=lambda item: len(item[1]))
-            if len(lobby_values) >= MIN_ACTIVE_PLAYERS:
-                if candidate_stage != "match" or len(lobby_values) > candidate_count:
-                    candidate_stage = "lobby"
-                    candidate_minutes = lobby_values
-                    candidate_count = len(lobby_values)
-                    chosen_server_id = lobby_server_id
-
-        if candidate_stage != "match" and len(lobby_unknown) >= MIN_ACTIVE_PLAYERS:
-            if len(lobby_unknown) > candidate_count:
-                candidate_stage = "lobby"
-                candidate_minutes = lobby_unknown
-                candidate_count = len(lobby_unknown)
-                chosen_server_id = None
+        candidate = select_deadlock_channel_cohort(
+            presence_entries,
+            min_active_players=MIN_ACTIVE_PLAYERS,
+        )
+        candidate_stage = str(candidate["stage"]) if candidate else None
+        candidate_minutes = list(candidate["minute_values"]) if candidate else []
+        candidate_count = int(candidate["member_count"]) if candidate else 0
+        chosen_server_id = str(candidate["server_id"]) if candidate and candidate["server_id"] else None
 
         if not candidate_stage or candidate_count < MIN_ACTIVE_PLAYERS:
             trace_payload["decision"] = {
@@ -460,8 +423,7 @@ class DeadlockVoiceStatus(commands.Cog):
 
         player_count_raw = len(candidate_minutes)
         player_count = min(player_count_raw, 6)
-        effective_total = min(total_members, 6)
-        voice_slots = max(player_count, effective_total)
+        voice_slots = player_count
         trace_payload["decision"] = {
             "reason": "candidate_selected",
             "candidate_stage": candidate_stage,
@@ -471,6 +433,7 @@ class DeadlockVoiceStatus(commands.Cog):
             "player_count_raw": player_count_raw,
             "voice_slots": voice_slots,
             "member_count": total_members,
+            "cohort_member_ids": list(candidate["member_ids"]) if candidate else [],
         }
 
         if candidate_stage == "lobby":
@@ -555,31 +518,12 @@ class DeadlockVoiceStatus(commands.Cog):
         presence_map: dict[str, Any],
         now: int,
     ) -> tuple[str, int | None, str | None, str] | None:
-        best: tuple[str, int | None, str | None] | None = None
-        best_sid: str | None = None
-        best_score = -1
-
-        for sid in steam_ids:
-            presence = self._evaluate_presence(sid, presence_map, now)
-            if not presence:
-                continue
-            stage, minutes, server_id = presence
-            if stage == "match":
-                stage_score = 2
-            elif stage == "lobby":
-                stage_score = 1
-            else:
-                stage_score = 0
-            minutes_score = minutes if minutes is not None else -1
-            score = stage_score * 100000 + minutes_score
-            if score > best_score:
-                best_score = score
-                best = (stage, minutes, server_id)
-                best_sid = sid
-
-        if best and best_sid:
-            return best[0], best[1], best[2], best_sid
-        return None
+        return select_best_deadlock_presence(
+            steam_ids,
+            presence_map,
+            now,
+            stale_seconds=PRESENCE_STALE_SECONDS,
+        )
 
     def _evaluate_presence(
         self,
@@ -589,33 +533,11 @@ class DeadlockVoiceStatus(commands.Cog):
     ) -> tuple[str, int | None, str | None] | None:
         if not steam_id:
             return None
-        row = presence_map.get(str(steam_id))
-        if not row:
-            return None
-
-        updated_at = row["deadlock_updated_at"] or row["last_seen_ts"]
-        if not updated_at:
-            return None
-        if now - int(updated_at) > PRESENCE_STALE_SECONDS:
-            return None
-
-        localized_raw = row["deadlock_localized"] or ""
-        localized = localized_raw.strip()
-        match_info = _MATCH_STATUS_REGEX.search(localized)
-        server_id_raw = row["last_server_id"] or row["deadlock_party_hint"]
-        server_id = str(server_id_raw).strip() if server_id_raw else None
-
-        if match_info:
-            try:
-                minutes_val = max(0, int(match_info.group(1)))
-            except (ValueError, TypeError):
-                minutes_val = 0
-            return "match", minutes_val, server_id
-
-        if server_id:
-            return "lobby", None, server_id
-
-        return None
+        return evaluate_deadlock_presence_row(
+            presence_map.get(str(steam_id)),
+            now,
+            stale_seconds=PRESENCE_STALE_SECONDS,
+        )
 
     async def _apply_channel_name(
         self,
@@ -670,6 +592,7 @@ class DeadlockVoiceStatus(commands.Cog):
         state = self.channel_states.setdefault(channel.id, {})
         previous_stage = state.get("stage")
         match_exit_override = previous_stage == "match" and stage_label == "lobby"
+        clear_status_override = previous_stage in {"match", "lobby"} and stage_label is None
         last_rename = state.get("last_rename", 0.0)
         elapsed = time.time() - float(last_rename)
 
@@ -751,6 +674,7 @@ class DeadlockVoiceStatus(commands.Cog):
                 "effective_cooldown": effective_cooldown,
                 "cooldown_remaining": max(0.0, effective_cooldown - elapsed),
                 "match_exit_override": match_exit_override,
+                "clear_status_override": clear_status_override,
                 "meaningful_game_state_change": meaningful_game_state_change,
                 "previous_stage": previous_stage,
                 "previous_member_count": previous_member_count,
@@ -775,12 +699,12 @@ class DeadlockVoiceStatus(commands.Cog):
             self._store_trace(channel.id, trace_data)
             return
 
-        if elapsed < effective_cooldown and not match_exit_override:
+        if elapsed < effective_cooldown and not match_exit_override and not clear_status_override:
             rename_info["result"] = "cooldown"
             trace_data["rename"] = rename_info
             self._store_trace(channel.id, trace_data)
             return
-        if match_exit_override and elapsed < effective_cooldown:
+        if (match_exit_override or clear_status_override) and elapsed < effective_cooldown:
             rename_info["cooldown_bypassed"] = True
 
         try:
