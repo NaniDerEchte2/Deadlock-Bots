@@ -55,6 +55,8 @@ DEFAULT_RANKED_CAP = 6
 NAME_EDIT_COOLDOWN_SEC = 120
 STARTUP_PURGE_DELAY_SEC = 3
 PURGE_INTERVAL_SECONDS = 180  # Optimiert: 60s → 180s (weniger CPU-Last)
+OWNER_CLAIM_TOP_N = 3
+OWNER_CLAIM_MIN_SECONDS = 20 * 60
 
 # LiveMatch-Suffix (vom Worker) – NICHT von TempVoice anfassen
 LIVE_SUFFIX_RX = re.compile(r"\s+•\s+\d+/\d+\s+(Im\s+Match|Im\s+Spiel|Lobby/Queue)", re.IGNORECASE)
@@ -1040,6 +1042,14 @@ class TempVoiceCore(commands.Cog):
         previous_owner = self.lane_owner.get(lane.id)
         if previous_owner == member.id:
             return
+        log.info(
+            "TempVoice owner claim applied: lane=%s lane_id=%s previous_owner_id=%s new_owner=%s new_owner_id=%s",
+            lane.name,
+            lane.id,
+            previous_owner,
+            str(member),
+            member.id,
+        )
         self.lane_owner[lane.id] = member.id
         try:
             await db.execute_async(
@@ -1108,6 +1118,125 @@ class TempVoiceCore(commands.Cog):
     async def apply_owner_region_to_lane(self, lane: discord.VoiceChannel, owner_id: int):
         region = await self.get_region_pref(owner_id)
         await self.apply_region(lane, region)
+
+    def _sorted_lane_members_by_join(
+        self, lane: discord.VoiceChannel
+    ) -> list[tuple[discord.Member, float | None]]:
+        tsmap = self.join_time.get(lane.id, {})
+        members = [m for m in lane.members if isinstance(m, discord.Member)]
+        members.sort(key=lambda m: (tsmap.get(m.id, float("inf")), m.id))
+        return [(member, tsmap.get(member.id)) for member in members]
+
+    def _describe_lane_member_order(self, lane: discord.VoiceChannel, *, limit: int = 5) -> list[str]:
+        now_ts = datetime.utcnow().timestamp()
+        described: list[str] = []
+        for idx, (member, joined_ts) in enumerate(self._sorted_lane_members_by_join(lane), start=1):
+            if idx > limit:
+                break
+            if joined_ts is None:
+                connected_for = "unknown"
+            else:
+                connected_for = str(max(0, int(now_ts - joined_ts)))
+            described.append(
+                f"{idx}:{member.display_name}:{member.id}:connected_s={connected_for}"
+            )
+        return described
+
+    def evaluate_owner_claim(self, lane: discord.VoiceChannel, member: discord.Member) -> dict[str, Any]:
+        now_ts = datetime.utcnow().timestamp()
+        owner_id = self.lane_owner.get(lane.id)
+        owner_member = lane.guild.get_member(owner_id) if owner_id else None
+        owner_present = any(m.id == owner_id for m in lane.members) if owner_id else False
+        ranked_members = self._sorted_lane_members_by_join(lane)
+        ranked_ids = [m.id for m, _ in ranked_members]
+        actor_position = ranked_ids.index(member.id) + 1 if member.id in ranked_ids else None
+        joined_ts = self.join_time.get(lane.id, {}).get(member.id)
+        connected_seconds = None if joined_ts is None else max(0, int(now_ts - joined_ts))
+
+        reasons: list[str] = []
+        if owner_id == member.id:
+            reasons.append("already_owner")
+        if member.id not in ranked_ids:
+            reasons.append("not_in_lane")
+        if owner_present and owner_id != member.id:
+            reasons.append("current_owner_present")
+        if actor_position is None or actor_position > OWNER_CLAIM_TOP_N:
+            reasons.append("outside_top_connected")
+        if connected_seconds is None or connected_seconds < OWNER_CLAIM_MIN_SECONDS:
+            reasons.append("connected_too_short")
+
+        allowed = len(reasons) == 0
+        return {
+            "allowed": allowed,
+            "lane_id": lane.id,
+            "lane_name": lane.name,
+            "owner_id": owner_id,
+            "owner_name": owner_member.display_name if owner_member else None,
+            "owner_present": owner_present,
+            "actor_id": member.id,
+            "actor_name": member.display_name,
+            "actor_position": actor_position,
+            "connected_seconds": connected_seconds,
+            "top_connected": self._describe_lane_member_order(lane, limit=OWNER_CLAIM_TOP_N),
+            "reasons": reasons,
+        }
+
+    async def request_owner_claim(
+        self, lane: discord.VoiceChannel, member: discord.Member
+    ) -> tuple[bool, str]:
+        status = self.evaluate_owner_claim(lane, member)
+        log.info(
+            "TempVoice owner claim attempt: lane=%s lane_id=%s current_owner_id=%s current_owner=%s owner_present=%s actor=%s actor_id=%s actor_position=%s actor_connected_s=%s reasons=%s top_connected=%s",
+            lane.name,
+            lane.id,
+            status["owner_id"],
+            status["owner_name"],
+            status["owner_present"],
+            status["actor_name"],
+            status["actor_id"],
+            status["actor_position"],
+            status["connected_seconds"],
+            ",".join(status["reasons"]) if status["reasons"] else "eligible",
+            status["top_connected"],
+        )
+
+        if status["allowed"]:
+            await self.claim_owner(lane, member)
+            return True, "Du bist jetzt Owner dieser Lane."
+
+        reasons = status["reasons"]
+        if "already_owner" in reasons:
+            return False, "Du bist bereits Owner dieser Lane."
+
+        details: list[str] = []
+        if "current_owner_present" in reasons:
+            owner_name = status["owner_name"] or "Der aktuelle Owner"
+            details.append(f"{owner_name} ist noch im Channel")
+        if "outside_top_connected" in reasons:
+            position = status["actor_position"]
+            if position is None:
+                details.append(
+                    f"du bist aktuell nicht sauber in der Join-Reihenfolge erfasst; claimen dürfen nur die ersten {OWNER_CLAIM_TOP_N}"
+                )
+            else:
+                details.append(
+                    f"du bist aktuell Platz {position} nach Verbindungszeit; claimen dürfen nur die ersten {OWNER_CLAIM_TOP_N}"
+                )
+        if "connected_too_short" in reasons:
+            connected_seconds = status["connected_seconds"]
+            if connected_seconds is None:
+                details.append("deine Verbindungszeit ist aktuell nicht verfügbar")
+            else:
+                details.append(
+                    f"du bist erst seit {connected_seconds // 60}m {connected_seconds % 60}s im Channel; mindestens 20 Minuten sind nötig"
+                )
+        if "not_in_lane" in reasons:
+            details.append("du bist nicht mehr sauber in dieser Lane erfasst")
+
+        if not details:
+            details.append("die Claim-Bedingungen sind aktuell nicht erfüllt")
+
+        return False, "Owner-Claim derzeit nicht möglich: " + "; ".join(details) + "."
 
     async def transfer_owner(self, lane: discord.VoiceChannel, member_id: int):
         m = lane.guild.get_member(int(member_id))
@@ -1940,6 +2069,16 @@ class TempVoiceCore(commands.Cog):
                         candidates = list(ch.members)
                         candidates.sort(key=lambda m: tsmap.get(m.id, float("inf")))
                         new_owner_member = candidates[0]
+                        log.info(
+                            "TempVoice owner auto-transfer: lane=%s lane_id=%s previous_owner=%s previous_owner_id=%s new_owner=%s new_owner_id=%s top_connected=%s",
+                            ch.name,
+                            ch.id,
+                            str(member),
+                            member.id,
+                            str(new_owner_member),
+                            new_owner_member.id,
+                            self._describe_lane_member_order(ch, limit=OWNER_CLAIM_TOP_N),
+                        )
                         self.lane_owner[ch.id] = new_owner_member.id
                         try:
                             await db.execute_async(
@@ -2006,6 +2145,13 @@ class TempVoiceCore(commands.Cog):
                     self.lane_base[ch.id] = base_name
                     self.created_channels.add(ch.id)
                     self.lane_min_rank.setdefault(ch.id, "unknown")
+                    log.info(
+                        "TempVoice owner backfill assigned: lane=%s lane_id=%s owner=%s owner_id=%s reason=no_owner_present_on_join",
+                        ch.name,
+                        ch.id,
+                        str(member),
+                        member.id,
+                    )
                     rules: dict[str, Any] = {}
                     source_id: int | None = None
                     try:

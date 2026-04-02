@@ -643,8 +643,8 @@ class OwnerClaimButton(discord.ui.Button):
             return
         # Interaction sofort bestätigen, damit das Token nicht abläuft
         await itx.response.defer(ephemeral=True)
-        await self.core.transfer_owner(lane, m.id)
-        await itx.followup.send("Du bist jetzt Owner dieser Lane.", ephemeral=True)
+        ok, msg = await self.core.request_owner_claim(lane, m)
+        await itx.followup.send(msg, ephemeral=True)
 
 
 class LimitButton(discord.ui.Button):
@@ -1230,8 +1230,9 @@ class KickSelectView(discord.ui.View):
             self.lane.name,
             self.lane.id,
         )
+        await itx.response.defer(ephemeral=True, thinking=False)
         ok, msg = await self.util.kick(self.lane, target_id, actor=actor_member)
-        await itx.response.send_message(msg, ephemeral=True)
+        await itx.followup.send(msg, ephemeral=True)
 
 
 class BanSelect(discord.ui.Select):
@@ -1253,8 +1254,9 @@ class BanSelectView(discord.ui.View):
     async def handle_ban(self, itx: discord.Interaction, target_id: int):
         core = itx.client.get_cog("TempVoiceCore")  # type: ignore
         owner_id = core.lane_owner.get(self.lane.id)
+        await itx.response.defer(ephemeral=True, thinking=False)
         ok, msg = await self.util.ban(self.lane, owner_id, str(target_id))
-        await itx.response.send_message(msg, ephemeral=True)
+        await itx.followup.send(msg, ephemeral=True)
 
 
 class UnbanSelect(discord.ui.Select):
@@ -1276,8 +1278,9 @@ class UnbanSelectView(discord.ui.View):
     async def handle_unban(self, itx: discord.Interaction, target_id: int):
         core = itx.client.get_cog("TempVoiceCore")  # type: ignore
         owner_id = core.lane_owner.get(self.lane.id)
+        await itx.response.defer(ephemeral=True, thinking=False)
         ok, msg = await self.util.unban(self.lane, owner_id, str(target_id))
-        await itx.response.send_message(msg, ephemeral=True)
+        await itx.followup.send(msg, ephemeral=True)
 
 
 class BanButton(discord.ui.Button):
