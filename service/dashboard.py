@@ -1708,12 +1708,11 @@ class DashboardServer:
                 )
             )
         if not self._discord_auth_required:
-            raise web.HTTPFound("/admin")
-
+            raise web.HTTPFound(self._safe_internal_redirect("/admin"))
         existing = self._get_discord_auth_session(request)
         next_path = self._normalize_auth_next_path(request.query.get("next"))
         if existing:
-            raise web.HTTPFound("/admin")
+            raise web.HTTPFound(self._safe_internal_redirect("/admin"))
 
         redirect_uri = self._normalized_discord_redirect_uri()
         if not redirect_uri:
@@ -1753,7 +1752,7 @@ class DashboardServer:
                 headers={"Retry-After": "60"},
             )
         if not self._discord_auth_required:
-            raise web.HTTPFound("/admin")
+            raise web.HTTPFound(self._safe_internal_redirect("/admin"))
 
         error = (request.query.get("error") or "").strip()
         if error:
@@ -1851,7 +1850,8 @@ class DashboardServer:
         if session_id:
             self._discord_sessions.pop(session_id, None)
         login_url = MASTER_DISCORD_ADMIN_LOGIN_URL if self._discord_auth_required else "/admin"
-        response = web.HTTPFound(login_url)
+        safe_login_url = self._safe_internal_redirect(login_url)
+        response = web.HTTPFound(safe_login_url)
         self._clear_discord_session_cookie(response, request)
         raise response
 
@@ -1896,13 +1896,13 @@ class DashboardServer:
         if self._is_auth_enforced() and not self._has_valid_auth(request):
             if self._discord_auth_required:
                 login_url = MASTER_DISCORD_ADMIN_LOGIN_URL
-                raise web.HTTPFound(login_url)
+                raise web.HTTPFound(self._safe_internal_redirect(login_url))
             self._check_auth(request)
 
         session = self._get_discord_auth_session(request)
         # Community-Moderatoren (turnier_only) haben keinen Zugriff auf das Haupt-Dashboard
         if session and str(session.get("access_level", "full")) == "turnier_only":
-            raise web.HTTPFound("/turnier")
+            raise web.HTTPFound(self._safe_internal_redirect("/turnier"))
         display_name = str((session or {}).get("display_name") or "Nicht angemeldet")
         safe_discord_login_url = html.escape(
             self._safe_template_href(
