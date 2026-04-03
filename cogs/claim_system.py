@@ -12,6 +12,13 @@ from service import db as central_db
 
 log = logging.getLogger(__name__)
 
+
+def _safe_log_value(value: Any) -> str:
+    """Sanitize values before logging to prevent log injection attacks."""
+    text = "" if value is None else str(value)
+    return text.replace("\r", "\\r").replace("\n", "\\n")
+
+
 # Event Loop Policy für Windows setzen
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -210,7 +217,7 @@ class ClaimSystem(commands.Cog):
                 self._server = await asyncio.start_server(
                     self._handle_client, SOCKET_HOST, SOCKET_PORT
                 )
-                log.info(f"ClaimSystem: Socket-Server gestartet auf {SOCKET_HOST}:{SOCKET_PORT}")
+                log.info("ClaimSystem: Socket-Server gestartet auf %s:%s", SOCKET_HOST, SOCKET_PORT)
                 async with self._server:
                     await self._server.serve_forever()
                 return
@@ -233,16 +240,16 @@ class ClaimSystem(commands.Cog):
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         addr = writer.get_extra_info("peername")
-        log.debug(f"ClaimSystem: Verbindung von {addr}")
+        log.debug("ClaimSystem: Verbindung von %s", _safe_log_value(addr))
         try:
             length_data = await reader.readexactly(4)
             data_length = int.from_bytes(length_data, byteorder="big")
             payload_data = await reader.readexactly(data_length)
             data = json.loads(payload_data.decode("utf-8"))
-            log.info(f"ClaimSystem: Daten empfangen: {data}")
+            log.info("ClaimSystem: Daten empfangen: %s", _safe_log_value(data))
             await self.process_notification_data(data)
         except Exception as e:
-            log.error(f"ClaimSystem: Fehler beim Empfang: {e}")
+            log.error("ClaimSystem: Fehler beim Empfang: %s", _safe_log_value(e))
         finally:
             writer.close()
             await writer.wait_closed()
@@ -254,12 +261,12 @@ class ClaimSystem(commands.Cog):
                 return
 
             if str(thread_id) in self.claimed_threads:
-                log.info(f"ClaimSystem: Thread {thread_id} bereits bearbeitet.")
+                log.info("ClaimSystem: Thread %s bereits bearbeitet.", _safe_log_value(thread_id))
                 return
 
             thread = self.bot.get_channel(int(thread_id))
             if not thread:
-                log.warning(f"ClaimSystem: Thread {thread_id} nicht gefunden.")
+                log.warning("ClaimSystem: Thread %s nicht gefunden.", _safe_log_value(thread_id))
                 return
 
             assigned_user_id = data.get("assigned_user_id")
@@ -274,7 +281,7 @@ class ClaimSystem(commands.Cog):
                 if assigned_user:
                     await thread.add_user(assigned_user)
             except Exception as e:
-                log.error(f"ClaimSystem: Fehler beim Hinzufügen des Users: {e}")
+                log.error("ClaimSystem: Fehler beim Hinzufügen des Users: %s", _safe_log_value(e))
 
             view = ClaimView(self, int(thread_id), int(assigned_user_id))
             await thread.send(
@@ -283,7 +290,7 @@ class ClaimSystem(commands.Cog):
             )
             self.mark_thread_processed(int(thread_id), int(assigned_user_id))
         except Exception as e:
-            log.exception(f"ClaimSystem: Fehler bei Verarbeitung: {e}")
+            log.exception("ClaimSystem: Fehler bei Verarbeitung: %s", _safe_log_value(e))
 
 
 async def setup(bot: commands.Bot):

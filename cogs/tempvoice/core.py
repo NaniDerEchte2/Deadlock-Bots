@@ -17,6 +17,12 @@ from service.guild_config import get_guild_config
 
 log = logging.getLogger("TempVoiceCore")
 
+
+def _safe_log_value(value: Any) -> str:
+    """Sanitize values before logging to prevent log injection attacks."""
+    text = "" if value is None else str(value)
+    return text.replace("\r", "\\r").replace("\n", "\\n")
+
 _cfg = get_guild_config()
 
 # --------- IDs / Konfiguration ---------
@@ -2049,7 +2055,7 @@ class TempVoiceCore(commands.Cog):
                 )
                 await self._create_lane(member, after_channel)
         except Exception as e:
-            log.warning(f"Auto-lane create failed: {e}")
+            log.warning("Auto-lane create failed: %s", _safe_log_value(e))
 
         # Check for Lurker Leave & Owner logic
         try:

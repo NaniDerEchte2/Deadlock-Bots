@@ -10,6 +10,12 @@ from discord.ext import commands
 
 log = logging.getLogger(__name__)
 
+
+def _safe_log_value(value: Any) -> str:
+    """Sanitize values before logging to prevent log injection attacks."""
+    text = "" if value is None else str(value)
+    return text.replace("\r", "\\r").replace("\n", "\\n")
+
 # ---------------- Static Config (edit here, no ENV needed) ----------------
 SECURITY_CONFIG: dict[str, object] = {
     # ID eines Textkanals, in den Beweise/Embeds gepostet werden.
@@ -574,7 +580,7 @@ class SecurityGuard(commands.Cog):
                 log.warning("Failed to post appeal for case %s: %s", case_id, exc)
         else:
             log.warning("No mod channel set; appeal case %s logged to stdout.", case_id)
-            log.info("Appeal %s by %s: %s", case_id, user.id, safe_appeal)
+            log.info("Appeal %s by %s: %s", case_id, user.id, _safe_log_value(safe_appeal))
 
         try:
             await interaction.response.send_message("Your appeal was sent to the moderators.")
@@ -649,7 +655,7 @@ class SecurityGuard(commands.Cog):
         for idx, msg in enumerate(sorted(msgs, key=lambda m: m.created_at)):
             channel_display = channel_names.get(msg.channel_id, str(msg.channel_id))
             ts = msg.created_at.strftime("%H:%M:%S")
-            snippet = msg.content.strip().replace("`", "'")
+            snippet = msg.content.replace("\r", "\\r").replace("\n", "\\n").strip().replace("`", "'")
             if len(snippet) > 160:
                 snippet = snippet[:157] + "..."
             attach_note = f" [attachments: {len(msg.attachments)}]" if msg.attachments else ""
