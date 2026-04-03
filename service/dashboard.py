@@ -3864,8 +3864,9 @@ class DashboardServer:
         if builds:
             submitted_build_ids = [int(build["build_id"]) for build in builds]
             placeholders = ", ".join("?" for _ in submitted_build_ids)
+            delete_sql = "DELETE FROM deadlock_hero_builds WHERE hero_id = ? AND build_id NOT IN (" + placeholders + ")"
             conn.execute(
-                f"DELETE FROM deadlock_hero_builds WHERE hero_id = ? AND build_id NOT IN ({placeholders})",
+                delete_sql,
                 (hero_id, *submitted_build_ids),
             )
         else:
@@ -4329,12 +4330,7 @@ class DashboardServer:
                     ]
                     updated_rows = int(
                         conn.execute(
-                            f"""
-                            UPDATE hero_build_clones
-                               SET {set_sql}
-                             WHERE origin_hero_build_id = ?
-                               AND target_language = ?
-                            """,
+                            "UPDATE hero_build_clones SET " + set_sql + " WHERE origin_hero_build_id = ? AND target_language = ?",
                             update_params,
                         ).rowcount
                         or 0
@@ -4350,8 +4346,9 @@ class DashboardServer:
                     safe_columns = [self._validate_sql_identifier(k) for k in insert_payload.keys()]
                     columns = ", ".join(safe_columns)
                     placeholders = ", ".join("?" for _ in insert_payload)
+                    insert_sql = "INSERT INTO hero_build_clones (" + columns + ") VALUES (" + placeholders + ")"
                     conn.execute(
-                        f"INSERT INTO hero_build_clones ({columns}) VALUES ({placeholders})",
+                        insert_sql,
                         tuple(insert_payload.values()),
                     )
 
