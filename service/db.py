@@ -590,6 +590,14 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
               updated_at INTEGER NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS deadlock_party_members(
+              party_id TEXT NOT NULL,
+              steam_id TEXT NOT NULL,
+              party_size INTEGER,
+              seen_at INTEGER NOT NULL,
+              PRIMARY KEY (party_id, steam_id)
+            );
+
             -- Steam Rich Presence Cache (gefüllt vom node-steam-user Service)
             CREATE TABLE IF NOT EXISTS steam_rich_presence(
               steam_id TEXT PRIMARY KEY,
@@ -1031,6 +1039,12 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
             # TempVoice Rehydration: WHERE guild_id=? (composite index)
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tempvoice_lanes_guild ON tempvoice_lanes(guild_id, channel_id)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_deadlock_party_members_party ON deadlock_party_members(party_id, seen_at)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_deadlock_party_members_steam ON deadlock_party_members(steam_id, seen_at)"
             )
             # Activity Patterns: Schnelle Lookups für Smart Pinging
             c.execute(

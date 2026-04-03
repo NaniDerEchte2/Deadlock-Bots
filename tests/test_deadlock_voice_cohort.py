@@ -15,6 +15,9 @@ class DeadlockVoiceCohortTests(unittest.TestCase):
             "deadlock_updated_at": 1_000,
             "last_seen_ts": None,
             "deadlock_localized": "{deadlock:ranked} queue text (18 min.)",
+            "deadlock_stage": "match",
+            "in_match_now_strict": 1,
+            "deadlock_minutes": 18,
             "last_server_id": "srv-1",
             "deadlock_party_hint": None,
         }
@@ -31,6 +34,9 @@ class DeadlockVoiceCohortTests(unittest.TestCase):
                 "deadlock_updated_at": 1_000,
                 "last_seen_ts": None,
                 "deadlock_localized": "",
+                "deadlock_stage": "lobby",
+                "in_match_now_strict": 0,
+                "deadlock_minutes": None,
                 "last_server_id": "lobby-1",
                 "deadlock_party_hint": None,
             },
@@ -38,6 +44,9 @@ class DeadlockVoiceCohortTests(unittest.TestCase):
                 "deadlock_updated_at": 1_000,
                 "last_seen_ts": None,
                 "deadlock_localized": "{deadlock:game} something (22 min.)",
+                "deadlock_stage": "match",
+                "in_match_now_strict": 1,
+                "deadlock_minutes": 22,
                 "last_server_id": "match-1",
                 "deadlock_party_hint": None,
             },
@@ -72,6 +81,23 @@ class DeadlockVoiceCohortTests(unittest.TestCase):
         self.assertEqual(lobby_only["stage"], "lobby")
         self.assertEqual(lobby_only["server_id"], "srv-a")
         self.assertEqual(lobby_only["member_ids"], [1, 2])
+
+    def test_evaluate_deadlock_presence_row_uses_strict_match_without_minutes_string(self) -> None:
+        row = {
+            "deadlock_updated_at": 2_000,
+            "last_seen_ts": None,
+            "deadlock_localized": "{deadlock:hero} warmup text",
+            "deadlock_stage": "match",
+            "in_match_now_strict": 1,
+            "deadlock_minutes": 0,
+            "last_server_id": "srv-2",
+            "deadlock_party_hint": None,
+        }
+
+        self.assertEqual(
+            evaluate_deadlock_presence_row(row, 2_030, stale_seconds=180),
+            ("match", 0, "srv-2"),
+        )
 
 
 if __name__ == "__main__":

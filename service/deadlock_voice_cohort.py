@@ -29,8 +29,29 @@ def evaluate_deadlock_presence_row(
     localized_raw = row["deadlock_localized"] or ""
     localized = str(localized_raw).strip()
     match_info = MATCH_STATUS_REGEX.search(localized)
+    deadlock_stage = str(row["deadlock_stage"] or "").strip().lower()
+    in_match_now_strict = bool(row["in_match_now_strict"])
+    deadlock_minutes_raw = row["deadlock_minutes"]
     server_id_raw = row["last_server_id"] or row["deadlock_party_hint"]
     server_id = str(server_id_raw).strip() if server_id_raw else None
+
+    normalized_minutes: int | None = None
+    if deadlock_minutes_raw is not None:
+        try:
+            normalized_minutes = max(0, int(deadlock_minutes_raw))
+        except (TypeError, ValueError):
+            normalized_minutes = None
+
+    if in_match_now_strict or deadlock_stage == "match":
+        if normalized_minutes is not None:
+            return "match", normalized_minutes, server_id
+        if match_info:
+            try:
+                minutes_val = max(0, int(match_info.group(1)))
+            except (TypeError, ValueError):
+                minutes_val = 0
+            return "match", minutes_val, server_id
+        return "match", 0, server_id
 
     if match_info:
         try:

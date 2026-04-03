@@ -33,6 +33,7 @@ TARGET_CATEGORY_IDS: set[int] = {
 
 POLL_INTERVAL_SECONDS = 60
 PRESENCE_STALE_SECONDS = 180
+PARTY_MEMBER_STALE_SECONDS = 600
 # Cooldown between voice rename attempts (seconds). Adjust here instead of via env.
 RENAME_COOLDOWN_SECONDS = 360
 RENAME_REASON = "Deadlock Voice Status Update"
@@ -268,6 +269,187 @@ class DeadlockVoiceStatus(commands.Cog):
 
         return {str(row["steam_id"]): row for row in rows}
 
+    async def _fetch_party_rows_for_steam_ids(
+        self,
+        steam_ids: Iterable[str],
+        now: int,
+    ) -> list[Any]:
+        ids = sorted({str(sid) for sid in steam_ids if sid})
+        if not ids:
+            return []
+
+        ids_json = json.dumps(ids)
+        cutoff = now - PARTY_MEMBER_STALE_SECONDS
+        query = """
+            SELECT party_id, steam_id, party_size, seen_at
+            FROM deadlock_party_members
+            WHERE steam_id IN (SELECT value FROM json_each(?))
+              AND seen_at >= ?
+        """
+        return await db.query_all_async(query, (ids_json, cutoff))
+
+    async def _fetch_party_rows_for_party_ids(
+        self,
+        party_ids: Iterable[str],
+        now: int,
+    ) -> list[Any]:
+        ids = sorted({str(party_id) for party_id in party_ids if party_id})
+        if not ids:
+            return []
+
+        ids_json = json.dumps(ids)
+        cutoff = now - PARTY_MEMBER_STALE_SECONDS
+        query = """
+            SELECT party_id, steam_id, party_size, seen_at
+            FROM deadlock_party_members
+            WHERE party_id IN (SELECT value FROM json_each(?))
+              AND seen_at >= ?
+        """
+        return await db.query_all_async(query, (ids_json, cutoff))
+
+    @staticmethod
+    def _normalize_party_size(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        if parsed < 1:
+            return None
+        return min(6, parsed)
+
+    def _select_best_party_candidate(
+        self,
+        cohort_steam_ids: set[str],
+        party_rows: Sequence[Any],
+    ) -> dict[str, Any] | None:
+        grouped: dict[str, dict[str, Any]] = {}
+        for row in party_rows:
+            party_id_raw = self._safe_row_value(row, "party_id")
+            steam_id_raw = self._safe_row_value(row, "steam_id")
+            if not party_id_raw or not steam_id_raw:
+                continue
+            party_id = str(party_id_raw)
+            steam_id = str(steam_id_raw)
+            bucket = grouped.setdefault(
+                party_id,
+                {
+                    "party_id": party_id,
+                    "cohort_steam_ids": set(),
+                    "reported_sizes": [],
+                    "latest_seen_at": 0,
+                },
+            )
+            if steam_id in cohort_steam_ids:
+                bucket["cohort_steam_ids"].add(steam_id)
+            normalized_size = self._normalize_party_size(self._safe_row_value(row, "party_size"))
+            if normalized_size is not None:
+                bucket["reported_sizes"].append(normalized_size)
+            seen_at_raw = self._safe_row_value(row, "seen_at")
+            try:
+                bucket["latest_seen_at"] = max(int(seen_at_raw or 0), int(bucket["latest_seen_at"]))
+            except (TypeError, ValueError):
+                pass
+
+        best: dict[str, Any] | None = None
+        best_score: tuple[int, int, int, int] | None = None
+        for candidate in grouped.values():
+            overlap_count = len(candidate["cohort_steam_ids"])
+            if overlap_count <= 0:
+                continue
+            reported_size = max(candidate["reported_sizes"]) if candidate["reported_sizes"] else 0
+            latest_seen_at = int(candidate["latest_seen_at"])
+            score = (overlap_count, reported_size, latest_seen_at, len(candidate["party_id"]))
+            if best_score is None or score > best_score:
+                best = candidate
+                best_score = score
+        return best
+
+    async def _resolve_effective_player_count(
+        self,
+        *,
+        members: Sequence[discord.Member],
+        steam_map: dict[int, list[str]],
+        candidate_member_ids: Sequence[int],
+        chosen_steam_ids: Sequence[str],
+        raw_player_count: int,
+        now: int,
+    ) -> tuple[int, dict[str, Any]]:
+        trace_details: dict[str, Any] = {
+            "raw_player_count": raw_player_count,
+            "candidate_member_ids": [int(member_id) for member_id in candidate_member_ids],
+            "chosen_steam_ids": [str(sid) for sid in chosen_steam_ids if sid],
+        }
+        if raw_player_count <= 0 or not chosen_steam_ids:
+            trace_details["mode"] = "raw_only"
+            trace_details["reason"] = "no_candidate_steam_ids"
+            return raw_player_count, trace_details
+
+        initial_rows = await self._fetch_party_rows_for_steam_ids(chosen_steam_ids, now)
+        if not initial_rows:
+            trace_details["mode"] = "raw_only"
+            trace_details["reason"] = "no_recent_party_rows"
+            return raw_player_count, trace_details
+
+        party_candidate = self._select_best_party_candidate(set(chosen_steam_ids), initial_rows)
+        if not party_candidate:
+            trace_details["mode"] = "raw_only"
+            trace_details["reason"] = "no_party_candidate"
+            return raw_player_count, trace_details
+
+        full_party_rows = await self._fetch_party_rows_for_party_ids(
+            [str(party_candidate["party_id"])],
+            now,
+        )
+        visible_party_steam_ids = {
+            str(self._safe_row_value(row, "steam_id"))
+            for row in full_party_rows
+            if self._safe_row_value(row, "steam_id")
+        }
+        visible_party_count = len(visible_party_steam_ids)
+        reported_party_sizes = [
+            size
+            for size in (
+                self._normalize_party_size(self._safe_row_value(row, "party_size"))
+                for row in full_party_rows
+            )
+            if size is not None
+        ]
+        target_party_size = max(reported_party_sizes, default=visible_party_count)
+        target_party_size = max(target_party_size, raw_player_count)
+        target_party_size = min(6, target_party_size)
+
+        unlinked_member_ids = [int(member.id) for member in members if not steam_map.get(member.id)]
+        inferred_missing = max(0, target_party_size - raw_player_count)
+        inferred_unlinked = min(
+            inferred_missing,
+            len(unlinked_member_ids),
+            max(0, len(members) - raw_player_count),
+        )
+        effective_player_count = min(6, raw_player_count + inferred_unlinked)
+
+        trace_details.update(
+            {
+                "mode": (
+                    "party_verified"
+                    if visible_party_count >= target_party_size
+                    else "party_inferred"
+                    if inferred_unlinked > 0
+                    else "party_partial"
+                ),
+                "party_id": str(party_candidate["party_id"]),
+                "party_overlap_count": len(party_candidate["cohort_steam_ids"]),
+                "visible_party_count": visible_party_count,
+                "reported_party_size": max(reported_party_sizes) if reported_party_sizes else None,
+                "target_party_size": target_party_size,
+                "unlinked_member_ids": unlinked_member_ids,
+                "inferred_unlinked": inferred_unlinked,
+                "effective_player_count": effective_player_count,
+            }
+        )
+        return effective_player_count, trace_details
+
     async def _persist_voice_watch_entries(self, entries: list[tuple[str, int, int]]) -> None:
         now_ts = int(time.time())
         if not entries:
@@ -335,10 +517,11 @@ class DeadlockVoiceStatus(commands.Cog):
                 None,
                 None,
                 None,
-                trace_payload,
+                debug_payload=trace_payload,
             )
             return
         presence_entries: list[tuple[str, int, str | None]] = []
+        chosen_steam_by_member_id: dict[int, str] = {}
         for member in members:
             steam_ids = steam_map.get(member.id, [])
             best_presence = self._select_best_presence(steam_ids, presence_map, now)
@@ -368,6 +551,7 @@ class DeadlockVoiceStatus(commands.Cog):
                 continue
             if stage not in {"lobby", "match"}:
                 continue
+            chosen_steam_by_member_id[int(member.id)] = str(chosen_sid)
             presence_entries.append(
                 {
                     "member_id": member.id,
@@ -389,7 +573,7 @@ class DeadlockVoiceStatus(commands.Cog):
                 None,
                 None,
                 None,
-                trace_payload,
+                debug_payload=trace_payload,
             )
             return
         candidate = select_deadlock_channel_cohort(
@@ -417,12 +601,25 @@ class DeadlockVoiceStatus(commands.Cog):
                 None,
                 None,
                 None,
-                trace_payload,
+                debug_payload=trace_payload,
             )
             return
 
         player_count_raw = len(candidate_minutes)
-        player_count = min(player_count_raw, 6)
+        candidate_member_ids = [int(member_id) for member_id in candidate["member_ids"]]
+        candidate_steam_ids = [
+            chosen_steam_by_member_id[member_id]
+            for member_id in candidate_member_ids
+            if member_id in chosen_steam_by_member_id
+        ]
+        player_count, party_trace = await self._resolve_effective_player_count(
+            members=members,
+            steam_map=steam_map,
+            candidate_member_ids=candidate_member_ids,
+            chosen_steam_ids=candidate_steam_ids,
+            raw_player_count=min(player_count_raw, 6),
+            now=now,
+        )
         voice_slots = player_count
         trace_payload["decision"] = {
             "reason": "candidate_selected",
@@ -434,6 +631,7 @@ class DeadlockVoiceStatus(commands.Cog):
             "voice_slots": voice_slots,
             "member_count": total_members,
             "cohort_member_ids": list(candidate["member_ids"]) if candidate else [],
+            "party_resolution": party_trace,
         }
 
         if candidate_stage == "lobby":
@@ -500,7 +698,7 @@ class DeadlockVoiceStatus(commands.Cog):
             None,
             None,
             None,
-            trace_payload,
+            debug_payload=trace_payload,
         )
 
     @staticmethod
@@ -802,17 +1000,19 @@ class DeadlockVoiceStatus(commands.Cog):
 
         decision = snapshot.get("decision", {}) or {}
         rename = snapshot.get("rename", {}) or {}
+        party_resolution = decision.get("party_resolution", {}) or {}
         lines = [
             f"{target_channel.name} ({target_channel.id})",
             f"Entscheidung: {decision.get('candidate_stage')} | Server: {decision.get('chosen_server_id')} | Suffix: {decision.get('suffix')}",
             f"Bucket/Min: {decision.get('bucket') or decision.get('max_minutes')} | Spieler: {decision.get('player_count')} / {decision.get('voice_slots_effective')}",
+            f"Party: {party_resolution.get('mode')} | party_id={party_resolution.get('party_id')} | raw={party_resolution.get('raw_player_count')} | effective={party_resolution.get('effective_player_count')} | inferred={party_resolution.get('inferred_unlinked')}",
             f"Rename: {rename.get('result')} | should={rename.get('should_rename')} | cooldown={rename.get('cooldown_remaining')}s",
         ]
 
         presence_lines = []
         for entry in (snapshot.get("presence") or [])[:10]:
             presence_lines.append(
-                f"- {entry.get('member')} ({entry.get('steam_id') or '-'}) -> {entry.get('stage')} "
+                f"- {entry.get('member')} ({entry.get('chosen_steam_id') or '-'}) -> {entry.get('stage')} "
                 f"{entry.get('minutes')}m srv={entry.get('server_id')} raw_stage={entry.get('raw_stage')}"
             )
         if not presence_lines:
