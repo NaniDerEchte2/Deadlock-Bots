@@ -18,6 +18,13 @@ from aiohttp import web
 
 logger = logging.getLogger(__name__)
 
+
+def _safe_log_value(value: Any) -> str:
+    """Sanitize values before logging to prevent log injection attacks."""
+    text = "" if value is None else str(value)
+    return text.replace("\r", "\\r").replace("\n", "\\n")
+
+
 _INTERNAL_TOKEN_HEADER = "X-Internal-Token"
 _IDEMPOTENCY_HEADER = "X-Idempotency-Key"
 _REQUEST_ID_HEADER = "X-Request-Id"
@@ -365,7 +372,7 @@ class MasterBroker:
     def _authorize(self, request: web.Request) -> web.Response | None:
         peer = self._peer_host(request)
         if not self._is_loopback_host(peer):
-            logger.warning("Master broker rejected non-loopback request from %s", peer or "<unknown>")
+            logger.warning("Master broker rejected non-loopback request from %s", _safe_log_value(peer) or "<unknown>")
             return self._error_response(
                 request=request,
                 status=403,
@@ -375,7 +382,7 @@ class MasterBroker:
 
         token = (request.headers.get(_INTERNAL_TOKEN_HEADER) or "").strip()
         if not token or not secrets.compare_digest(token, self.token):
-            logger.warning("Master broker rejected unauthorized request from %s", peer or "<unknown>")
+            logger.warning("Master broker rejected unauthorized request from %s", _safe_log_value(peer) or "<unknown>")
             return self._error_response(
                 request=request,
                 status=401,
@@ -713,8 +720,8 @@ class MasterBroker:
             except Exception:
                 logger.exception(
                     "Master broker idempotent waiter failed (action=%s key=%s)",
-                    action,
-                    idempotency_key,
+                    _safe_log_value(action),
+                    _safe_log_value(idempotency_key),
                 )
                 return self._error_response(
                     request=request,
@@ -742,8 +749,8 @@ class MasterBroker:
         except asyncio.CancelledError:
             logger.warning(
                 "Master broker idempotent operation cancelled (action=%s key=%s)",
-                action,
-                idempotency_key,
+                _safe_log_value(action),
+                _safe_log_value(idempotency_key),
             )
             cancelled_response = self._error_response(
                 request=request,
@@ -764,8 +771,8 @@ class MasterBroker:
         except BaseException as exc:
             logger.exception(
                 "Master broker idempotent operation crashed (action=%s key=%s)",
-                action,
-                idempotency_key,
+                _safe_log_value(action),
+                _safe_log_value(idempotency_key),
             )
             response = self._error_response(
                 request=request,

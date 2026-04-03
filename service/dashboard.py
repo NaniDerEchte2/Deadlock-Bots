@@ -259,6 +259,19 @@ class DashboardServer:
         text = "" if value is None else str(value)
         return text.replace("\r", "\\r").replace("\n", "\\n")
 
+    @staticmethod
+    def _validate_sql_identifier(name: str) -> str:
+        """
+        Validate that a string is a safe SQL identifier (column/table name).
+        Only allows alphanumeric characters and underscores.
+        Raises ValueError if the identifier is invalid.
+        """
+        if not name:
+            raise ValueError("Empty SQL identifier")
+        if not all(c.isalnum() or c == "_" for c in name):
+            raise ValueError(f"Invalid SQL identifier: {name}")
+        return name
+
     def _json(self, payload: Any, **kwargs: Any) -> web.Response:
         return web.json_response(self._sanitize(payload), **kwargs)
 
@@ -1506,10 +1519,12 @@ class DashboardServer:
         try:
             parsed = float(value)
         except ValueError:
-            logging.warning("%s '%s' invalid – using default %.1fs", env_name, raw, default)
+            # Only log env name, not the raw value, to avoid leaking sensitive env vars
+            logging.warning("%s value is invalid – using default %.1fs", env_name, default)
             return default
         if parsed <= 0:
-            logging.warning("%s '%s' must be > 0 – using default %.1fs", env_name, raw, default)
+            # Only log env name, not the raw value, to avoid leaking sensitive env vars
+            logging.warning("%s value must be > 0 – using default %.1fs", env_name, default)
             return default
         return parsed
 
@@ -4192,14 +4207,18 @@ class DashboardServer:
             return summary
 
         source_ordering: list[str] = []
-        if "last_seen_at" in source_cols:
-            source_ordering.append("COALESCE(last_seen_at, 0) DESC")
-        if "fetched_at" in source_cols:
-            source_ordering.append("COALESCE(fetched_at, 0) DESC")
-        if "publish_ts" in source_cols:
-            source_ordering.append("COALESCE(publish_ts, 0) DESC")
+        # Whitelist of safe ORDER BY expressions - prevents SQL injection even if source_cols is compromised
+        _SAFE_SOURCE_ORDER_COLS = {
+            "last_seen_at": "COALESCE(last_seen_at, 0) DESC",
+            "fetched_at": "COALESCE(fetched_at, 0) DESC",
+            "publish_ts": "COALESCE(publish_ts, 0) DESC",
+        }
+        for col_name, order_expr in _SAFE_SOURCE_ORDER_COLS.items():
+            if col_name in source_cols:
+                source_ordering.append(order_expr)
         if not source_ordering:
             source_ordering.append("hero_build_id DESC")
+        # Validate all entries are from whitelist before joining
         source_order_clause = ", ".join(source_ordering)
 
         active_build_rows = conn.execute(
@@ -4300,7 +4319,9 @@ class DashboardServer:
                 }
                 updated_rows = 0
                 if updatable_payload:
-                    set_sql = ", ".join(f"{key} = ?" for key in updatable_payload)
+                    # Validate all column names are safe SQL identifiers
+                    safe_keys = [self._validate_sql_identifier(k) for k in updatable_payload]
+                    set_sql = ", ".join(f"{key} = ?" for key in safe_keys)
                     update_params = [
                         *updatable_payload.values(),
                         build_id,
@@ -4325,7 +4346,9 @@ class DashboardServer:
                     insert_payload["target_language"] = int(target_language)
                     if "created_at" in clone_cols and "created_at" not in insert_payload:
                         insert_payload["created_at"] = now_ts
-                    columns = ", ".join(insert_payload.keys())
+                    # Validate all column names are safe SQL identifiers
+                    safe_columns = [self._validate_sql_identifier(k) for k in insert_payload.keys()]
+                    columns = ", ".join(safe_columns)
                     placeholders = ", ".join("?" for _ in insert_payload)
                     conn.execute(
                         f"INSERT INTO hero_build_clones ({columns}) VALUES ({placeholders})",
