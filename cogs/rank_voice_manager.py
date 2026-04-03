@@ -692,7 +692,7 @@ class RolePermissionVoiceManager(commands.Cog):
 
             anchor = self.get_channel_anchor(channel)
             if not anchor:
-                logger.debug(f"Kein Anker für {channel.name} ({channel.id}) gefunden.")
+                logger.debug("Kein Anker für %s (%s) gefunden.", _safe_log_value(channel.name), channel.id)
                 return
 
             # Score-Bereich abrufen (±9 Punkte = ±1.5 Tiers)

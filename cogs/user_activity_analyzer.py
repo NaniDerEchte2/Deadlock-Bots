@@ -20,18 +20,18 @@ from datetime import datetime, timedelta
 from typing import Any
 
 import discord
-
-
-def _safe_log_value(value: Any) -> str:
-    """Sanitize values before logging to prevent log injection attacks."""
-    text = "" if value is None else str(value)
-    return text.replace("\r", "\\r").replace("\n", "\\n")
 from discord.ext import commands, tasks
 
 from cogs import privacy_core as privacy
 from service import db as central_db
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_log_value(value: Any) -> str:
+    """Sanitize values before logging to prevent log injection attacks."""
+    text = "" if value is None else str(value)
+    return text.replace("\r", "\\r").replace("\n", "\\n")
 
 
 class UserActivityAnalyzer(commands.Cog):

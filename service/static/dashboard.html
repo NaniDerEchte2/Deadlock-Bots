@@ -4549,7 +4549,10 @@ function renderSteamMetrics(container, metrics) {
 
     if (runtime.last_error && runtime.last_error.message) {
         const errorDiv = document.createElement('div');
-        errorDiv.innerHTML = `<strong>Fehler:</strong> ${runtime.last_error.message}`;
+        const strong = document.createElement('strong');
+        strong.textContent = 'Fehler: ';
+        errorDiv.appendChild(strong);
+        errorDiv.appendChild(document.createTextNode(String(runtime.last_error.message)));
         container.appendChild(errorDiv);
     }
 

@@ -7,7 +7,7 @@ import logging
 import re
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import discord
 
@@ -17,6 +17,12 @@ logger = logging.getLogger(__name__)
 _SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _DEFAULT_DISCORD_RETRY_DELAYS = (0.75, 1.5)
 _TransientResultT = TypeVar("_TransientResultT")
+
+
+def _safe_log_value(value: Any) -> str:
+    """Sanitize values before logging to prevent log injection attacks."""
+    text = "" if value is None else str(value)
+    return text.replace("\r", "\\r").replace("\n", "\\n")
 
 
 # ========= Discord Member/Role Resolution =========
@@ -328,7 +334,7 @@ def get_env_int(key: str, default: int) -> int:
     try:
         return int(raw)
     except ValueError:
-        logger.warning(f"Invalid int for {key}={raw}, using default {default}")
+        logger.warning("Invalid int for %s=%s, using default %s", key, _safe_log_value(raw), default)
         return default
 
 
