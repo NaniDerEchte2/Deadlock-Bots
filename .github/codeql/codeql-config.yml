@@ -28,5 +28,4 @@ packs:
 
 # Generated bundle output of vendored third-party GitHub action.
 # Scan the action sources, not compiled output noise.
-paths-ignore:
-  - .github/actions/fortify/setup/dist/**
+paths-ignore: []

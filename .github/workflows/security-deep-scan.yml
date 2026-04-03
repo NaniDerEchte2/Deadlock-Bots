@@ -307,7 +307,6 @@ jobs:
             --exclude .venv \
             --exclude venv \
             --exclude node_modules \
-            --exclude .github/actions/fortify \
             --exclude migrations \
             --exclude dist \
             --exclude build \
@@ -321,7 +320,6 @@ jobs:
             --exclude .venv \
             --exclude venv \
             --exclude node_modules \
-            --exclude .github/actions/fortify \
             --exclude migrations \
             --exclude dist \
             --exclude build \
@@ -336,7 +334,6 @@ jobs:
             --exclude .venv \
             --exclude venv \
             --exclude node_modules \
-            --exclude .github/actions/fortify \
             --exclude migrations \
             --exclude dist \
             --exclude build \
