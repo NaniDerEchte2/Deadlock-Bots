@@ -69,6 +69,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def _safe_log_value(value: Any) -> str:
+    """Sanitize values before logging to prevent log injection attacks."""
+    text = "" if value is None else str(value)
+    return text.replace("\r", "\\r").replace("\n", "\\n")
+
+
 class RolePermissionVoiceManager(commands.Cog):
     """Rollen-basierte Sprachkanal-Verwaltung über Discord-Rollen-Berechtigungen
     Persistenz (Toggle & Anker) über zentrale DB (service.db).
@@ -740,7 +746,7 @@ class RolePermissionVoiceManager(commands.Cog):
                 )
                 self._mark_permission_write(channel.id)
             except discord.HTTPException as e:
-                logger.error(f"Batch Permission Update fehlgeschlagen für {channel.name}: {e}")
+                logger.error("Batch Permission Update fehlgeschlagen für %s: %s", _safe_log_value(channel.name), e)
                 # Fallback: Falls Batch fehlschlägt (selten), versuchen wir es einzeln
                 await self._fallback_individual_permissions(
                     channel, allowed_role_ids, major_role_ids
@@ -753,7 +759,7 @@ class RolePermissionVoiceManager(commands.Cog):
 
     async def _fallback_individual_permissions(self, channel, allowed_role_ids, major_role_ids):
         """Fallback-Methode falls der Batch-Edit fehlschlägt."""
-        logger.info(f"Starte Fallback-Einzel-Update für {channel.name}")
+        logger.info("Starte Fallback-Einzel-Update für %s", _safe_log_value(channel.name))
         # everyone deny
         await self.set_everyone_deny_connect(channel)
 
@@ -998,8 +1004,15 @@ class RolePermissionVoiceManager(commands.Cog):
             score_max,
         )
         logger.info(
-            f"🔗 Anker gesetzt für {channel.name}: {user.display_name} ({rank_name} {anchor_subrank}) "
-            f"→ Score {score_min}-{score_max} (Tiers {allowed_min}-{allowed_max})"
+            "🔗 Anker gesetzt für %s: %s (%s %s) → Score %s-%s (Tiers %s-%s)",
+            _safe_log_value(channel.name),
+            _safe_log_value(user.display_name),
+            rank_name,
+            anchor_subrank,
+            score_min,
+            score_max,
+            allowed_min,
+            allowed_max,
         )
 
     def get_channel_anchor(
@@ -1079,7 +1092,7 @@ class RolePermissionVoiceManager(commands.Cog):
     async def remove_channel_anchor(self, channel: discord.VoiceChannel):
         if channel.id in self.channel_anchors:
             old = self.channel_anchors.pop(channel.id)
-            logger.info(f"🔗 Anker entfernt für {channel.name}: {old[1]} {old[5]} ({old[2]})")
+            logger.info("🔗 Anker entfernt für %s: %s %s (%s)", _safe_log_value(channel.name), _safe_log_value(old[1]), old[5], old[2])
             await self._db_delete_anchor(channel)
 
     def is_channel_system_enabled(self, channel: discord.VoiceChannel) -> bool:

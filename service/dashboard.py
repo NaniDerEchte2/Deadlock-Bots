@@ -1173,8 +1173,8 @@ class DashboardServer:
         try:
             resolved = path.resolve()
             log_dir_resolved = log_dir.resolve()
-        except (OSError, RuntimeError) as exc:
-            raise web.HTTPBadRequest(text="Invalid log filename") from exc
+        except (OSError, RuntimeError):
+            raise web.HTTPBadRequest(text="Invalid log filename")
         if log_dir_resolved not in resolved.parents and resolved != log_dir_resolved:
             raise web.HTTPBadRequest(text="Invalid log filename")
         if not path.exists() or not path.is_file():
@@ -2099,7 +2099,7 @@ class DashboardServer:
             )
         except Exception as exc:  # noqa: BLE001
             logging.exception("Failed to load voice stats: %s", exc)
-            raise web.HTTPInternalServerError(text="Voice stats unavailable") from exc
+            raise web.HTTPInternalServerError(text="Voice stats unavailable")
 
         live_sessions = await self._collect_live_voice_sessions()
         user_ids = set()
@@ -2256,7 +2256,7 @@ class DashboardServer:
             )
         except Exception as exc:  # noqa: BLE001
             logging.exception("Failed to load voice history: %s", exc)
-            raise web.HTTPInternalServerError(text="Voice history unavailable") from exc
+            raise web.HTTPInternalServerError(text="Voice history unavailable")
 
         user_ids: set[int] = set()
         for row in top_users_rows:
@@ -2392,7 +2392,7 @@ class DashboardServer:
                 )
             except Exception as exc:  # noqa: BLE001
                 logging.exception("Failed to build user voice summary: %s", exc)
-                raise web.HTTPInternalServerError(text="Voice history unavailable") from exc
+                raise web.HTTPInternalServerError(text="Voice history unavailable")
 
             range_seconds = int(range_stats["total_seconds"] or 0) if range_stats else 0
             range_points = int(range_stats["total_points"] or 0) if range_stats else 0
@@ -2824,7 +2824,7 @@ class DashboardServer:
 
         except Exception as exc:
             logging.exception("Failed to load member events: %s", exc)
-            raise web.HTTPInternalServerError(text="Member events unavailable") from exc
+            raise web.HTTPInternalServerError(text="Member events unavailable")
 
     async def _handle_message_activity(self, request: web.Request) -> web.Response:
         """Handler für Message-Activity."""
@@ -2908,7 +2908,7 @@ class DashboardServer:
 
         except Exception as exc:
             logging.exception("Failed to load message activity: %s", exc)
-            raise web.HTTPInternalServerError(text="Message activity unavailable") from exc
+            raise web.HTTPInternalServerError(text="Message activity unavailable")
 
     async def _handle_co_player_network(self, request: web.Request) -> web.Response:
         """Aggregiertes Co-Player-Netzwerk mit persistierten Anzeigenamen."""
@@ -2947,7 +2947,7 @@ class DashboardServer:
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to load co-player network: %s", exc)
-            raise web.HTTPInternalServerError(text="Co-player network unavailable") from exc
+            raise web.HTTPInternalServerError(text="Co-player network unavailable")
 
         def _ts(value: Any) -> float:
             if value is None:
@@ -3614,7 +3614,7 @@ class DashboardServer:
 
         except Exception as exc:
             logging.exception("Failed to load server stats: %s", exc)
-            raise web.HTTPInternalServerError(text="Server stats unavailable") from exc
+            raise web.HTTPInternalServerError(text="Server stats unavailable")
 
     @staticmethod
     def _map_deadlock_hero_row(row: Any) -> dict[str, Any]:
@@ -4485,7 +4485,7 @@ class DashboardServer:
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to load deadlock heroes: %s", exc)
-            raise web.HTTPInternalServerError(text="Deadlock heroes unavailable") from exc
+            raise web.HTTPInternalServerError(text="Deadlock heroes unavailable")
 
     async def _handle_deadlock_config(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=True, require_full_access=True)
@@ -4652,10 +4652,10 @@ class DashboardServer:
                 saved_hero = self._load_deadlock_hero_payload(hero_id, conn=conn)
         except sqlite3.IntegrityError as exc:  # noqa: BLE001
             logger.warning("Deadlock hero upsert conflict: %s", exc)
-            raise web.HTTPConflict(text="Hero with same ID or name already exists") from exc
+            raise web.HTTPConflict(text="Hero with same ID or name already exists")
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to upsert deadlock hero: %s", exc)
-            raise web.HTTPInternalServerError(text="Saving hero failed") from exc
+            raise web.HTTPInternalServerError(text="Saving hero failed")
 
         sync_summary: dict[str, Any] | None = None
         if sync_on_save:
@@ -4712,7 +4712,7 @@ class DashboardServer:
             return self._json({"deleted": bool(deleted), "sync_summary": sync_summary})
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to delete deadlock hero: %s", exc)
-            raise web.HTTPInternalServerError(text="Delete hero failed") from exc
+            raise web.HTTPInternalServerError(text="Delete hero failed")
 
     async def _handle_deadlock_sync_hero(self, request: web.Request) -> web.Response:
         """Run manual sync/copy for one hero without changing admin fields."""
@@ -4812,7 +4812,7 @@ class DashboardServer:
         try:
             payload = await request.json()
         except Exception as exc:  # noqa: BLE001
-            raise web.HTTPBadRequest(text="Invalid JSON payload") from exc
+            raise web.HTTPBadRequest(text="Invalid JSON payload")
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be a JSON object")
 
@@ -4829,7 +4829,7 @@ class DashboardServer:
                 "Tournament team creation rejected: %s",
                 self._safe_log_value(exc),
             )
-            raise web.HTTPBadRequest(text="Invalid team payload") from exc
+            raise web.HTTPBadRequest(text="Invalid team payload")
 
         return self._json(
             {
@@ -4847,7 +4847,7 @@ class DashboardServer:
         try:
             payload = await request.json()
         except Exception as exc:  # noqa: BLE001
-            raise web.HTTPBadRequest(text="Invalid JSON payload") from exc
+            raise web.HTTPBadRequest(text="Invalid JSON payload")
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be a JSON object")
 
@@ -4875,7 +4875,7 @@ class DashboardServer:
                 "Tournament signup assignment rejected: %s",
                 self._safe_log_value(exc),
             )
-            raise web.HTTPBadRequest(text="Invalid team assignment payload") from exc
+            raise web.HTTPBadRequest(text="Invalid team assignment payload")
 
         if not updated:
             raise web.HTTPNotFound(text="Signup not found")
@@ -4891,7 +4891,7 @@ class DashboardServer:
         try:
             payload = await request.json()
         except Exception as exc:  # noqa: BLE001
-            raise web.HTTPBadRequest(text="Invalid JSON payload") from exc
+            raise web.HTTPBadRequest(text="Invalid JSON payload")
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be a JSON object")
 
@@ -5092,7 +5092,7 @@ class DashboardServer:
         try:
             payload = await request.json()
         except Exception as exc:
-            raise web.HTTPBadRequest(text="Invalid JSON payload") from exc
+            raise web.HTTPBadRequest(text="Invalid JSON payload")
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be JSON object")
 
@@ -5125,7 +5125,7 @@ class DashboardServer:
         try:
             payload = await request.json()
         except Exception as exc:
-            raise web.HTTPBadRequest(text="Invalid JSON payload") from exc
+            raise web.HTTPBadRequest(text="Invalid JSON payload")
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be JSON object")
 
@@ -5148,7 +5148,7 @@ class DashboardServer:
         try:
             payload = await request.json()
         except Exception as exc:
-            raise web.HTTPBadRequest(text="Invalid JSON payload") from exc
+            raise web.HTTPBadRequest(text="Invalid JSON payload")
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be JSON object")
 
@@ -5162,7 +5162,7 @@ class DashboardServer:
             team = await tstore.get_or_create_team_async(guild_id, name, created_by=created_by)
         except ValueError as exc:
             # CodeQL: Information exposure through an exception. Using generic message.
-            raise web.HTTPBadRequest(text="Ungültiger Team-Name oder Daten.") from exc
+            raise web.HTTPBadRequest(text="Ungültiger Team-Name oder Daten.")
 
         return self._json(
             self._stringify_ids({"ok": True, "team": team, "created": bool(team.get("created"))}),
@@ -5176,7 +5176,7 @@ class DashboardServer:
         try:
             payload = await request.json()
         except Exception as exc:
-            raise web.HTTPBadRequest(text="Invalid JSON payload") from exc
+            raise web.HTTPBadRequest(text="Invalid JSON payload")
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be JSON object")
 
@@ -5197,7 +5197,7 @@ class DashboardServer:
         try:
             payload = await request.json()
         except Exception as exc:
-            raise web.HTTPBadRequest(text="Invalid JSON payload") from exc
+            raise web.HTTPBadRequest(text="Invalid JSON payload")
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be JSON object")
 
@@ -5212,7 +5212,7 @@ class DashboardServer:
             updated = await tstore.assign_signup_team_async(guild_id, int(user_id), team_id=team_id)
         except ValueError as exc:
             # CodeQL: Information exposure through an exception. Using generic message.
-            raise web.HTTPBadRequest(text="Ungültige Zuweisung oder Team existiert nicht.") from exc
+            raise web.HTTPBadRequest(text="Ungültige Zuweisung oder Team existiert nicht.")
 
         if not updated:
             raise web.HTTPNotFound(text="Signup not found")
@@ -5229,7 +5229,7 @@ class DashboardServer:
         try:
             payload = await request.json()
         except Exception as exc:
-            raise web.HTTPBadRequest(text="Invalid JSON payload") from exc
+            raise web.HTTPBadRequest(text="Invalid JSON payload")
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be JSON object")
 
@@ -5248,7 +5248,7 @@ class DashboardServer:
         try:
             payload = await request.json()
         except Exception as exc:
-            raise web.HTTPBadRequest(text="Invalid JSON payload") from exc
+            raise web.HTTPBadRequest(text="Invalid JSON payload")
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be JSON object")
 
@@ -5946,7 +5946,7 @@ class DashboardServer:
             logging.getLogger(__name__).exception(
                 "Failed reading log file %s: %s", self._safe_log_value(name), exc
             )
-            raise web.HTTPInternalServerError(text="Failed to read log file") from exc
+            raise web.HTTPInternalServerError(text="Failed to read log file")
         modified = _dt.datetime.fromtimestamp(
             stat.st_mtime,
             tz=_dt.UTC,
@@ -6001,12 +6001,12 @@ class DashboardServer:
                 logging.getLogger(__name__).exception(
                     "Error when starting standalone bot (key=%s)", safe_key
                 )
-                raise web.HTTPInternalServerError(text="An internal error has occurred.") from exc
+                raise web.HTTPInternalServerError(text="An internal error has occurred.")
             else:
                 logging.getLogger(__name__).exception(
                     "Unexpected error when starting standalone bot (key=%s)", safe_key
                 )
-                raise web.HTTPInternalServerError(text="An internal error has occurred.") from exc
+                raise web.HTTPInternalServerError(text="An internal error has occurred.")
         return self._json({"standalone": status})
 
     async def _handle_standalone_stop(self, request: web.Request) -> web.Response:
@@ -6025,12 +6025,12 @@ class DashboardServer:
                 logging.getLogger(__name__).exception(
                     "Error when stopping standalone bot (key=%s)", safe_key
                 )
-                raise web.HTTPInternalServerError(text="An internal error has occurred.") from exc
+                raise web.HTTPInternalServerError(text="An internal error has occurred.")
             else:
                 logging.getLogger(__name__).exception(
                     "Unexpected error when stopping standalone bot (key=%s)", safe_key
                 )
-                raise web.HTTPInternalServerError(text="An internal error has occurred.") from exc
+                raise web.HTTPInternalServerError(text="An internal error has occurred.")
         return self._json({"standalone": status})
 
     async def _handle_standalone_restart(self, request: web.Request) -> web.Response:
@@ -6047,11 +6047,11 @@ class DashboardServer:
                 logging.getLogger(__name__).exception(
                     "Error when restarting standalone bot (key=%s)", safe_key
                 )
-                raise web.HTTPInternalServerError(text="An internal error has occurred.") from exc
+                raise web.HTTPInternalServerError(text="An internal error has occurred.")
             logging.getLogger(__name__).exception(
                 "Unexpected error when restarting standalone bot (key=%s)", safe_key
             )
-            raise web.HTTPInternalServerError(text="An internal error has occurred.") from exc
+            raise web.HTTPInternalServerError(text="An internal error has occurred.")
         return self._json({"standalone": status})
 
     async def _handle_standalone_autostart(self, request: web.Request) -> web.Response:
@@ -6070,7 +6070,7 @@ class DashboardServer:
         except Exception as exc:  # noqa: BLE001
             if isinstance(exc, web.HTTPException):
                 raise
-            raise web.HTTPBadRequest(text="Invalid JSON payload") from exc
+            raise web.HTTPBadRequest(text="Invalid JSON payload")
 
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be a JSON object")

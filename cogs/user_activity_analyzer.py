@@ -20,6 +20,12 @@ from datetime import datetime, timedelta
 from typing import Any
 
 import discord
+
+
+def _safe_log_value(value: Any) -> str:
+    """Sanitize values before logging to prevent log injection attacks."""
+    text = "" if value is None else str(value)
+    return text.replace("\r", "\\r").replace("\n", "\\n")
 from discord.ext import commands, tasks
 
 from cogs import privacy_core as privacy
@@ -1171,7 +1177,7 @@ class UserActivityAnalyzer(commands.Cog):
                 (user.id, guild.id, user.display_name),
             )
 
-            logger.info(f"Member ban tracked: {user.display_name} ({user.id}) -> {guild.name}")
+            logger.info("Member ban tracked: %s (%s) -> %s", _safe_log_value(user.display_name), user.id, _safe_log_value(guild.name))
 
         except Exception as e:
             logger.error(f"Error tracking member ban: {e}", exc_info=True)
@@ -1196,7 +1202,7 @@ class UserActivityAnalyzer(commands.Cog):
                 (user.id, guild.id, user.display_name),
             )
 
-            logger.info(f"Member unban tracked: {user.display_name} ({user.id}) -> {guild.name}")
+            logger.info("Member unban tracked: %s (%s) -> %s", _safe_log_value(user.display_name), user.id, _safe_log_value(guild.name))
 
         except Exception as e:
             logger.error(f"Error tracking member unban: {e}", exc_info=True)
@@ -1829,7 +1835,7 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
         # Record Ping
         await self.record_ping(user.id)
 
-        logger.info(f"Smart ping sent to {user.display_name} by {ctx.author.display_name}")
+        logger.info("Smart ping sent to %s by %s", _safe_log_value(user.display_name), _safe_log_value(ctx.author.display_name))
 
     @commands.command(name="checkping")
     async def check_ping_command(self, ctx, user: discord.Member | None = None):

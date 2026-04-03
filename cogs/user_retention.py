@@ -16,6 +16,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from typing import Any
 from datetime import datetime
 
 import discord
@@ -26,6 +27,12 @@ from cogs import privacy_core as privacy
 from service import db as central_db
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_log_value(value: Any) -> str:
+    """Sanitize values before logging to prevent log injection attacks."""
+    text = "" if value is None else str(value)
+    return text.replace("\r", "\\r").replace("\n", "\\n")
 
 
 # ========= Konfiguration =========
@@ -93,7 +100,7 @@ class FeedbackModal(discord.ui.Modal, title="Feedback geben"):
             f"Danke für dein Feedback! Wir werden es uns anschauen und versuchen, **{self.guild_name}** für dich zu verbessern.",
             ephemeral=True,
         )
-        logger.info(f"Feedback erhalten von {interaction.user.id}: {self.feedback.value[:100]}...")
+        logger.info("Feedback erhalten von %s: %s...", interaction.user.id, _safe_log_value(self.feedback.value[:100]))
 
 
 class MissYouView(discord.ui.View):
