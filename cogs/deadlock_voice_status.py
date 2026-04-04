@@ -620,7 +620,7 @@ class DeadlockVoiceStatus(commands.Cog):
             raw_player_count=min(player_count_raw, 6),
             now=now,
         )
-        voice_slots = player_count
+        voice_slots = total_members
         trace_payload["decision"] = {
             "reason": "candidate_selected",
             "candidate_stage": candidate_stage,
