@@ -61,6 +61,17 @@ RANK_TOLERANCE_SUGGESTIONS = 3
 # Output Channel für Vorschläge (LFG Channel)
 SUGGESTION_CHANNEL_ID = 1376335502919335936
 
+# Rolle für Spieler die aktiv gepingt werden wollen wenn jemand sucht
+LFG_NOTIFY_ROLE_ID = 1411798947936342097
+
+# Maximale Pings pro Nachricht (gezielt, nicht Spam)
+MAX_LFG_PINGS = 5
+
+# Aktiviert gezielte @Pings an Träger der LFG-Notify-Rolle
+# Nur pingen wenn Rang passt und Person nicht in Voice ist
+# Aktuell deaktiviert – erst testen wenn Rolle vergeben ist
+ENABLE_LFG_ROLE_PINGS = False
+
 # Rank Definitionen (gleich wie in lfg.py)
 DISCORD_RANK_ROLES: dict[int, tuple[str, int]] = {
     1331457571118387210: ("Initiate", 1),
@@ -99,6 +110,74 @@ class PlayerFinder(commands.Cog):
     async def cog_load(self) -> None:
         self.finder_loop.start()
         log.info("PlayerFinder geladen – Interval: %ss", FINDER_INTERVAL_SECONDS)
+
+    # --- LFG Notify Pings ---
+
+    def _get_lfg_notify_targets(
+        self,
+        guild: discord.Guild,
+        avg_rank: float,
+        lane_member_ids: set[int],
+        steam_presence: dict[int, tuple[str, int | None]],
+        steam_friend_ids: set[int],
+    ) -> list[tuple[discord.Member, float]]:
+        """
+        Gibt Mitglieder der LFG-Notify-Rolle zurück die gepingt werden sollen.
+
+        Kriterien (alles muss zutreffen):
+        - Träger der LFG_NOTIFY_ROLE_ID
+        - Nicht bereits in einem Voice-Channel
+        - Nicht in der aktuellen Lane
+        - Rang passt zur Lane (±RANK_TOLERANCE_SUGGESTIONS) sofern bekannt
+        - Mindestens eines: online auf Discord, in Deadlock-Lobby/-Match
+
+        Sortiert nach Score (höchster zuerst).
+        """
+        role = guild.get_role(LFG_NOTIFY_ROLE_ID)
+        if not role:
+            return []
+
+        results: list[tuple[discord.Member, float]] = []
+        for member in role.members:
+            if member.bot:
+                continue
+            if member.id in lane_member_ids:
+                continue
+            if member.voice and member.voice.channel:
+                continue
+
+            _, rank_val = self._get_user_rank(member)
+            if avg_rank > 0 and rank_val > 0:
+                if abs(rank_val - avg_rank) > RANK_TOLERANCE_SUGGESTIONS:
+                    continue
+
+            # Mindest-Signal: online auf Discord ODER aktiv in Deadlock
+            is_discord_online = member.status in (
+                discord.Status.online,
+                discord.Status.idle,
+            )
+            steam = steam_presence.get(member.id)
+            is_in_deadlock = bool(steam and steam[0] in {"lobby", "match"})
+
+            if not is_discord_online and not is_in_deadlock:
+                continue
+
+            # Score: Lobby > Match > Discord online > idle
+            score = 0.0
+            if steam:
+                stage, _ = steam
+                score += 50.0 if stage == "lobby" else 30.0
+            if member.status == discord.Status.online:
+                score += 15.0
+            elif member.status == discord.Status.idle:
+                score += 8.0
+            if member.id in steam_friend_ids:
+                score += 10.0
+
+            results.append((member, score))
+
+        results.sort(key=lambda x: x[1], reverse=True)
+        return results[:MAX_LFG_PINGS]
 
     # --- Steam Friend Status ---
 
@@ -501,7 +580,7 @@ class PlayerFinder(commands.Cog):
             await output_channel.send(
                 embed=embed,
                 allowed_mentions=discord.AllowedMentions(
-                    users=False,  # Keine Pings - nur freundliche Vorschläge
+                    users=False,
                     roles=False,
                     everyone=False,
                 ),
@@ -511,6 +590,39 @@ class PlayerFinder(commands.Cog):
                 "Spielervorschlag gesendet für %s (%d Kandidaten)",
                 vc.name, len(top),
             )
+
+        # Gezielte Pings an LFG-Notify-Rolle (nur wenn aktiviert)
+        if ENABLE_LFG_ROLE_PINGS:
+            notify_targets = self._get_lfg_notify_targets(
+                guild, avg_rank, lane_member_ids, steam_presence, steam_friend_ids,
+            )
+            if notify_targets:
+                lane_link = f"https://discord.com/channels/{guild.id}/{vc.id}"
+                member_names = ", ".join(m.display_name for m in members[:3])
+                slots_free = (vc.user_limit or 6) - len(members)
+                if slots_free <= 0:
+                    slots_free = 2
+
+                ping_mentions = " ".join(m.mention for m, _ in notify_targets)
+                ping_content = (
+                    f"{ping_mentions}\n"
+                    f"**{member_names}** {'sucht' if len(members) == 1 else 'suchen'} noch "
+                    f"**{slots_free}** {'Mitspieler' if slots_free != 1 else 'Mitspieler'} "
+                    f"in **{vc.name}** ({lane_label})! [{lane_label} beitreten]({lane_link})"
+                )
+                await output_channel.send(
+                    content=ping_content,
+                    allowed_mentions=discord.AllowedMentions(
+                        users=True,
+                        roles=False,
+                        everyone=False,
+                    ),
+                    suppress_embeds=True,
+                )
+                log.info(
+                    "LFG-Notify Pings gesendet für %s (%d Targets)",
+                    vc.name, len(notify_targets),
+                )
 
     def _build_suggestion_embed(
         self,
