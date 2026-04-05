@@ -59,7 +59,7 @@ WEIGHT_ACTIVITY = 15
 
 # Lane Routing Toleranzen
 LANE_RANK_TOLERANCE_RANKED = 2.0    # Ranked: ±2 Ränge
-LANE_RANK_TOLERANCE_CASUAL = 4.0    # Casual: ±4 Ränge
+LANE_RANK_TOLERANCE_CASUAL = 3.0    # Casual: ±3 Ränge (war 4.0 - verhindert Initiate→Phantom)
 COPLAYER_IN_LANE_BONUS = 40.0       # Score-Bonus wenn Co-Player in Lane
 COPLAYER_IN_LANE_SESSIONS_THRESHOLD = 2
 ACTIVITY_UPCOMING_WINDOW_HOURS = 2
@@ -435,12 +435,27 @@ class SmartLFGAgent(commands.Cog):
                 and self._rank_fits_lane(rank_value, rank_sub, lane)
             ]
         else:
-            # Casual + New Player (wenn Low Elo)
-            eligible = [
-                lane for lane in lanes
-                if lane.label in ("Casual", "New Player") and lane.has_space
-                and self._rank_fits_lane(rank_value, rank_sub, lane)
-            ]
+            # Neue Spieler (Initiate-Arcanist): primär New Player Lanes
+            if rank_value > 0 and rank_value <= NEW_PLAYER_MAX_RANK:
+                eligible = [
+                    lane for lane in lanes
+                    if lane.label == "New Player" and lane.has_space
+                    and self._rank_fits_lane(rank_value, rank_sub, lane)
+                ]
+                # Fallback auf Casual nur wenn keine New Player Lane verfügbar
+                if not eligible:
+                    eligible = [
+                        lane for lane in lanes
+                        if lane.label in ("Casual", "New Player") and lane.has_space
+                        and self._rank_fits_lane(rank_value, rank_sub, lane)
+                    ]
+            else:
+                # Casual + New Player (wenn Low Elo)
+                eligible = [
+                    lane for lane in lanes
+                    if lane.label in ("Casual", "New Player") and lane.has_space
+                    and self._rank_fits_lane(rank_value, rank_sub, lane)
+                ]
         log_lines.append(f"Rank-Filter: {len(eligible)} Lanes passen")
 
         # Schritt 4: Co-Player Check
@@ -494,6 +509,9 @@ class SmartLFGAgent(commands.Cog):
             elif ranked_intent:
                 result.suggested_category_id = RANKED_CATEGORY_ID
                 result.suggested_category_label = "Ranked"
+            elif rank_value > 0 and rank_value <= NEW_PLAYER_MAX_RANK:
+                result.suggested_category_id = NEW_PLAYER_CATEGORY_ID
+                result.suggested_category_label = "New Player"
             else:
                 result.suggested_category_id = CASUAL_CATEGORY_ID
                 result.suggested_category_label = "Casual"
@@ -1396,8 +1414,35 @@ class SmartLFGAgent(commands.Cog):
         rank_display: str,
         is_new_player: bool,
         has_active_lobbys: bool,
+        new_player_lane_occupied: bool = False,
     ) -> str:
         rank_part = f" ({rank_display})" if rank_display and rank_display != "Unbekannt" else ""
+
+        # Neue Spieler bekommen spezielle, einladende Texte
+        if is_new_player:
+            if has_active_lobbys and new_player_lane_occupied:
+                return (
+                    f"Hey {user_mention}!{rank_part}\n"
+                    "Willkommen! In der **Neue Spieler Lane** sind schon Leute unterwegs "
+                    "— spring rein und spiel mit! Dort triffst du andere, die auch gerade "
+                    "anfangen oder entspannt spielen wollen:"
+                )
+            if has_active_lobbys:
+                return (
+                    f"Hey {user_mention}!{rank_part}\n"
+                    "Willkommen! Ich hab Lobbys gefunden, die gut zu dir passen. "
+                    "Schau am besten auch mal in die **Neue Spieler Lane** — "
+                    "da sind alle super nett und helfen gerne weiter:"
+                )
+            # Keine aktive Lobby
+            return (
+                f"Hey {user_mention}!{rank_part}\n"
+                "Willkommen! Gerade ist die **Neue Spieler Lane** noch leer, aber das ist "
+                "kein Problem — mach sie einfach auf! Sobald du drin bist, sehen andere "
+                "dass jemand da ist und es kommen erfahrungsgemäß schnell Leute dazu. "
+                "Trau dich ruhig, hier sind alle freundlich! \U0001f44b"
+            )
+
         if has_active_lobbys:
             return (
                 f"Hey {user_mention}!{rank_part}\n"
@@ -1456,7 +1501,10 @@ class SmartLFGAgent(commands.Cog):
             rank_diff = abs(
                 lane.avg_rank_value - (rank_value + (rank_sub or 5) / 10.0)
             )
-            if has_explicit_rank:
+            # Starke Strafe für extreme Rang-Unterschiede (>3 Ränge)
+            if rank_diff > 3.0:
+                score -= 500.0
+            elif has_explicit_rank:
                 score += max(0.0, 140.0 - rank_diff * 35.0)
             else:
                 score += max(0.0, 80.0 - rank_diff * 20.0)
@@ -1507,6 +1555,13 @@ class SmartLFGAgent(commands.Cog):
 
             if rank_value > 0 and not self._rank_fits_lane(rank_value, rank_sub, lane):
                 continue
+
+            # Harter Filter: Keine Vorschläge mit extremem Rang-Unterschied (>3 Ränge)
+            # Verhindert z.B. Initiate (1) → Phantom (9) Vorschläge
+            if rank_value > 0 and lane.avg_rank_value > 0:
+                rank_diff = abs(rank_value - lane.avg_rank_value)
+                if rank_diff > 3:
+                    continue
 
             candidates.append(lane)
 
@@ -1739,6 +1794,11 @@ class SmartLFGAgent(commands.Cog):
                     candidate["discord_active"] = True
 
         # 7. Embed aufbauen
+        # Prüfe ob Neue Spieler Lane besetzt ist (für neue Spieler Intro-Text)
+        new_player_lane_occupied = any(
+            lane.label == "New Player" and lane.member_count > 0 for lane in lanes
+        )
+
         embed = discord.Embed(
             title="\U0001f3ae Lobby-Finder",
             description=self._compose_intro_text(
@@ -1746,6 +1806,7 @@ class SmartLFGAgent(commands.Cog):
                 rank_display,
                 is_new_player,
                 has_active,
+                new_player_lane_occupied=new_player_lane_occupied,
             ),
             color=discord.Color.orange(),
         )
@@ -1829,6 +1890,10 @@ class SmartLFGAgent(commands.Cog):
 
         # Nur im LFG-Channel lauschen
         if message.channel.id != LFG_CHANNEL_ID:
+            return
+
+        # Voice-Check: Wenn der User bereits in einem Voice-Channel ist, braucht er kein LFG
+        if message.author.voice and message.author.voice.channel:
             return
 
         # Keyword-only Intent Check (kein AI)
