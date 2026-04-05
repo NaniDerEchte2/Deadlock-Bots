@@ -51,6 +51,9 @@ class DeadlockVoiceStatus(commands.Cog):
         self.channel_states: dict[int, dict[str, object]] = {}
         self._task: asyncio.Task[None] | None = None
         self.last_observation: dict[int, dict[str, Any]] = {}
+        # Cache: channel_id -> (slots, timestamp). Stores party size from lobby phase
+        # so it can be reused during the match when localized strings no longer show (X/Y).
+        self._localized_slots_cache: dict[int, tuple[int, float]] = {}
 
         trace_env = (os.getenv("DEADLOCK_VS_TRACE") or "1").strip().lower()
         self.trace_enabled = trace_env not in {"0", "false", "no", "off"}
@@ -506,6 +509,7 @@ class DeadlockVoiceStatus(commands.Cog):
             "decision": {},
         }
         if total_members == 0:
+            self._localized_slots_cache.pop(channel.id, None)
             trace_payload["decision"] = {"reason": "empty_channel"}
             await self._apply_channel_name(
                 channel,
@@ -621,6 +625,13 @@ class DeadlockVoiceStatus(commands.Cog):
             now=now,
         )
         localized_slots = self._parse_voice_slots_from_localized(candidate_steam_ids, presence_map)
+        _SLOTS_CACHE_TTL = 14400  # 4h – long enough to cover a full match
+        if localized_slots:
+            self._localized_slots_cache[channel.id] = (localized_slots, time.time())
+        else:
+            cached = self._localized_slots_cache.get(channel.id)
+            if cached and (time.time() - cached[1]) < _SLOTS_CACHE_TTL:
+                localized_slots = cached[0]
         voice_slots = max(player_count, localized_slots) if localized_slots else total_members
         trace_payload["decision"] = {
             "reason": "candidate_selected",
