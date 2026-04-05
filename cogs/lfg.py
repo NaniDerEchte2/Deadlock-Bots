@@ -46,8 +46,8 @@ ACTIVITY_LOOKBACK_DAYS = 14
 MIN_ACTIVITY_SCORE_SESSIONS = 3
 MIN_TIME_MATCH_SCORE = 0.5
 # Player-Matching bleibt im Code, ist für die User-Ausgabe aber deaktiviert.
-ENABLE_PLAYER_SUGGESTIONS = False
-ENABLE_PLAYER_PINGS = False
+ENABLE_PLAYER_SUGGESTIONS = True
+ENABLE_PLAYER_PINGS = True
 
 # Scoring Weights (angepasst auf neues Schema)
 WEIGHT_RANK = 20
@@ -735,6 +735,16 @@ class SmartLFGAgent(commands.Cog):
 
         return mapping
 
+    async def _get_steam_friend_ids(self) -> set[int]:
+        """Gibt Discord-User-IDs zurück die den Bot als Steam-Freund haben."""
+        rows = await db.query_all_async(
+            """
+            SELECT DISTINCT user_id FROM steam_links
+            WHERE verified = 1 AND is_steam_friend = 1 AND user_id > 0
+            """
+        )
+        return {int(r["user_id"]) for r in rows}
+
     async def _get_online_steam_users(
         self, steam_ids: set[str]
     ) -> dict[str, tuple[str, int | None]]:
@@ -1106,6 +1116,7 @@ class SmartLFGAgent(commands.Cog):
         if not steam_links:
             return []
 
+        steam_friend_ids = await self._get_steam_friend_ids()
         co_player_stats = await self._fetch_co_player_stats(author.id)
 
         target_rank = author_rank_value
@@ -1221,6 +1232,9 @@ class SmartLFGAgent(commands.Cog):
                 if discord_id in co_lane_member_ids:
                     co_lane_bonus = COPLAYER_IN_LANE_BONUS
 
+            # Steam-Freund des Bots → verifiziertere Verbindung, kleiner Bonus
+            steam_friend_bonus = 10.0 if discord_id in steam_friend_ids else 0.0
+
             score = (
                 rank_score * WEIGHT_RANK
                 + time_score * WEIGHT_TIME
@@ -1229,6 +1243,7 @@ class SmartLFGAgent(commands.Cog):
                 + presence_score * WEIGHT_PRESENCE
                 + activity_score * WEIGHT_ACTIVITY
                 + co_lane_bonus
+                + steam_friend_bonus
             )
 
             candidates.append(
@@ -1243,6 +1258,7 @@ class SmartLFGAgent(commands.Cog):
                     "time_score": time_score,
                     "activity_sessions": activity_sessions,
                     "discord_active": is_discord_active,
+                    "is_steam_friend": discord_id in steam_friend_ids,
                 }
             )
 
@@ -1291,7 +1307,8 @@ class SmartLFGAgent(commands.Cog):
             if is_discord_active:
                 # Auf Discord aktiv → nur namentlich erwähnen, kein Ping
                 rank_name = str(cand.get("rank_name", ""))
-                label = f"{member.display_name}" + (f" ({rank_name})" if rank_name else "")
+                friend_badge = " 🤝" if cand.get("is_steam_friend") else ""
+                label = f"{member.display_name}{friend_badge}" + (f" ({rank_name})" if rank_name else "")
                 discord_active_names.append(label)
             elif stage == "lobby":
                 ping_in_lobby.append(member.mention)
@@ -1834,6 +1851,23 @@ class SmartLFGAgent(commands.Cog):
             )
             for name, value in staging_suggestions:
                 embed.add_field(name=name, value=value, inline=False)
+
+        # Mitspieler-Vorschläge aus Player Matching ins Embed
+        if matching_players:
+            ping_lines, visible_lines, lobby_cnt, match_cnt = self._build_player_lines(
+                guild, matching_players
+            )
+            player_field_parts: list[str] = []
+            if ping_lines:
+                player_field_parts.extend(ping_lines)
+            if visible_lines:
+                player_field_parts.append("💬 Auf Discord: " + visible_lines[0])
+            if player_field_parts:
+                embed.add_field(
+                    name="\U0001f465 Mögliche Mitspieler",
+                    value="\n".join(player_field_parts),
+                    inline=False,
+                )
 
         await output_channel.send(
             embed=embed,
