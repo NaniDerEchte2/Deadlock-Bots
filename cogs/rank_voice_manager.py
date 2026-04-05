@@ -11,11 +11,11 @@ from discord.ext import commands
 
 from service import db
 from service.config import settings
+from service.db import db_path
 from service.deadlock_voice_cohort import (
     select_best_deadlock_presence,
     select_deadlock_channel_cohort,
 )
-from service.db import db_path
 
 try:
     from cogs.tempvoice.core import MINRANK_CATEGORY_IDS
@@ -442,7 +442,9 @@ class RolePermissionVoiceManager(commands.Cog):
         presence_map = {str(row["steam_id"]): row for row in presence_rows}
         return steam_map, presence_map
 
-    async def get_rank_relevant_members(self, channel: discord.VoiceChannel) -> list[discord.Member]:
+    async def get_rank_relevant_members(
+        self, channel: discord.VoiceChannel
+    ) -> list[discord.Member]:
         members = [member for member in channel.members if not member.bot]
         if not members:
             return []
@@ -692,7 +694,9 @@ class RolePermissionVoiceManager(commands.Cog):
 
             anchor = self.get_channel_anchor(channel)
             if not anchor:
-                logger.debug("Kein Anker für %s (%s) gefunden.", _safe_log_value(channel.name), channel.id)
+                logger.debug(
+                    "Kein Anker für %s (%s) gefunden.", _safe_log_value(channel.name), channel.id
+                )
                 return
 
             # Score-Bereich abrufen (±9 Punkte = ±1.5 Tiers)
@@ -746,7 +750,11 @@ class RolePermissionVoiceManager(commands.Cog):
                 )
                 self._mark_permission_write(channel.id)
             except discord.HTTPException as e:
-                logger.error("Batch Permission Update fehlgeschlagen für %s: %s", _safe_log_value(channel.name), e)
+                logger.error(
+                    "Batch Permission Update fehlgeschlagen für %s: %s",
+                    _safe_log_value(channel.name),
+                    e,
+                )
                 # Fallback: Falls Batch fehlschlägt (selten), versuchen wir es einzeln
                 await self._fallback_individual_permissions(
                     channel, allowed_role_ids, major_role_ids
@@ -1092,7 +1100,13 @@ class RolePermissionVoiceManager(commands.Cog):
     async def remove_channel_anchor(self, channel: discord.VoiceChannel):
         if channel.id in self.channel_anchors:
             old = self.channel_anchors.pop(channel.id)
-            logger.info("🔗 Anker entfernt für %s: %s %s (%s)", _safe_log_value(channel.name), _safe_log_value(old[1]), old[5], old[2])
+            logger.info(
+                "🔗 Anker entfernt für %s: %s %s (%s)",
+                _safe_log_value(channel.name),
+                _safe_log_value(old[1]),
+                old[5],
+                old[2],
+            )
             await self._db_delete_anchor(channel)
 
     def is_channel_system_enabled(self, channel: discord.VoiceChannel) -> bool:

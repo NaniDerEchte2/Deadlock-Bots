@@ -25,9 +25,7 @@ log = logging.getLogger("RulesPanel")
 
 
 # ------------------------------ Helpers ------------------------------ #
-async def _send_interaction_notice(
-    interaction: discord.Interaction, content: str
-) -> None:
+async def _send_interaction_notice(interaction: discord.Interaction, content: str) -> None:
     try:
         if not interaction.response.is_done():
             await interaction.response.send_message(content, ephemeral=True)
@@ -144,15 +142,11 @@ async def _create_user_thread(
             )
             return None
         log.error("Thread creation failed: %r", exc)
-        await _send_interaction_notice(
-            interaction, "❌ Konnte keinen Thread erstellen."
-        )
+        await _send_interaction_notice(interaction, "❌ Konnte keinen Thread erstellen.")
         return None
     except Exception as e:
         log.error("Thread creation failed: %r", e)
-        await _send_interaction_notice(
-            interaction, "❌ Konnte keinen Thread erstellen."
-        )
+        await _send_interaction_notice(interaction, "❌ Konnte keinen Thread erstellen.")
         return None
 
 

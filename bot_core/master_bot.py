@@ -304,7 +304,9 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
         path = self._command_sync_state_path()
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(state, ensure_ascii=True, sort_keys=True, indent=2), encoding="utf-8")
+            path.write_text(
+                json.dumps(state, ensure_ascii=True, sort_keys=True, indent=2), encoding="utf-8"
+            )
         except Exception:
             logging.warning("Failed to persist command sync state at %s", path, exc_info=True)
 
@@ -401,7 +403,9 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
             try:
                 current_hash = self._command_sync_hash(guild_ids)
             except Exception:
-                logging.warning("Failed to build app-command hash; falling back to forced sync.", exc_info=True)
+                logging.warning(
+                    "Failed to build app-command hash; falling back to forced sync.", exc_info=True
+                )
                 current_hash = ""
                 force = True
             state = self._read_command_sync_state()
@@ -409,7 +413,9 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
             previous_scope = self._normalize_command_sync_scope(str(state.get("scope") or "both"))
 
             if mode == "disabled" and not force:
-                logging.info("App-command sync disabled (reason=%s, scope=%s)", reason, normalized_scope)
+                logging.info(
+                    "App-command sync disabled (reason=%s, scope=%s)", reason, normalized_scope
+                )
                 return {
                     "status": "skipped",
                     "scope": normalized_scope,
@@ -526,7 +532,9 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
                     errors["global"] = str(exc)
                     logging.error("Global app-command sync failed (reason=%s): %s", reason, exc)
 
-            success_count = (1 if include_global and "global" not in errors else 0) + len(guild_counts)
+            success_count = (1 if include_global and "global" not in errors else 0) + len(
+                guild_counts
+            )
             if errors and success_count > 0:
                 status = "partial"
             elif errors:
@@ -539,7 +547,7 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
                 self._write_command_sync_state(
                     {
                         "hash": current_hash,
-                        "updated_at": _dt.datetime.now(tz=_dt.timezone.utc).isoformat(),
+                        "updated_at": _dt.datetime.now(tz=_dt.UTC).isoformat(),
                         "reason": reason,
                         "scope": normalized_scope,
                         "mode": mode,

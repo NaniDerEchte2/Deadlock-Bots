@@ -16,7 +16,9 @@ class _FakeResolver:
         self.token_error_handler = token_error_handler
 
     def resolve_auth_state(self, discord_user_id: str):
-        self.__class__.calls.append({"method": "resolve_auth_state", "discord_user_id": discord_user_id})
+        self.__class__.calls.append(
+            {"method": "resolve_auth_state", "discord_user_id": discord_user_id}
+        )
         return self.__class__.state
 
     def resolve_block_state(self, *, discord_user_id=None, twitch_login=None):
@@ -100,9 +102,7 @@ class TwitchPartnerIntegrationTests(unittest.TestCase):
             raid_blacklisted=True,
         )
 
-        blocked, reason = integration.check_onboarding_blocklist(
-            discord_user_id=265152027863023617
-        )
+        blocked, reason = integration.check_onboarding_blocklist(discord_user_id=265152027863023617)
 
         self.assertTrue(blocked)
         self.assertEqual(reason, "twitch_raid_blacklist fuer masteriofps")
@@ -120,4 +120,3 @@ class TwitchPartnerIntegrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

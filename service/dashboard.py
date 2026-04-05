@@ -1115,7 +1115,9 @@ class DashboardServer:
         session = self._get_discord_auth_session(request) if self._discord_auth_required else None
         user_id = session.get("user_id") if session else None
         access_level = str(session.get("access_level", "")) if session else ""
-        display_name = str(session.get("display_name") or session.get("username") or "") if session else ""
+        display_name = (
+            str(session.get("display_name") or session.get("username") or "") if session else ""
+        )
         safe_changes = self._safe_log_value(
             json.dumps(self._sanitize(changes or {}), ensure_ascii=True, separators=(",", ":"))
         )
@@ -3272,16 +3274,17 @@ class DashboardServer:
                     public_groups[public_kind]["count"] += 1
                 elif kind_raw in {"vanity", "vanity_url", "public_vanity"}:
                     public_kind = "vanity"
-                    vanity_key = f"vanity:{invite_code.lower()}" if invite_code else "vanity:unknown"
+                    vanity_key = (
+                        f"vanity:{invite_code.lower()}" if invite_code else "vanity:unknown"
+                    )
                     if vanity_key not in public_groups:
                         code_label = f"discord.gg/{invite_code}" if invite_code else "Vanity-Link"
                         public_groups[vanity_key] = {
                             "kind": "vanity",
                             "label": code_label,
                             "invite_code": invite_code or None,
-                            "invite_url": invite_url or (
-                                f"https://discord.gg/{invite_code}" if invite_code else None
-                            ),
+                            "invite_url": invite_url
+                            or (f"https://discord.gg/{invite_code}" if invite_code else None),
                             "count": 0,
                         }
                     public_groups[vanity_key]["count"] += 1
@@ -3369,8 +3372,10 @@ class DashboardServer:
                 inviter_id_bi = self._coerce_int(metadata.get("inviter_id"), None)
                 inviter_name_bi = str(metadata.get("inviter_name") or "").strip()
                 key_bi = (
-                    f"id:{inviter_id_bi}" if inviter_id_bi is not None
-                    else f"name:{inviter_name_bi.lower()}" if inviter_name_bi
+                    f"id:{inviter_id_bi}"
+                    if inviter_id_bi is not None
+                    else f"name:{inviter_name_bi.lower()}"
+                    if inviter_name_bi
                     else "bot_other"
                 )
                 label_bi = inviter_name_bi or (
@@ -3403,7 +3408,9 @@ class DashboardServer:
                     source_label = f"Persoenlich: {personal_label or 'Invite-Link'}"
                 elif bucket == "bot_invite":
                     inviter_name_bi = str(metadata.get("inviter_name") or "").strip()
-                    source_label = f"Bot Invite: {inviter_name_bi}" if inviter_name_bi else "Bot Invite"
+                    source_label = (
+                        f"Bot Invite: {inviter_name_bi}" if inviter_name_bi else "Bot Invite"
+                    )
                 else:
                     source_label = "Unbekannt"
 
@@ -3864,7 +3871,11 @@ class DashboardServer:
         if builds:
             submitted_build_ids = [int(build["build_id"]) for build in builds]
             placeholders = ", ".join("?" for _ in submitted_build_ids)
-            delete_sql = "DELETE FROM deadlock_hero_builds WHERE hero_id = ? AND build_id NOT IN (" + placeholders + ")"
+            delete_sql = (
+                "DELETE FROM deadlock_hero_builds WHERE hero_id = ? AND build_id NOT IN ("
+                + placeholders
+                + ")"
+            )
             conn.execute(
                 delete_sql,
                 (hero_id, *submitted_build_ids),
@@ -4055,7 +4066,9 @@ class DashboardServer:
             (hero_id,),
         )
 
-        build_ids = [int(row["build_id"]) for row in build_rows if self._coerce_int(row["build_id"], None)]
+        build_ids = [
+            int(row["build_id"]) for row in build_rows if self._coerce_int(row["build_id"], None)
+        ]
         summary: dict[str, Any] = {
             "requested": len(build_ids),
             "refreshed": 0,
@@ -4330,7 +4343,9 @@ class DashboardServer:
                     ]
                     updated_rows = int(
                         conn.execute(
-                            "UPDATE hero_build_clones SET " + set_sql + " WHERE origin_hero_build_id = ? AND target_language = ?",
+                            "UPDATE hero_build_clones SET "
+                            + set_sql
+                            + " WHERE origin_hero_build_id = ? AND target_language = ?",
                             update_params,
                         ).rowcount
                         or 0
@@ -4346,7 +4361,13 @@ class DashboardServer:
                     safe_columns = [self._validate_sql_identifier(k) for k in insert_payload.keys()]
                     columns = ", ".join(safe_columns)
                     placeholders = ", ".join("?" for _ in insert_payload)
-                    insert_sql = "INSERT INTO hero_build_clones (" + columns + ") VALUES (" + placeholders + ")"
+                    insert_sql = (
+                        "INSERT INTO hero_build_clones ("
+                        + columns
+                        + ") VALUES ("
+                        + placeholders
+                        + ")"
+                    )
                     conn.execute(
                         insert_sql,
                         tuple(insert_payload.values()),
@@ -4435,9 +4456,7 @@ class DashboardServer:
         """List all Deadlock heroes including their build snapshots."""
         self._check_auth(request, required=True, require_full_access=True)
         try:
-            global_target_build_name = (
-                db.get_kv("deadlock", "global_target_build_name") or ""
-            )
+            global_target_build_name = db.get_kv("deadlock", "global_target_build_name") or ""
             hero_rows = db.query_all(
                 """
                 SELECT
@@ -4490,11 +4509,7 @@ class DashboardServer:
     async def _handle_deadlock_config(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=True, require_full_access=True)
         return self._json(
-            {
-                "global_target_build_name": (
-                    db.get_kv("deadlock", "global_target_build_name") or ""
-                )
-            }
+            {"global_target_build_name": (db.get_kv("deadlock", "global_target_build_name") or "")}
         )
 
     async def _handle_deadlock_config_update(self, request: web.Request) -> web.Response:
@@ -4606,7 +4621,9 @@ class DashboardServer:
                 resolved_target_build_name_override = (
                     target_build_name_override
                     if has_target_build_name_override
-                    else str(existing["target_build_name_override"] or "") if existing else ""
+                    else str(existing["target_build_name_override"] or "")
+                    if existing
+                    else ""
                 )
                 is_active = (
                     bool(parsed_is_active)
@@ -4811,7 +4828,7 @@ class DashboardServer:
 
         try:
             payload = await request.json()
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             raise web.HTTPBadRequest(text="Invalid JSON payload")
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be a JSON object")
@@ -4846,7 +4863,7 @@ class DashboardServer:
 
         try:
             payload = await request.json()
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             raise web.HTTPBadRequest(text="Invalid JSON payload")
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be a JSON object")
@@ -4890,7 +4907,7 @@ class DashboardServer:
 
         try:
             payload = await request.json()
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             raise web.HTTPBadRequest(text="Invalid JSON payload")
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be a JSON object")
@@ -5091,7 +5108,7 @@ class DashboardServer:
 
         try:
             payload = await request.json()
-        except Exception as exc:
+        except Exception:
             raise web.HTTPBadRequest(text="Invalid JSON payload")
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be JSON object")
@@ -5124,7 +5141,7 @@ class DashboardServer:
 
         try:
             payload = await request.json()
-        except Exception as exc:
+        except Exception:
             raise web.HTTPBadRequest(text="Invalid JSON payload")
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be JSON object")
@@ -5147,7 +5164,7 @@ class DashboardServer:
 
         try:
             payload = await request.json()
-        except Exception as exc:
+        except Exception:
             raise web.HTTPBadRequest(text="Invalid JSON payload")
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be JSON object")
@@ -5160,7 +5177,7 @@ class DashboardServer:
 
         try:
             team = await tstore.get_or_create_team_async(guild_id, name, created_by=created_by)
-        except ValueError as exc:
+        except ValueError:
             # CodeQL: Information exposure through an exception. Using generic message.
             raise web.HTTPBadRequest(text="Ungültiger Team-Name oder Daten.")
 
@@ -5175,7 +5192,7 @@ class DashboardServer:
 
         try:
             payload = await request.json()
-        except Exception as exc:
+        except Exception:
             raise web.HTTPBadRequest(text="Invalid JSON payload")
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be JSON object")
@@ -5196,7 +5213,7 @@ class DashboardServer:
 
         try:
             payload = await request.json()
-        except Exception as exc:
+        except Exception:
             raise web.HTTPBadRequest(text="Invalid JSON payload")
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be JSON object")
@@ -5210,7 +5227,7 @@ class DashboardServer:
 
         try:
             updated = await tstore.assign_signup_team_async(guild_id, int(user_id), team_id=team_id)
-        except ValueError as exc:
+        except ValueError:
             # CodeQL: Information exposure through an exception. Using generic message.
             raise web.HTTPBadRequest(text="Ungültige Zuweisung oder Team existiert nicht.")
 
@@ -5228,7 +5245,7 @@ class DashboardServer:
 
         try:
             payload = await request.json()
-        except Exception as exc:
+        except Exception:
             raise web.HTTPBadRequest(text="Invalid JSON payload")
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be JSON object")
@@ -5247,7 +5264,7 @@ class DashboardServer:
 
         try:
             payload = await request.json()
-        except Exception as exc:
+        except Exception:
             raise web.HTTPBadRequest(text="Invalid JSON payload")
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be JSON object")
@@ -6185,9 +6202,7 @@ class DashboardServer:
         guild = self.bot.guilds[0]
 
         # Count members in voice channels
-        voice_count = sum(
-            len(vc.members) for vc in guild.voice_channels if vc.members
-        )
+        voice_count = sum(len(vc.members) for vc in guild.voice_channels if vc.members)
 
         # Build response
         try:
@@ -6203,7 +6218,7 @@ class DashboardServer:
             "member_count": guild.member_count or len(guild.members),
             "online_count": online_count,
             "voice_count": voice_count,
-            "cached_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            "cached_at": _dt.datetime.now(_dt.UTC).isoformat(),
         }
 
         # Update cache
