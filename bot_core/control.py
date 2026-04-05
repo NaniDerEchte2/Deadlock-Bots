@@ -410,7 +410,9 @@ class MasterControlCog(commands.Cog):
         color = (
             0x00FF00
             if status in {"synced", "skipped"}
-            else 0xFFAA00 if status == "partial" else 0xFF0000
+            else 0xFFAA00
+            if status == "partial"
+            else 0xFF0000
         )
         details = (
             f"Status: `{status}`\n"

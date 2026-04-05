@@ -93,9 +93,7 @@ def _normalize_base_url(value: str, *, allow_non_loopback: bool = False) -> str:
     if not host:
         raise ValueError("base_url is invalid")
     if not allow_non_loopback and not _is_loopback_host(host):
-        raise ValueError(
-            "base_url host must resolve to loopback unless explicitly allowed"
-        )
+        raise ValueError("base_url host must resolve to loopback unless explicitly allowed")
 
     path = (parsed.path or "").rstrip("/")
     internal_base = TWITCH_INTERNAL_API_BASE_PATH.rstrip("/")
@@ -295,7 +293,9 @@ class TwitchLiveInternalApiClient:
         payload = {
             "streamer_login": _normalize_streamer_login(streamer_login),
             "tracking_token": _normalize_tracking_token(tracking_token),
-            "discord_user_id": str(_coerce_positive_int(discord_user_id, field_name="discord_user_id")),
+            "discord_user_id": str(
+                _coerce_positive_int(discord_user_id, field_name="discord_user_id")
+            ),
             "discord_username": str(discord_username or "").strip(),
             "guild_id": (
                 str(_coerce_positive_int(guild_id, field_name="guild_id"))
@@ -422,7 +422,7 @@ class TwitchLiveBridgeCog(commands.Cog):
 
         self._previous_resolver = getattr(self.bot, "resolve_master_broker_view_spec", None)
         self._resolver_callback = self.resolve_master_broker_view_spec
-        setattr(self.bot, "resolve_master_broker_view_spec", self._resolver_callback)
+        self.bot.resolve_master_broker_view_spec = self._resolver_callback
         self._resolver_installed = True
 
         try:
@@ -450,7 +450,7 @@ class TwitchLiveBridgeCog(commands.Cog):
                 except AttributeError:
                     pass
             else:
-                setattr(self.bot, "resolve_master_broker_view_spec", self._previous_resolver)
+                self.bot.resolve_master_broker_view_spec = self._previous_resolver
         self._resolver_installed = False
         self._resolver_callback = None
 
@@ -566,8 +566,7 @@ class TwitchLiveBridgeCog(commands.Cog):
                 )
             except Exception:
                 log.exception(
-                    "Twitch live bridge could not persist click "
-                    "(streamer=%s message=%s user=%s)",
+                    "Twitch live bridge could not persist click (streamer=%s message=%s user=%s)",
                     view.streamer_login,
                     message_source,
                     getattr(interaction.user, "id", None),

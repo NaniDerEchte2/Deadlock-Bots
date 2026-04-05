@@ -129,7 +129,9 @@ def select_deadlock_channel_cohort(
 
     candidate: dict[str, Any] | None = None
 
-    def _consider(stage: str, server_id: str | None, member_ids: list[int], minute_values: list[int]) -> None:
+    def _consider(
+        stage: str, server_id: str | None, member_ids: list[int], minute_values: list[int]
+    ) -> None:
         nonlocal candidate
         if len(member_ids) < min_active_players:
             return

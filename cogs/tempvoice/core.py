@@ -23,6 +23,7 @@ def _safe_log_value(value: Any) -> str:
     text = "" if value is None else str(value)
     return text.replace("\r", "\\r").replace("\n", "\\n")
 
+
 _cfg = get_guild_config()
 
 # --------- IDs / Konfiguration ---------
@@ -1156,7 +1157,9 @@ class TempVoiceCore(commands.Cog):
         members.sort(key=lambda m: (tsmap.get(m.id, float("inf")), m.id))
         return [(member, tsmap.get(member.id)) for member in members]
 
-    def _describe_lane_member_order(self, lane: discord.VoiceChannel, *, limit: int = 5) -> list[str]:
+    def _describe_lane_member_order(
+        self, lane: discord.VoiceChannel, *, limit: int = 5
+    ) -> list[str]:
         now_ts = datetime.utcnow().timestamp()
         described: list[str] = []
         for idx, (member, joined_ts) in enumerate(self._sorted_lane_members_by_join(lane), start=1):
@@ -1166,12 +1169,12 @@ class TempVoiceCore(commands.Cog):
                 connected_for = "unknown"
             else:
                 connected_for = str(max(0, int(now_ts - joined_ts)))
-            described.append(
-                f"{idx}:{member.display_name}:{member.id}:connected_s={connected_for}"
-            )
+            described.append(f"{idx}:{member.display_name}:{member.id}:connected_s={connected_for}")
         return described
 
-    def evaluate_owner_claim(self, lane: discord.VoiceChannel, member: discord.Member) -> dict[str, Any]:
+    def evaluate_owner_claim(
+        self, lane: discord.VoiceChannel, member: discord.Member
+    ) -> dict[str, Any]:
         now_ts = datetime.utcnow().timestamp()
         owner_id = self.lane_owner.get(lane.id)
         owner_member = lane.guild.get_member(owner_id) if owner_id else None
