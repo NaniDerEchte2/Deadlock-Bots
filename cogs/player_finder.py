@@ -473,12 +473,16 @@ class PlayerFinder(commands.Cog):
             elif member.status == discord.Status.dnd:
                 score += 5
 
-            # Steam-Freunde ohne jede Aktivität und offline überspringen –
-            # zu wenig Signal für eine sinnvolle Empfehlung
-            if cand.get("steam_friend_only") and uid not in steam_friend_ids:
-                continue
-            if cand.get("steam_friend_only") and score < 30:
-                continue
+            # Steam-Freunde ohne Voice-History: nur vorschlagen wenn sie
+            # gerade aktiv in Deadlock spielen (Lobby oder Match),
+            # aber NICHT im Discord-Voice sind – sonst kein Signal.
+            if cand.get("steam_friend_only"):
+                steam = steam_presence.get(uid)
+                if not steam:
+                    continue
+                stage, _ = steam
+                if stage not in {"lobby", "match"}:
+                    continue
 
             scored.append((cand, score))
 
