@@ -620,7 +620,8 @@ class DeadlockVoiceStatus(commands.Cog):
             raw_player_count=min(player_count_raw, 6),
             now=now,
         )
-        voice_slots = total_members
+        localized_slots = self._parse_voice_slots_from_localized(candidate_steam_ids, presence_map)
+        voice_slots = max(player_count, localized_slots) if localized_slots else total_members
         trace_payload["decision"] = {
             "reason": "candidate_selected",
             "candidate_stage": candidate_stage,
@@ -629,13 +630,17 @@ class DeadlockVoiceStatus(commands.Cog):
             "chosen_server_id": chosen_server_id,
             "player_count_raw": player_count_raw,
             "voice_slots": voice_slots,
+            "localized_slots": localized_slots,
             "member_count": total_members,
             "cohort_member_ids": list(candidate["member_ids"]) if candidate else [],
             "party_resolution": party_trace,
         }
 
         if candidate_stage == "lobby":
-            suffix = "in der Lobby"
+            if localized_slots and voice_slots > player_count:
+                suffix = f"in der Lobby ({player_count}/{voice_slots})"
+            else:
+                suffix = "in der Lobby"
             trace_payload["decision"].update(
                 {
                     "suffix": suffix,
@@ -709,6 +714,25 @@ class DeadlockVoiceStatus(commands.Cog):
             return row[key]
         except Exception:
             return None
+
+    def _parse_voice_slots_from_localized(
+        self,
+        steam_ids: Sequence[str],
+        presence_map: dict[str, Any],
+    ) -> int | None:
+        """Parse (X/Y) from deadlock_localized strings; return max Y found."""
+        max_total: int | None = None
+        for steam_id in steam_ids:
+            row = presence_map.get(str(steam_id))
+            localized = self._safe_row_value(row, "deadlock_localized")
+            if not localized:
+                continue
+            m = re.search(r'\((\d+)/(\d+)\)', str(localized))
+            if m:
+                total = int(m.group(2))
+                if max_total is None or total > max_total:
+                    max_total = total
+        return max_total
 
     def _select_best_presence(
         self,
