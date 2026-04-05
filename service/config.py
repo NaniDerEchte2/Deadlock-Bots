@@ -64,9 +64,6 @@ class Settings(BaseSettings):
     steam_api_key: SecretStr | None = Field(None, alias="STEAM_API_KEY")
     steam_web_api_key: SecretStr | None = Field(None, alias="STEAM_WEB_API_KEY")
     public_base_url: str = Field("https://link.earlysalty.com", alias="PUBLIC_BASE_URL")
-    steam_outgoing_friend_requests_enabled: bool = Field(
-        False, alias="STEAM_OUTGOING_FRIEND_REQUESTS_ENABLED"
-    )
     steam_poll_min_interval_sec: int = Field(86400, alias="STEAM_POLL_MIN_INTERVAL_SEC")
     steam_unfollow_miss_threshold: int = Field(2, alias="STEAM_UNFOLLOW_MISS_THRESHOLD")
     steam_poll_batch_size: int = Field(25, alias="STEAM_POLL_BATCH_SIZE")
