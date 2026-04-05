@@ -625,7 +625,7 @@ class DeadlockVoiceStatus(commands.Cog):
             now=now,
         )
         localized_slots = self._parse_voice_slots_from_localized(candidate_steam_ids, presence_map)
-        _SLOTS_CACHE_TTL = 14400  # 4h – long enough to cover a full match
+        _SLOTS_CACHE_TTL = 3600  # 1h
         if localized_slots:
             self._localized_slots_cache[channel.id] = (localized_slots, time.time())
         else:
