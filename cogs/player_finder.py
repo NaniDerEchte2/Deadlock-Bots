@@ -100,6 +100,21 @@ class PlayerFinder(commands.Cog):
         self.finder_loop.start()
         log.info("PlayerFinder geladen – Interval: %ss", FINDER_INTERVAL_SECONDS)
 
+    # --- Steam Friend Status ---
+
+    async def _get_steam_friend_ids(self) -> set[int]:
+        """
+        Gibt Discord-User-IDs zurück, die den Bot als Steam-Freund haben
+        (steam_links.is_steam_friend = 1 AND verified = 1).
+        """
+        rows = await db.query_all_async(
+            """
+            SELECT DISTINCT user_id FROM steam_links
+            WHERE verified = 1 AND is_steam_friend = 1 AND user_id > 0
+            """
+        )
+        return {int(r["user_id"]) for r in rows}
+
     async def cog_unload(self) -> None:
         self.finder_loop.cancel()
         log.info("PlayerFinder entladen")
@@ -329,8 +344,9 @@ class PlayerFinder(commands.Cog):
 
         now = time.time()
 
-        # Steam-Präsenz für alle laden
+        # Steam-Präsenz und Freundesliste laden
         steam_presence = await self._get_steam_presence()
+        steam_friend_ids = await self._get_steam_friend_ids()
 
         # Alle überwachten Kategorien scannen
         category_ids = [
@@ -347,7 +363,7 @@ class PlayerFinder(commands.Cog):
 
             for vc in cat.voice_channels:
                 await self._check_lane(
-                    guild, vc, cat_id, output_channel, steam_presence, now,
+                    guild, vc, cat_id, output_channel, steam_presence, steam_friend_ids, now,
                 )
 
     @finder_loop.before_loop
@@ -361,6 +377,7 @@ class PlayerFinder(commands.Cog):
         category_id: int,
         output_channel: discord.abc.Messageable,
         steam_presence: dict[int, tuple[str, int | None]],
+        steam_friend_ids: set[int],
         now: float,
     ) -> None:
         """Prüft eine einzelne Lane und macht ggf. Vorschläge."""
@@ -388,10 +405,30 @@ class PlayerFinder(commands.Cog):
         else:
             channel_ids = [vc.id]
 
-        # Passende Spieler finden
+        # Aktivitäts-basierte Kandidaten finden
         candidates = await self._get_active_players(
             channel_ids, avg_rank, lane_member_ids,
         )
+
+        # Steam-Freunde ergänzen die noch nicht im Kandidatenpool sind
+        activity_ids = {c["user_id"] for c in candidates}
+        for friend_uid in steam_friend_ids:
+            if friend_uid in activity_ids or friend_uid in lane_member_ids:
+                continue
+            member = guild.get_member(friend_uid)
+            if not member or member.bot:
+                continue
+            # Steam-Freunde ohne Voice-History werden mit Minimal-Daten aufgenommen
+            candidates.append({
+                "user_id": friend_uid,
+                "sessions": 0,
+                "activity_score": 0,
+                "time_score": 0.5,
+                "activity_norm": 0.0,
+                "hour_match": False,
+                "day_match": False,
+                "steam_friend_only": True,
+            })
 
         if not candidates:
             return
@@ -417,11 +454,14 @@ class PlayerFinder(commands.Cog):
             # Score berechnen
             score = cand["time_score"] * 30 + cand["activity_norm"] * 20
 
+            # Steam-Freund-Bonus: Bot-Freundschaft = verifizierte Verbindung
+            if uid in steam_friend_ids:
+                score += 25
+
             # Steam-Bonus: Wer gerade Deadlock spielt, bekommt mehr Gewicht
             steam = steam_presence.get(uid)
             if steam:
                 stage, minutes = steam
-                # Spieler ist auf Steam in Deadlock aber NICHT auf dem Server aktiv
                 if stage == "lobby":
                     score += 50  # In der Lobby = bester Kandidat
                 elif stage == "match":
@@ -432,6 +472,13 @@ class PlayerFinder(commands.Cog):
                 score += 15
             elif member.status == discord.Status.dnd:
                 score += 5
+
+            # Steam-Freunde ohne jede Aktivität und offline überspringen –
+            # zu wenig Signal für eine sinnvolle Empfehlung
+            if cand.get("steam_friend_only") and uid not in steam_friend_ids:
+                continue
+            if cand.get("steam_friend_only") and score < 30:
+                continue
 
             scored.append((cand, score))
 
@@ -444,7 +491,7 @@ class PlayerFinder(commands.Cog):
 
         # Embed bauen
         embed = self._build_suggestion_embed(
-            guild, vc, members, lane_label, avg_rank, top, steam_presence,
+            guild, vc, members, lane_label, avg_rank, top, steam_presence, steam_friend_ids,
         )
         if embed:
             await output_channel.send(
@@ -470,6 +517,7 @@ class PlayerFinder(commands.Cog):
         avg_rank: float,
         scored_candidates: list[tuple[dict, float]],
         steam_presence: dict[int, tuple[str, int | None]],
+        steam_friend_ids: set[int] | None = None,
     ) -> discord.Embed | None:
         """Baut ein freundliches Vorschlags-Embed."""
         if not scored_candidates:
@@ -526,9 +574,15 @@ class PlayerFinder(commands.Cog):
 
             rank_str = f" ({rank_name})" if rank_name else ""
             sessions = cand.get("sessions", 0)
+            friend_badge = " 🤝" if (steam_friend_ids and uid in steam_friend_ids) else ""
+            session_str = (
+                f"{sessions} Sessions in den letzten 14 Tagen"
+                if sessions > 0
+                else "Steam-Freund des Bots"
+            )
             suggestion_lines.append(
-                f"**{member.display_name}**{rank_str}\n"
-                f"{status} · {sessions} Sessions in den letzten 14 Tagen"
+                f"**{member.display_name}**{rank_str}{friend_badge}\n"
+                f"{status} · {session_str}"
             )
 
         if not suggestion_lines:
