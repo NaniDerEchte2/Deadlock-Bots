@@ -1,23 +1,26 @@
 """
 Player Finder – Intelligente Spielersuche für Voice-Lobbys.
 
-Erkennt wenn Spieler in einer Lane sind und nach Mitspielern suchen,
-und schlägt passende Mitspieler basierend auf:
-- Aktivität der letzten 14 Tage
-- Typische aktive Uhrzeiten
-- Steam-Präsenz (wer spielt gerade Deadlock?)
-- Ob der Spieler bereits auf dem Server aktiv ist
+Reagiert auf Nachrichten im LFG-Channel und findet passende Mitspieler
+basierend auf einfachen Y/N Filtern:
+- Passende Zeit (typical_hours enthält aktuelle Stunde)
+- Passender Tag (typical_days enthält aktuellen Wochentag)
+- Voice-aktiv in den letzten 14 Tagen
+- Passender Rang (±3)
+
+Steam-Status priorisiert: Lobby → Match → Discord online
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from datetime import datetime, timedelta
 
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 
 from service import db
 
@@ -27,6 +30,10 @@ log = logging.getLogger("PlayerFinder")
 
 GUILD_ID = 1289721245281292288
 
+# Channel-IDs
+LFG_CHANNEL_ID = 1376335502919335936
+SUGGESTION_CHANNEL_ID = 1376335502919335936
+
 # Kategorien die überwacht werden
 NEW_PLAYER_CATEGORY_ID = 1465839366634209361
 CASUAL_CATEGORY_ID = 1289721245281292290
@@ -35,44 +42,27 @@ STREET_BRAWL_CATEGORY_ID = 1357422957017698478
 
 # Mindest-Spieler in Lane damit Suche getriggert wird
 MIN_PLAYERS_FOR_SEARCH = 1
-# Max Spieler - ab hier ist die Lane voll genug
 MAX_PLAYERS_FOR_SEARCH = 4
-
-# Wie oft der Finder-Loop läuft (Sekunden)
-FINDER_INTERVAL_SECONDS = 300  # alle 5 Minuten
-
-# Cooldown pro Lane: nicht öfter als alle 30 Minuten einen Vorschlag
-LANE_SUGGESTION_COOLDOWN_SECONDS = 1800
 
 # Aktivitäts-Lookback
 ACTIVITY_LOOKBACK_DAYS = 14
-MIN_SESSIONS_FOR_SUGGESTION = 2
-MIN_ACTIVITY_SCORE = 3
 
-# Steam Presence
-PRESENCE_STALE_SECONDS = 120
-
-# Maximale Vorschläge pro Nachricht
-MAX_SUGGESTIONS = 5
-
-# Rang-Toleranz für Vorschläge (±Ränge)
+# Rang-Toleranz (±Ränge)
 RANK_TOLERANCE_SUGGESTIONS = 3
 
-# Output Channel für Vorschläge (LFG Channel)
-SUGGESTION_CHANNEL_ID = 1376335502919335936
-
-# Rolle für Spieler die aktiv gepingt werden wollen wenn jemand sucht
+# Rolle für Spieler die aktiv gepingt werden wollen
 LFG_NOTIFY_ROLE_ID = 1411798947936342097
 
-# Maximale Pings pro Nachricht (gezielt, nicht Spam)
+# Maximale Pings pro Nachricht
 MAX_LFG_PINGS = 5
 
-# Aktiviert gezielte @Pings an Träger der LFG-Notify-Rolle
-# Nur pingen wenn Rang passt und Person nicht in Voice ist
-# Aktuell deaktiviert – erst testen wenn Rolle vergeben ist
-ENABLE_LFG_ROLE_PINGS = False
+# Steam Presence freshness
+PRESENCE_STALE_SECONDS = 120
 
-# Rank Definitionen (gleich wie in lfg.py)
+# Cooldown pro User (Sekunden)
+COOLDOWN_SECONDS = 60
+
+# Rank Definitionen
 DISCORD_RANK_ROLES: dict[int, tuple[str, int]] = {
     1331457571118387210: ("Initiate", 1),
     1331457652877955072: ("Seeker", 2),
@@ -90,113 +80,174 @@ DISCORD_RANK_ROLES: dict[int, tuple[str, int]] = {
 
 NEW_PLAYER_MAX_RANK = 4
 
+# --- Regex Pattern für LFG-Erkennung ---
+
+SHORT_LFG_COUNT_RE = re.compile(
+    r"^\s*(?:(?:suche|suchen|lfm|lfg)\s*\+?\s*[1-6]|\+\s*[1-6])\s*$",
+    re.IGNORECASE,
+)
+PLUS_PLAYER_RE = re.compile(r"\+\s*[1-6](?:\D|$)")
+RANK_NAME_TO_VALUE = {name.lower(): val for name, val in DISCORD_RANK_ROLES.values()}
+MESSAGE_RANK_ALIASES = {
+    "ini": "Initiate",
+    "seek": "Seeker",
+    "alch": "Alchemist",
+    "arc": "Arcanist",
+    "rit": "Ritualist",
+    "emi": "Emissary",
+    "emiss": "Emissary",
+    "arch": "Archon",
+    "asc": "Ascendant",
+    "et": "Eternus",
+    "arkanist": "Arcanist",
+    "ascendent": "Ascendant",
+    "ethernus": "Eternus",
+}
+
 
 class PlayerFinder(commands.Cog):
     """
     Findet passende Mitspieler für Leute die in Voice-Lanes sitzen.
 
-    Basiert auf:
-    - Voice-Session-History (letzte 14 Tage)
-    - Typische aktive Uhrzeiten (user_activity_patterns)
-    - Steam-Präsenz (live_player_state)
-    - Rang-Kompatibilität
+    Reagiert auf Nachrichten im LFG-Channel.
+    Nutzt Y/N Filter:
+    - Passende Zeit (typical_hours)
+    - Passender Tag (typical_days)
+    - Voice-aktiv in letzten 14 Tagen
+    - Passender Rang (±3)
     """
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        # Cooldowns: {channel_id: last_suggestion_timestamp}
-        self._lane_cooldowns: dict[int, float] = {}
+        self.lfg_cooldowns: dict[int, float] = {}
 
     async def cog_load(self) -> None:
-        self.finder_loop.start()
-        log.info("PlayerFinder geladen – Interval: %ss", FINDER_INTERVAL_SECONDS)
-
-    # --- LFG Notify Pings ---
-
-    def _get_lfg_notify_targets(
-        self,
-        guild: discord.Guild,
-        avg_rank: float,
-        lane_member_ids: set[int],
-        steam_presence: dict[int, tuple[str, int | None]],
-        steam_friend_ids: set[int],
-    ) -> list[tuple[discord.Member, float]]:
-        """
-        Gibt Mitglieder der LFG-Notify-Rolle zurück die gepingt werden sollen.
-
-        Kriterien (alles muss zutreffen):
-        - Träger der LFG_NOTIFY_ROLE_ID
-        - Nicht bereits in einem Voice-Channel
-        - Nicht in der aktuellen Lane
-        - Rang passt zur Lane (±RANK_TOLERANCE_SUGGESTIONS) sofern bekannt
-        - Mindestens eines: online auf Discord, in Deadlock-Lobby/-Match
-
-        Sortiert nach Score (höchster zuerst).
-        """
-        role = guild.get_role(LFG_NOTIFY_ROLE_ID)
-        if not role:
-            return []
-
-        results: list[tuple[discord.Member, float]] = []
-        for member in role.members:
-            if member.bot:
-                continue
-            if member.id in lane_member_ids:
-                continue
-            if member.voice and member.voice.channel:
-                continue
-
-            _, rank_val = self._get_user_rank(member)
-            if avg_rank > 0 and rank_val > 0:
-                if abs(rank_val - avg_rank) > RANK_TOLERANCE_SUGGESTIONS:
-                    continue
-
-            # Mindest-Signal: online auf Discord ODER aktiv in Deadlock
-            is_discord_online = member.status in (
-                discord.Status.online,
-                discord.Status.idle,
-            )
-            steam = steam_presence.get(member.id)
-            is_in_deadlock = bool(steam and steam[0] in {"lobby", "match"})
-
-            if not is_discord_online and not is_in_deadlock:
-                continue
-
-            # Score: Lobby > Match > Discord online > idle
-            score = 0.0
-            if steam:
-                stage, _ = steam
-                score += 50.0 if stage == "lobby" else 30.0
-            if member.status == discord.Status.online:
-                score += 15.0
-            elif member.status == discord.Status.idle:
-                score += 8.0
-            if member.id in steam_friend_ids:
-                score += 10.0
-
-            results.append((member, score))
-
-        results.sort(key=lambda x: x[1], reverse=True)
-        return results[:MAX_LFG_PINGS]
-
-    # --- Steam Friend Status ---
-
-    async def _get_steam_friend_ids(self) -> set[int]:
-        """
-        Gibt Discord-User-IDs zurück, die den Bot als Steam-Freund haben
-        (steam_links.is_steam_friend = 1 AND verified = 1).
-        """
-        rows = await db.query_all_async(
-            """
-            SELECT DISTINCT user_id FROM steam_links
-            WHERE verified = 1 AND is_steam_friend = 1 AND user_id > 0
-            """
-        )
-        return {int(r["user_id"]) for r in rows}
+        log.info("PlayerFinder geladen (reaktiv) – Cooldown: %ss", COOLDOWN_SECONDS)
 
     async def cog_unload(self) -> None:
-        self.finder_loop.cancel()
         log.info("PlayerFinder entladen")
+
+    # --- LFG Intent Erkennung ---
+
+    def _keyword_lfg_intent(self, message_content: str) -> bool:
+        """
+        Erkennt LFG-Intention per Keyword-Heuristik.
+        """
+        text = (message_content or "").lower()
+        if not text:
+            return False
+
+        rank_tokens = (
+            tuple(RANK_NAME_TO_VALUE.keys())
+            + tuple(MESSAGE_RANK_ALIASES.keys())
+        )
+
+        # Rang-Kontext + Spielwunsch
+        if any(token in text for token in rank_tokens) and (
+            "bock" in text or "lust" in text
+        ) and any(
+            token in text
+            for token in (
+                "runde", "runden", "ründchen", "rundchen", "game", "games",
+                "match", "matches", "spielen", "zocken", "grinden", "gamen",
+            )
+        ):
+            return True
+
+        # "suchen +3", "suche+2", "lfm +1" oder nur "+3"
+        if SHORT_LFG_COUNT_RE.match(text):
+            return True
+
+        # Direkte LFG/LFM Keywords
+        if "lfg" in text or "lfm" in text:
+            return True
+
+        # Gruppen-Keywords
+        if "duo" in text or "trio" in text or "squad" in text or "stack" in text:
+            return True
+
+        # "bock" Patterns
+        if "bock" in text and any(
+            w in text for w in (
+                "jemand", "jmd", "wer", "iwer", "irgendwer", "noch",
+                "hat", "hätte", "hättest",
+            )
+        ):
+            return True
+
+        # "lust" Patterns
+        if "lust" in text and any(
+            w in text for w in (
+                "jemand", "jmd", "wer", "iwer", "irgendwer", "hat", "noch",
+            )
+        ):
+            return True
+
+        # "suche" breit
+        if "suche" in text or "suchen" in text or "gesucht" in text:
+            if PLUS_PLAYER_RE.search(text):
+                return True
+            if any(w in text for w in (
+                "leute", "spieler", "mitspieler", "team", "gruppe", "party",
+                "wen", "anschluss", "jemand", "noch", "nach", "mates", "mate",
+            )):
+                return True
+
+        # "sucht noch jemand"
+        if "sucht" in text and "jemand" in text:
+            return True
+
+        # Spielen/Zocken + Frage-Kontext
+        if ("spielen" in text or "zocken" in text or "grinden" in text or "gamen" in text) and (
+            "wer" in text or "jemand" in text or "bock" in text or "jmd" in text
+            or "iwer" in text or "irgendwer" in text
+        ):
+            return True
+
+        # "paar runden/games" standalone
+        if "paar runden" in text or "paar games" in text or "paar rounds" in text:
+            return True
+
+        # "jemand down" / "wer down"
+        if "down" in text and any(
+            w in text for w in ("jemand", "wer", "iwer", "irgendwer")
+        ):
+            return True
+
+        # "mag wer"
+        if "mag wer" in text:
+            return True
+
+        # "möchte jemand"
+        if "möchte" in text and ("jemand" in text or "wer" in text):
+            return True
+
+        # "Interesse" Patterns
+        if "interesse" in text and any(
+            w in text for w in (
+                "jemand", "wer", "jmd", "iwer", "irgendwer", "anderer", "andere",
+                "noch", "hat", "hätte",
+            )
+        ) and any(
+            w in text for w in (
+                "spielen", "zocken", "grinden", "gamen", "runde", "runden",
+                "game", "games", "match", "matches", "anfänger", "anfanger",
+                "neuling", "neu",
+            )
+        ):
+            return True
+
+        # English LFG patterns
+        if "hmu" in text:
+            return True
+        if "anyone" in text and ("wanna" in text or "down" in text or "game" in text):
+            return True
+
+        # "auf der suche"
+        if "auf der suche" in text:
+            return True
+
+        return False
 
     # --- Rang-Erkennung ---
 
@@ -230,14 +281,19 @@ class PlayerFinder(commands.Cog):
         }
         return labels.get(category_id, "Unbekannt")
 
+    def _rank_matches(self, member: discord.Member, avg_rank: float) -> bool:
+        """Prüft ob Rang des Users ±3 vom avg_rank liegt."""
+        if avg_rank <= 0:
+            return True  # Unbekannt passt immer
+        _, rank_val = self._get_user_rank(member)
+        if rank_val <= 0:
+            return True  # Unbekannt passt immer
+        return abs(rank_val - avg_rank) <= RANK_TOLERANCE_SUGGESTIONS
+
     # --- Steam Presence ---
 
     async def _get_steam_presence(self) -> dict[int, tuple[str, int | None]]:
-        """
-        Holt Steam-Präsenz für alle verlinkten Accounts.
-        Returns: {discord_user_id: (stage, minutes)}
-        """
-        # Alle Steam-Links laden
+        """Holt Steam-Präsenz für alle verlinkten Accounts."""
         link_rows = await db.query_all_async(
             """
             SELECT user_id, steam_id FROM steam_links
@@ -259,7 +315,6 @@ class PlayerFinder(commands.Cog):
         if not all_steam_ids:
             return {}
 
-        # Live-Status prüfen
         now = int(time.time())
         steam_json = json.dumps(sorted(all_steam_ids))
         state_rows = await db.query_all_async(
@@ -286,7 +341,6 @@ class PlayerFinder(commands.Cog):
                 minutes = int(minutes) + ((now - int(updated)) // 60)
             steam_online[str(row["steam_id"])] = (stage, minutes)
 
-        # Auf Discord-User mappen
         result: dict[int, tuple[str, int | None]] = {}
         for uid, sids in user_to_steam.items():
             for sid in sids:
@@ -296,108 +350,20 @@ class PlayerFinder(commands.Cog):
 
         return result
 
-    # --- Aktivitätsdaten ---
-
-    async def _get_active_players(
-        self,
-        channel_ids: list[int],
-        avg_rank: float,
-        lane_member_ids: set[int],
-    ) -> list[dict]:
-        """
-        Findet Spieler die basierend auf den letzten 14 Tagen und ihren
-        typischen aktiven Uhrzeiten gut zu einer Lane passen.
-        """
-        cutoff = (datetime.utcnow() - timedelta(days=ACTIVITY_LOOKBACK_DAYS)).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-        channel_json = json.dumps([int(c) for c in channel_ids])
-
-        # Spieler die in den letzten 14 Tagen in diesen Channels aktiv waren
+    async def _get_steam_friend_ids(self) -> set[int]:
+        """Gibt Discord-User-IDs zurück, die den Bot als Steam-Freund haben."""
         rows = await db.query_all_async(
             """
-            SELECT DISTINCT vsl.user_id, COUNT(*) as session_count,
-                   SUM(vsl.duration_seconds) as total_seconds
-            FROM voice_session_log vsl
-            WHERE vsl.started_at >= ?
-              AND vsl.channel_id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))
-            GROUP BY vsl.user_id
-            HAVING session_count >= ?
-            ORDER BY session_count DESC
-            LIMIT 50
-            """,
-            (cutoff, channel_json, MIN_SESSIONS_FOR_SUGGESTION),
-        )
-
-        candidate_ids = [int(r["user_id"]) for r in rows]
-        session_counts = {int(r["user_id"]): int(r["session_count"]) for r in rows}
-
-        if not candidate_ids:
-            return []
-
-        # Aktivitäts-Patterns laden
-        ids_json = json.dumps(candidate_ids)
-        pattern_rows = await db.query_all_async(
+            SELECT DISTINCT user_id FROM steam_links
+            WHERE verified = 1 AND is_steam_friend = 1 AND user_id > 0
             """
-            SELECT user_id, typical_hours, typical_days, activity_score_2w
-            FROM user_activity_patterns
-            WHERE user_id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))
-            """,
-            (ids_json,),
         )
+        return {int(r["user_id"]) for r in rows}
 
-        patterns: dict[int, tuple[list[int], list[int], int]] = {}
-        for r in pattern_rows:
-            uid = int(r["user_id"])
-            hours = self._parse_json(r["typical_hours"])
-            days = self._parse_json(r["typical_days"])
-            score = int(r["activity_score_2w"] or 0)
-            patterns[uid] = (hours, days, score)
+    # --- Y/N Filter für Kandidaten ---
 
-        now = datetime.utcnow()
-        current_hour = now.hour
-        current_day = now.weekday()
-
-        candidates = []
-        for uid in candidate_ids:
-            if uid in lane_member_ids:
-                continue
-
-            pat = patterns.get(uid)
-            if not pat:
-                continue
-
-            hours, days, activity_score = pat
-            if activity_score < MIN_ACTIVITY_SCORE:
-                continue
-
-            # Zeitlich passend? Spieler ist typischerweise jetzt oder bald aktiv
-            hour_match = any(
-                abs(current_hour - h) <= 2 or abs(current_hour - h) >= 22
-                for h in hours
-            ) if hours else False
-            day_match = current_day in days if days else True
-
-            if not hour_match:
-                continue
-
-            time_score = 1.0 if (hour_match and day_match) else 0.6
-            sessions = session_counts.get(uid, 0)
-            activity_norm = min(1.0, sessions / 10.0)
-
-            candidates.append({
-                "user_id": uid,
-                "sessions": sessions,
-                "activity_score": activity_score,
-                "time_score": time_score,
-                "activity_norm": activity_norm,
-                "hour_match": hour_match,
-                "day_match": day_match,
-            })
-
-        return candidates
-
-    def _parse_json(self, raw) -> list[int]:
+    def _parse_json_list(self, raw) -> list[int]:
+        """Parst JSON-Liste zu int-Liste."""
         if not raw:
             return []
         try:
@@ -408,114 +374,90 @@ class PlayerFinder(commands.Cog):
             return []
         return []
 
-    # --- Haupt-Loop ---
+    def _passes_time_filter(self, typical_hours: list[int], current_hour: int) -> bool:
+        """Prüft ob typical_hours die aktuelle Stunde enthält (±2h oder wrap)."""
+        if not typical_hours:
+            return True  # Keine Daten = keine Einschränkung
+        return any(
+            abs(current_hour - h) <= 2 or abs(current_hour - h) >= 22
+            for h in typical_hours
+        )
 
-    @tasks.loop(seconds=FINDER_INTERVAL_SECONDS)
-    async def finder_loop(self) -> None:
-        """Prüft alle relevanten Voice-Lanes und macht Vorschläge."""
-        guild = self.bot.get_guild(GUILD_ID)
-        if not guild:
-            return
+    def _passes_day_filter(self, typical_days: list[int], current_day: int) -> bool:
+        """Prüft ob typical_days den aktuellen Wochentag enthält."""
+        if not typical_days:
+            return True  # Keine Daten = keine Einschränkung
+        return current_day in typical_days
 
-        output_channel = guild.get_channel(SUGGESTION_CHANNEL_ID)
-        if not output_channel or not isinstance(output_channel, discord.abc.Messageable):
-            return
+    async def _has_voice_activity_14d(
+        self,
+        user_id: int,
+        channel_ids: list[int],
+    ) -> bool:
+        """Prüft ob user in letzten 14 Tagen in diesen Voice-Channels aktiv war."""
+        if not channel_ids:
+            return False
 
-        now = time.time()
+        cutoff = (datetime.utcnow() - timedelta(days=ACTIVITY_LOOKBACK_DAYS)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        channel_json = json.dumps([int(c) for c in channel_ids])
+        uid_json = json.dumps([int(user_id)])
 
-        # Steam-Präsenz und Freundesliste laden
-        steam_presence = await self._get_steam_presence()
-        steam_friend_ids = await self._get_steam_friend_ids()
+        rows = await db.query_all_async(
+            """
+            SELECT COUNT(*) as cnt FROM voice_session_log
+            WHERE started_at >= ?
+              AND user_id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))
+              AND channel_id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))
+            """,
+            (cutoff, uid_json, channel_json),
+        )
+        return bool(rows and rows[0]["cnt"] > 0)
 
-        # Alle überwachten Kategorien scannen
-        category_ids = [
-            NEW_PLAYER_CATEGORY_ID,
-            CASUAL_CATEGORY_ID,
-            RANKED_CATEGORY_ID,
-            STREET_BRAWL_CATEGORY_ID,
-        ]
-
-        for cat_id in category_ids:
-            cat = guild.get_channel(cat_id)
-            if not isinstance(cat, discord.CategoryChannel):
-                continue
-
-            for vc in cat.voice_channels:
-                await self._check_lane(
-                    guild, vc, cat_id, output_channel, steam_presence, steam_friend_ids, now,
-                )
-
-    @finder_loop.before_loop
-    async def _before_finder_loop(self) -> None:
-        await self.bot.wait_until_ready()
-
-    async def _check_lane(
+    async def _get_candidates_for_lane(
         self,
         guild: discord.Guild,
-        vc: discord.VoiceChannel,
+        lane_members: list[discord.Member],
         category_id: int,
-        output_channel: discord.abc.Messageable,
         steam_presence: dict[int, tuple[str, int | None]],
         steam_friend_ids: set[int],
-        now: float,
-    ) -> None:
-        """Prüft eine einzelne Lane und macht ggf. Vorschläge."""
-        members = [m for m in vc.members if not m.bot]
-        member_count = len(members)
+    ) -> list[tuple[discord.Member, str]]:
+        """
+        Findet passende Kandidaten für eine Lane.
 
-        # Nur Lanes mit 1-4 Spielern (suchen noch Leute)
-        if member_count < MIN_PLAYERS_FOR_SEARCH or member_count > MAX_PLAYERS_FOR_SEARCH:
-            return
+        Filter: Zeit ✓ AND Tag ✓ AND Voice-aktiv (14d) ✓ AND Rang ±3 ✓
 
-        # Cooldown prüfen
-        last = self._lane_cooldowns.get(vc.id, 0)
-        if now - last < LANE_SUGGESTION_COOLDOWN_SECONDS:
-            return
+        Returns: [(member, status_label), ...] sortiert nach Steam-Status
+        """
+        lane_member_ids = {m.id for m in lane_members}
+        avg_rank = self._get_lane_avg_rank(lane_members)
 
-        lane_member_ids = {m.id for m in members}
-        avg_rank = self._get_lane_avg_rank(members)
-        lane_label = self._get_lane_label(category_id)
-
-        # Alle Channel-IDs in derselben Kategorie (für Activity-Lookup)
+        # Channel-IDs in derselben Kategorie für Activity-Check
         cat = guild.get_channel(category_id)
         channel_ids = []
         if isinstance(cat, discord.CategoryChannel):
             channel_ids = [ch.id for ch in cat.voice_channels]
-        else:
-            channel_ids = [vc.id]
 
-        # Aktivitäts-basierte Kandidaten finden
-        candidates = await self._get_active_players(
-            channel_ids, avg_rank, lane_member_ids,
+        now = datetime.utcnow()
+        current_hour = now.hour
+        current_day = now.weekday()
+
+        # Steam-Links laden für alle verifizierten User
+        link_rows = await db.query_all_async(
+            """
+            SELECT user_id, steam_id FROM steam_links
+            WHERE steam_id IS NOT NULL AND steam_id != '' AND verified = 1
+            """
         )
 
-        # Steam-Freunde ergänzen die noch nicht im Kandidatenpool sind
-        activity_ids = {c["user_id"] for c in candidates}
-        for friend_uid in steam_friend_ids:
-            if friend_uid in activity_ids or friend_uid in lane_member_ids:
-                continue
-            member = guild.get_member(friend_uid)
-            if not member or member.bot:
-                continue
-            # Steam-Freunde ohne Voice-History werden mit Minimal-Daten aufgenommen
-            candidates.append({
-                "user_id": friend_uid,
-                "sessions": 0,
-                "activity_score": 0,
-                "time_score": 0.5,
-                "activity_norm": 0.0,
-                "hour_match": False,
-                "day_match": False,
-                "steam_friend_only": True,
-            })
+        candidates: list[tuple[discord.Member, str]] = []
 
-        if not candidates:
-            return
+        for row in link_rows:
+            uid = int(row["user_id"])
+            if uid in lane_member_ids:
+                continue
 
-        # Rang-Kompatibilität filtern und Scoring
-        scored: list[tuple[dict, float]] = []
-        for cand in candidates:
-            uid = cand["user_id"]
             member = guild.get_member(uid)
             if not member or member.bot:
                 continue
@@ -524,204 +466,268 @@ class PlayerFinder(commands.Cog):
             if member.voice and member.voice.channel:
                 continue
 
-            # Rang prüfen
-            _, rank_val = self._get_user_rank(member)
-            if avg_rank > 0 and rank_val > 0:
-                if abs(rank_val - avg_rank) > RANK_TOLERANCE_SUGGESTIONS:
+            # Rang-Filter
+            if not self._rank_matches(member, avg_rank):
+                continue
+
+            # Activity Patterns laden
+            pattern_rows = await db.query_all_async(
+                """
+                SELECT typical_hours, typical_days FROM user_activity_patterns
+                WHERE user_id = ?
+                """,
+                (uid,),
+            )
+
+            if pattern_rows:
+                pat = pattern_rows[0]
+                hours = self._parse_json_list(pat["typical_hours"])
+                days = self._parse_json_list(pat["typical_days"])
+
+                # Zeit-Filter
+                if not self._passes_time_filter(hours, current_hour):
                     continue
 
-            # Score berechnen
-            score = cand["time_score"] * 30 + cand["activity_norm"] * 20
+                # Tag-Filter
+                if not self._passes_day_filter(days, current_day):
+                    continue
 
-            # Steam-Freund-Bonus: Bot-Freundschaft = verifizierte Verbindung
-            if uid in steam_friend_ids:
-                score += 25
+            # Voice-Activity (14d) in dieser Kategorie
+            if channel_ids:
+                has_activity = await self._has_voice_activity_14d(uid, channel_ids)
+                if not has_activity:
+                    continue
 
-            # Steam-Bonus: Wer gerade Deadlock spielt, bekommt mehr Gewicht
+            # Status bestimmen
             steam = steam_presence.get(uid)
             if steam:
                 stage, minutes = steam
                 if stage == "lobby":
-                    score += 50  # In der Lobby = bester Kandidat
+                    status = f"🟢 In der Deadlock-Lobby"
                 elif stage == "match":
-                    score += 30  # Im Match = könnte bald frei sein
+                    suffix = f" (~{minutes}min)" if minutes else ""
+                    status = f"🎮 Im Match{suffix}"
+                else:
+                    status = "🟡 Im Spiel"
+            elif member.status == discord.Status.online:
+                status = "💬 Auf Discord online"
+            elif member.status == discord.Status.idle:
+                status = "🟠 Abwesend"
+            else:
+                status = "⚪ Offline"
 
-            # Discord-Status Bonus
-            if member.status in (discord.Status.online, discord.Status.idle):
-                score += 15
-            elif member.status == discord.Status.dnd:
-                score += 5
+            candidates.append((member, status))
 
-            # Steam-Freunde ohne Voice-History: nur vorschlagen wenn sie
-            # gerade aktiv in Deadlock spielen (Lobby oder Match),
-            # aber NICHT im Discord-Voice sind – sonst kein Signal.
-            if cand.get("steam_friend_only"):
-                steam = steam_presence.get(uid)
-                if not steam:
-                    continue
-                stage, _ = steam
-                if stage not in {"lobby", "match"}:
-                    continue
+        # Sortieren: Lobby → Match → Discord online → idle → offline
+        def sort_key(item: tuple[discord.Member, str]) -> int:
+            _, status = item
+            if status.startswith("🟢"):
+                return 0
+            if status.startswith("🎮"):
+                return 1
+            if status.startswith("💬"):
+                return 2
+            if status.startswith("🟠"):
+                return 3
+            return 4
 
-            scored.append((cand, score))
+        candidates.sort(key=sort_key)
+        return candidates[:MAX_LFG_PINGS]
 
-        if not scored:
-            return
+    # --- Lane Scanning ---
 
-        # Top-Kandidaten sortieren
-        scored.sort(key=lambda x: x[1], reverse=True)
-        top = scored[:MAX_SUGGESTIONS]
-
-        # Embed bauen
-        embed = self._build_suggestion_embed(
-            guild, vc, members, lane_label, avg_rank, top, steam_presence, steam_friend_ids,
-        )
-        if embed:
-            await output_channel.send(
-                embed=embed,
-                allowed_mentions=discord.AllowedMentions(
-                    users=False,
-                    roles=False,
-                    everyone=False,
-                ),
-            )
-            self._lane_cooldowns[vc.id] = now
-            log.info(
-                "Spielervorschlag gesendet für %s (%d Kandidaten)",
-                vc.name, len(top),
-            )
-
-        # Gezielte Pings an LFG-Notify-Rolle (nur wenn aktiviert)
-        if ENABLE_LFG_ROLE_PINGS:
-            notify_targets = self._get_lfg_notify_targets(
-                guild, avg_rank, lane_member_ids, steam_presence, steam_friend_ids,
-            )
-            if notify_targets:
-                lane_link = f"https://discord.com/channels/{guild.id}/{vc.id}"
-                member_names = ", ".join(m.display_name for m in members[:3])
-                slots_free = (vc.user_limit or 6) - len(members)
-                if slots_free <= 0:
-                    slots_free = 2
-
-                ping_mentions = " ".join(m.mention for m, _ in notify_targets)
-                ping_content = (
-                    f"{ping_mentions}\n"
-                    f"**{member_names}** {'sucht' if len(members) == 1 else 'suchen'} noch "
-                    f"**{slots_free}** {'Mitspieler' if slots_free != 1 else 'Mitspieler'} "
-                    f"in **{vc.name}** ({lane_label})! [{lane_label} beitreten]({lane_link})"
-                )
-                await output_channel.send(
-                    content=ping_content,
-                    allowed_mentions=discord.AllowedMentions(
-                        users=True,
-                        roles=False,
-                        everyone=False,
-                    ),
-                    suppress_embeds=True,
-                )
-                log.info(
-                    "LFG-Notify Pings gesendet für %s (%d Targets)",
-                    vc.name, len(notify_targets),
-                )
-
-    def _build_suggestion_embed(
+    def _scan_category_lanes(
         self,
         guild: discord.Guild,
-        vc: discord.VoiceChannel,
-        lane_members: list[discord.Member],
-        lane_label: str,
-        avg_rank: float,
-        scored_candidates: list[tuple[dict, float]],
-        steam_presence: dict[int, tuple[str, int | None]],
-        steam_friend_ids: set[int] | None = None,
-    ) -> discord.Embed | None:
-        """Baut ein freundliches Vorschlags-Embed."""
-        if not scored_candidates:
-            return None
+        category_id: int,
+    ) -> list[tuple[discord.VoiceChannel, list[discord.Member], int]]:
+        """Scannt alle Voice-Channels einer Kategorie. Gibt [(vc, members, category_id), ...] zurück."""
+        cat = guild.get_channel(category_id)
+        if not isinstance(cat, discord.CategoryChannel):
+            return []
 
-        member_names = ", ".join(m.display_name for m in lane_members[:5])
-        slots_free = (vc.user_limit or 6) - len(lane_members)
-        if slots_free <= 0:
-            slots_free = 2  # Fallback
+        result = []
+        for vc in cat.voice_channels:
+            members = [m for m in vc.members if not m.bot]
+            if members:
+                result.append((vc, members, category_id))
+        return result
+
+    # --- Embed Bauen ---
+
+    def _build_embed(
+        self,
+        guild: discord.Guild,
+        lane_name: str,
+        lane_label: str,
+        members: list[discord.Member],
+        candidates: list[tuple[discord.Member, str]],
+        channel_id: int,
+    ) -> discord.Embed:
+        """Baut das Vorschlags-Embed."""
+        member_names = ", ".join(m.display_name for m in members[:5])
+        slots_free = (6 - len(members)) if len(members) < 6 else 2
 
         embed = discord.Embed(
             title="\U0001f50d Mitspieler-Vorschläge",
             description=(
-                f"In **{vc.name}** ({lane_label}) "
-                f"{'ist' if len(lane_members) == 1 else 'sind'} gerade "
+                f"In **{lane_name}** ({lane_label}) "
+                f"{'ist' if len(members) == 1 else 'sind'} gerade "
                 f"**{member_names}** unterwegs und "
-                f"{'sucht' if len(lane_members) == 1 else 'suchen'} noch "
-                f"**{slots_free}** Mitspieler!\n\n"
-                "Vielleicht haben diese Spieler ja Lust mitzuspielen:"
+                f"{'sucht' if len(members) == 1 else 'suchen'} noch "
+                f"**{slots_free}** Mitspieler!"
             ),
             color=discord.Color.blue(),
         )
 
-        suggestion_lines = []
-        for cand, score in scored_candidates:
-            uid = cand["user_id"]
-            member = guild.get_member(uid)
-            if not member:
-                continue
-
-            _, rank_val = self._get_user_rank(member)
-            rank_name = ""
-            for role_id, (rname, rval) in DISCORD_RANK_ROLES.items():
-                if rval == rank_val and rval > 0:
-                    rank_name = rname
-                    break
-
-            # Status-Indikator
-            steam = steam_presence.get(uid)
-            if steam:
-                stage, minutes = steam
-                if stage == "lobby":
-                    status = "\U0001f7e2 In der Deadlock-Lobby"
-                elif stage == "match" and minutes:
-                    status = f"\U0001f3ae Im Match (~{minutes}min)"
-                else:
-                    status = "\U0001f3ae Im Spiel"
-            elif member.status == discord.Status.online:
-                status = "\U0001f535 Online auf Discord"
-            elif member.status == discord.Status.idle:
-                status = "\U0001f7e0 Abwesend"
-            else:
-                status = "\u26aa Typischerweise jetzt aktiv"
-
-            rank_str = f" ({rank_name})" if rank_name else ""
-            sessions = cand.get("sessions", 0)
-            friend_badge = " 🤝" if (steam_friend_ids and uid in steam_friend_ids) else ""
-            session_str = (
-                f"{sessions} Sessions in den letzten 14 Tagen"
-                if sessions > 0
-                else "Steam-Freund des Bots"
+        if not candidates:
+            embed.add_field(
+                name="\U0001f465 Keine passenden Mitspieler gefunden",
+                value="Versuch es später nochmal oder schreib direkt jemanden an.",
+                inline=False,
             )
-            suggestion_lines.append(
-                f"**{member.display_name}**{rank_str}{friend_badge}\n"
-                f"{status} · {session_str}"
-            )
+            return embed
 
-        if not suggestion_lines:
-            return None
+        lines = []
+        for member, status in candidates:
+            friend_badge = " 🤝" if member.id in self._steam_friend_cache else ""
+            lines.append(f"**{member.display_name}**{friend_badge}\n{status}")
 
         embed.add_field(
             name="\U0001f465 Mögliche Mitspieler",
-            value="\n\n".join(suggestion_lines),
+            value="\n\n".join(lines),
             inline=False,
         )
 
-        link = f"https://discord.com/channels/{guild.id}/{vc.id}"
+        lane_link = f"https://discord.com/channels/{guild.id}/{channel_id}"
         embed.add_field(
             name="\u27a1\ufe0f Direkt joinen",
-            value=f"[Hier klicken um beizutreten]({link})",
+            value=f"[Hier klicken um beizutreten]({lane_link})",
             inline=False,
         )
 
         embed.set_footer(
-            text="Basierend auf Spielaktivität und Steam-Status der letzten 14 Tage"
+            text="Basierend auf Aktivität und Steam-Status"
         )
 
         return embed
+
+    # --- Cooldowns ---
+
+    def _check_cooldown(self, user_id: int) -> bool:
+        """Prüft Cooldown. Returns True wenn Request erlaubt ist."""
+        now = time.time()
+        last = self.lfg_cooldowns.get(user_id, 0)
+        if now - last < COOLDOWN_SECONDS:
+            return False
+        self.lfg_cooldowns[user_id] = now
+        return True
+
+    # --- Main Handler ---
+
+    async def _handle_lfg_request(self, message: discord.Message) -> None:
+        """Verarbeitet eine LFG-Anfrage."""
+        guild = message.guild
+        if not guild:
+            return
+
+        output_channel = guild.get_channel(SUGGESTION_CHANNEL_ID)
+        if not output_channel or not isinstance(output_channel, discord.abc.Messageable):
+            return
+
+        # Steam-Daten laden
+        steam_presence = await self._get_steam_presence()
+        self._steam_friend_cache = await self._get_steam_friend_ids()
+
+        # Wenn der User IN einer Voice-Lane ist → suche gezielt für diese Lane
+        if message.author.voice and message.author.voice.channel:
+            target_channel = message.author.voice.channel
+            # Lane finden
+            for cat_id in [
+                NEW_PLAYER_CATEGORY_ID,
+                CASUAL_CATEGORY_ID,
+                RANKED_CATEGORY_ID,
+                STREET_BRAWL_CATEGORY_ID,
+            ]:
+                cat = guild.get_channel(cat_id)
+                if not isinstance(cat, discord.CategoryChannel):
+                    continue
+                if target_channel.category_id != cat_id:
+                    continue
+
+                members = [m for m in target_channel.members if not m.bot]
+                if len(members) < MIN_PLAYERS_FOR_SEARCH or len(members) > MAX_PLAYERS_FOR_SEARCH:
+                    return
+
+                lane_label = self._get_lane_label(cat_id)
+                candidates = await self._get_candidates_for_lane(
+                    guild, members, cat_id, steam_presence, self._steam_friend_cache,
+                )
+
+                embed = self._build_embed(guild, target_channel.name, lane_label, members, candidates, target_channel.id)
+                await output_channel.send(embed=embed)
+                return
+
+            return  # Lane nicht in einer der überwachten Kategorien
+
+        # User ist NICHT in Voice → generische LFG Suche (ähnlich lfg.py)
+        # Scanne alle Kategorien nach aktiven Lanes mit Platz
+        for cat_id in [
+            NEW_PLAYER_CATEGORY_ID,
+            CASUAL_CATEGORY_ID,
+            RANKED_CATEGORY_ID,
+            STREET_BRAWL_CATEGORY_ID,
+        ]:
+            lanes = self._scan_category_lanes(guild, cat_id)
+            for vc, members, _ in lanes:
+                if len(members) < MIN_PLAYERS_FOR_SEARCH or len(members) > MAX_PLAYERS_FOR_SEARCH:
+                    continue
+
+                lane_label = self._get_lane_label(cat_id)
+                candidates = await self._get_candidates_for_lane(
+                    guild, members, cat_id, steam_presence, self._steam_friend_cache,
+                )
+
+                if candidates:
+                    embed = self._build_embed(guild, vc.name, lane_label, members, candidates, vc.id)
+                    await output_channel.send(embed=embed)
+                    return
+
+        # Keine aktive Lane mit Platz gefunden
+        embed = discord.Embed(
+            title="\U0001f50d Mitspieler-Vorschläge",
+            description=(
+                f"**{message.author.display_name}** sucht Mitspieler!\n\n"
+                "Aktuell ist keine Lane mit Platz verfügbar. "
+                "Mach einfach eine auf — es kommen erfahrungsgemäß schnell Leute dazu."
+            ),
+            color=discord.Color.blue(),
+        )
+        await output_channel.send(embed=embed)
+
+    # --- Event Listener ---
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        if message.author.bot:
+            return
+
+        # Nur im LFG-Channel lauschen
+        if message.channel.id != LFG_CHANNEL_ID:
+            return
+
+        # Intent-Check
+        if not self._keyword_lfg_intent(message.content):
+            return
+
+        # Cooldown-Check (per User)
+        if not self._check_cooldown(message.author.id):
+            return
+
+        await self._handle_lfg_request(message)
+
+    # Cache für steam friend ids (wird pro request aktualisiert)
+    _steam_friend_cache: set[int] = set()
 
 
 async def setup(bot: commands.Bot) -> None:
