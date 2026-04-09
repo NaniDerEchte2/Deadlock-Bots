@@ -211,6 +211,9 @@ class TempVoiceLaneSorting(commands.Cog):
             return False
         if lane.category_id not in SUPPORTED_CATEGORY_IDS:
             return False
+        # Neue Spieler Lanes und 1411391356278018245 vom Sorting ausschließen
+        if lane.id == 1411391356278018245:
+            return False
         return self.core.is_managed_lane(lane)
 
     async def _resolve_lane_rank(self, lane: discord.VoiceChannel) -> tuple[int, int]:

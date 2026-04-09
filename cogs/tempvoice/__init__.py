@@ -10,6 +10,7 @@ async def setup(bot: commands.Bot):
     from .interface import TempVoiceInterface
     from .lane_sorting import TempVoiceLaneSorting
     from .new_player_lanes import NewPlayerAdaptiveLanes
+    from .duo_lanes import DuoLanes
     from .util import TempVoiceUtil
 
     core = TempVoiceCore(bot)
@@ -19,3 +20,4 @@ async def setup(bot: commands.Bot):
     await bot.add_cog(TempVoiceInterface(bot, core, util))
     await bot.add_cog(TempVoiceLaneSorting(bot, core))
     await bot.add_cog(NewPlayerAdaptiveLanes(bot))
+    await bot.add_cog(DuoLanes(bot))
