@@ -8,8 +8,21 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 log = logging.getLogger(__name__)
 
 
+def _keyring_enabled() -> bool:
+    override = (os.getenv("DEADLOCK_ENABLE_KEYRING") or "").strip().lower()
+    if override in {"1", "true", "yes", "on"}:
+        return True
+    if override in {"0", "false", "no", "off"}:
+        return False
+    return os.name == "nt"
+
+
 def _load_vault_secrets():
     """Injiziert Secrets aus dem Windows Tresor in os.environ."""
+    if not _keyring_enabled():
+        log.debug("Keyring/Tresor-Check deaktiviert.")
+        return
+
     try:
         import keyring
 

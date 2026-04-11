@@ -738,8 +738,9 @@ class QuickTemplateButton(discord.ui.Button):
                 "Nur Owner/Mods d�rfen Templates benutzen.", ephemeral=True
             )
             return
+        await itx.response.defer(ephemeral=True)
         await self.core.set_lane_template(lane, base_name=self.template_name, limit=self.limit)
-        await itx.response.send_message(
+        await itx.followup.send(
             f"Lane auf {self.template_name} gestellt (Limit {self.limit}).",
             ephemeral=True,
         )
@@ -790,8 +791,9 @@ class ResetLaneButton(discord.ui.Button):
                 "Nur Owner/Mods d�rfen Templates benutzen.", ephemeral=True
             )
             return
+        await itx.response.defer(ephemeral=True)
         base, limit = await self.core.reset_lane_template(lane)
-        await itx.response.send_message(
+        await itx.followup.send(
             f"Lane auf {base} zur�ckgesetzt (Limit {limit}).",
             ephemeral=True,
         )

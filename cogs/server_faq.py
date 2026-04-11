@@ -1,9 +1,19 @@
-"""Cog für den ChatGPT-gestützten Deadlock Server FAQ."""
+"""
+MiniMax-gestützter FAQ Bot - Chat-basiert mit Thread-Interface.
+
+Sicherheitsrichtlinien:
+- User wird als untrusted behandelt
+- Kein Zugriff auf Infisical/Secrets
+- Keine Code-Änderungen möglich (read-only)
+- Nur Antworten / Helfen basierend auf Dokumentation
+"""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -11,404 +21,457 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from service import changelogs, faq_logs
-
 log = logging.getLogger(__name__)
 
 # --- Konfiguration ------------------------------------------------------------
 
-# Fixiertes Primärmodell (keine ENV-Überschreibung, keine Fallbacks).
-PRIMARY_MODEL = "gpt-5"
+PRIMARY_MODEL = os.getenv("MINIMAX_MODEL", "MiniMax-Text-01")
+PRIMARY_PROVIDER = "minimax"
+MAX_OUTPUT_TOKENS = int(os.getenv("DEADLOCK_FAQ_MAX_OUTPUT_TOKENS", "1500") or "1500")
+LOG_CHANNEL_ID = int(os.getenv("DEADLOCK_FAQ_LOG_CHANNEL", "1374364800817303632"))
 
-DEFAULT_MAX_OUTPUT_TOKENS = 2000
-_max_tokens_env = os.getenv("DEADLOCK_FAQ_MAX_OUTPUT_TOKENS")
-if _max_tokens_env:
-    try:
-        MAX_OUTPUT_TOKENS = max(1, int(_max_tokens_env))
-    except ValueError:
-        log.warning(
-            "Ungültiger Wert für DEADLOCK_FAQ_MAX_OUTPUT_TOKENS: %r – verwende %d.",
-            _max_tokens_env,
-            DEFAULT_MAX_OUTPUT_TOKENS,
-        )
-        MAX_OUTPUT_TOKENS = DEFAULT_MAX_OUTPUT_TOKENS
-else:
-    MAX_OUTPUT_TOKENS = DEFAULT_MAX_OUTPUT_TOKENS
+# Thread-Channel wo FAQ-Chats erstellt werden
+FAQ_THREAD_CHANNEL_ID = int(os.getenv("DEADLOCK_FAQ_THREAD_CHANNEL", "1374364800817303632"))
 
-DEBUG_FAQ = os.getenv("DEADLOCK_FAQ_DEBUG", "0").strip() in {"1", "true", "TRUE"}
+# Docs-Pfad
+DEFAULT_DOCS_PATH = Path(__file__).parent.parent / "docs"
+DOCS_PATH = Path(os.getenv("DEADLOCK_FAQ_DOCS_PATH", str(DEFAULT_DOCS_PATH)))
 
-# --- ENV-Loader ---------------------------------------------------------------
+# Session-Cookie in ms - wie lange ein Thread aktiv bleibt
+SESSION_TIMEOUT_HOURS = int(os.getenv("DEADLOCK_FAQ_SESSION_HOURS", "24"))
+
+# --- Doku-Loader --------------------------------------------------------------
 
 
-def _ensure_central_env_loaded() -> None:
-    """Lädt den zentralen .env-Pfad, falls der API-Key noch fehlt."""
-    if os.getenv("OPENAI_API_KEY") or os.getenv("DEADLOCK_OPENAI_KEY"):
-        return
+def _load_docs() -> str:
+    """Lädt alle .md Dateien aus dem Docs-Verzeichnis als Kontext."""
+    if not DOCS_PATH.is_dir():
+        log.warning("Docs-Pfad nicht gefunden: %s", DOCS_PATH)
+        return ""
 
-    central_env = Path(os.path.expandvars(r"C:\Users\Nani-Admin\Documents\.env"))
-    if not central_env.is_file():
-        log.debug("Zentrale .env nicht gefunden: %s", central_env)
-        return
+    context_parts = []
+    for md_file in sorted(DOCS_PATH.glob("*.md")):
+        try:
+            content = md_file.read_text(encoding="utf-8")
+            rel_path = md_file.relative_to(DOCS_PATH)
+            context_parts.append(f"\n\n=== Dokument: {rel_path} ===\n{content}")
+        except Exception as exc:
+            log.warning("Konnte %s nicht lesen: %s", md_file, exc)
 
-    try:
-        from dotenv import load_dotenv
-    except Exception as exc:  # pragma: no cover
-        log.warning("python-dotenv nicht verfügbar: %s", exc)
-        return
+    if not context_parts:
+        return ""
 
-    try:
-        load_dotenv(dotenv_path=str(central_env), override=False)
-        log.info("Zentrale .env geladen: %s", central_env)
-    except Exception:  # pragma: no cover
-        log.exception("Konnte zentrale .env nicht laden: %s", central_env)
+    header = (
+        "Du hast Zugriff auf folgende Server-Dokumentation. "
+        "Nutze diese als Wissensbasis. Erfinde keine Informationen - wenn du dir unsicher bist, sage es.\n"
+    )
+    return header + "\n".join(context_parts)
 
 
-# --- Prompts ------------------------------------------------------------------
+DOCS_CONTEXT = _load_docs()
 
-FAQ_SYSTEM_PROMPT = """
-Du bist der „Deadlock Server FAQ“-Assistent und antwortest ausschließlich auf Deutsch.
+# --- System Prompt (Security!) ------------------------------------------------
 
-Dein Auftrag (Priorität in dieser Reihenfolge):
-1) Beantworte Fragen zum Discord-Server (Kanäle, Rollen, Bots, Prozesse).
-2) Beantworte Deadlock-Gameplay-/Verbesserungsfragen, aber IMMER mit Serverbezug: Verweise konkret auf passende Server-Ressourcen (Kanäle, Rollen, Bots, Tools).
-3) Wenn etwas NICHT in deinen Kontext passt (kein Serverbezug möglich UND keine Gameplay-Hilfen aus dem Kontext ableitbar), lehne freundlich ab und verweise auf @earlysalty.
 
-Richtlinien:
-- Keine Dinge erfinden. Nutze die Begriffe/Kanäle/Rollen wie im Kontext genannt.
-- Erwähne DM-Flows mit dem Deadlock Master Bot, wenn relevant.
+SYSTEM_PROMPT = """
+Du bist ein hilfreicher, aber strikt eingeschränkter FAQ-Assistent für einen Discord-Server.
+
+SICHERHEITSREGELN (Pflicht!):
+- Du bist ein ASSISTENT, kein Admin. Du kennst nur die bereitgestellte Dokumentation.
+- Teile NIEMALS interne Pfade, API-Keys, Tokens, Secrets, Datenbank-URLs oder Konfigurationsdetails.
+- Erfinde keine Server-Strukturen, Rollen oder Kanäle die nicht in der Dokumentation stehen.
+- Biete niemals an, Code zu ändern, Bots neu zu starten oder externe Systeme zu konfigurieren.
+- Wenn ein User fragt wie etwas intern funktioniert (Tokens, APIs, Secrets): sage dass du keinen Zugriff darauf hast.
+- Wenn ein User eine Aktion braucht die du nicht支撑 kannst: verweise auf @earlysalty.
+
+ANTWORTVERHALTEN:
+- Antworte ausschließlich auf Deutsch.
+- Sei hilfreich aber präzise. Lies die Dokumentation und beantworte basierend darauf.
+- Bei Fragen ausserhalb deines Wissens: ehrlich sagen dass du dazu keine Info hast.
+- Nutze Emojis sparsam und passend.
+- Halte Antworten informativ aber nicht übermässig lang.
 - Für Feedback: verweise auf das anonyme Feedback-Formular im Feedback Hub.
-- Antworte präzise und hilfreich.
+- Für Match-Coaching, TempVoice, Spieler-Suche: verweise auf die entsprechen Kanäle/Befehle.
 """.strip()
 
-
-FAQ_CONTEXT = """
-Servername: "Deutsche Deadlock Community" – eine Community für das Spiel Deadlock.
-Hilfreiches:
-Für Statstiken +ber deadlock und dem eigenen Playstyle gibts https://statlocker.gg/ https://www.lockblaze.com/ für Statstiken für Items und co https://deadlock-api.com/ das sind so advanced Deadlock tracker with performance rank estimates and detailed stats analysis
-
-Bots & Kontakte:
-- Deadlock Master Bot: offizieller Bot der Community. Für Streamer-Partnerschaften bitte dem Bot eine DM schicken und den Slash-Befehl /streamer ausführen, um das Setup zu starten.
-- Server Owner: @earlysalty. Bei fehlenden Informationen oder Spezialfällen an ihn wenden.
-
-Funktionsweise des Temp Voice Bots:
-Es gibt die Sprachkanäle Lane erstellen mit dem + da joint man rein dann wird ein Voice Kanal erstellt und die Person durch den Bot rein gemoved.
-Über das Interface lassen sich folgende Dinge ändern. DE / EU ist entweder nur Deutsch Sprachige können in den Channel, und eu ist das auch (die Paar wenige Englische) joinen können.
-Owner Claim falls der Owner nicht mehr in der Lane ist, kann man damit die Eigentumsrechte übernehmen. Limit setzen ist das Limit an Personen 0-99.
-Kick (kann nur mit Owner Rechten gemacht werden) kickt eine Person aus dem Kanal, Ban bannt eine Person permanent aus deinem Voice Channel. Wichtig die Banns sind preresistent bedeutet auch nach dem Verlassen der Lane bleibt diese Einstellung gespeichert, und wird bei einem Späteren erstellen einer Lane re Applyed.
-Und Unban entbannt die Person. Mindest Rang setzen geht nur in den Grind Lanes und erklärt sich von selbst. Jedoch sind bei den Grind lanes kleine Rang Caps gesetzt damit es nicht einen riesigen Skill Gap gibt.
-
-Rollen & Zugänge:
-- Verified: wird nach erfolgreicher Steam-Verknüpfung automatisch vergeben.
-- VIP: Erhalte die Rolle nach langer, aktiver Teilnahme am Server und wenn du den Twitch-Kanal https://www.twitch.tv/earlysalty abonnierst.
-
-Kategorie "Streamer Only":
-- stream-updates, streamer-austausch, Streamer VC.
-
-Kategorie "Streamer Partner":
-- vip-lounge, vip VC (Voice Channel).
-
-Kategorie "Spawn":
-- hier-starten-regelwerk: enthält das Regelwerk.
-- ankündigungen: offizielle Server-Ankündigungen.
-- patchnotes: übersetzte Deadlock-Patchnotes auf Deutsch.
-- live-on-twitch: listet Deadlock-Streamer-Partner, die gerade live sind.
-- server-faq: Platz für das FAQ-Angebot.
-
-Kategorie "Start":
-- allgemein: allgemeiner Austausch zum Spiel und zur Community.
-- build-discussion: Diskussionen über Builds für Deadlock-Helden.
-- off-topic: Themen außerhalb von Deadlock.
-- clip-submission: Anleitung und Einreichung von Clips (Details stehen in der README bzw. Channelbeschreibung).
-- request-a-coaching wird aktuell umgebaut das Sowohl Matches als auch 1:1 Live Coachings angeboten werden, aktuell kostenlos.
-- leaks: Gerüchte oder frühe Informationen rund um Deadlock.
-- game-guides-und-tipps: praktische Videos, Tipps & Tricks rund um Deadlock.
-- yt-videos: unterhaltsame Deadlock-Videos ohne Lernfokus.
-- beta-zugang: für Anfragen zum Deadlock-Beta-Zugang (Spiel ist Invite-Only).
-- coaching-lane: Voice-Bereich, um in Ruhe zu zweit an Verbesserungen zu arbeiten.
-
-Kategorie "Custom Game":
-- custom-game-umsetzung: Organisation eigener Deadlock-Matches, z. B. 6v6-Competitive, Melee-only oder Hide & Seek.
-- custom-games-ideen: Ideensammlung für zukünftige Custom Games, eigene Wünsche ausdrücklich willkommen.
-- Sammelpunkt: Treffpunkt für Custom-Games-Teilnehmer.
-
-Kategorie "Entspannte Lanes":
-- temp-voice: Verwaltung eigener Voice-Lanes über TempVoice (Panel erklärt Einstellungen und Verwaltung).
-- rank-auswahl: eigene Rang-Rolle wählen.
-- spieler-suche: Sucht Mitspieler (LFG) für Deadlock.
-- Spaß Lane: Voice-Kanal für lockeres Spielen.
-
-Kategorie "Grind Lanes":
-- Grind Lane: Voice-Kanal für konzentriertes Spielen.
-
-Kategorie "Ranked Lanes":
-- low-elo-ranked, mid-elo-ranked, high-elo-ranked: Text-Kanäle für koordinierte Spiele innerhalb derselben Elo.
-- High Elo Podium: Rückzugsort für High-Elo-Spieler, inkl. Streaming-Möglichkeit ohne Störung.
-- Street Brawl Lane: Voice-Kanal ohne Rang-Limit (max. 4 Slots).
-
-Kategorie "AFK":
-- AFK: automatischer Voice-Kanal für abwesende Nutzer.
-- No Deadlock Voice: Voice-Kanal für Offtopic-Unterhaltungen.
-
-Weiteres:
-- Unterschied Spaß / Grind / Ranked: Spaß = Casual ohne Ranglimit; Grind = fokussiertes Spielen mit Gewinnabsicht; Ranked = explizites Ranglisten-Spiel mit Spielern ähnlicher Wertung.
-- Street Brawl: 4er Lane ohne Rang-Cap, erstellt über den Street-Brawl-(+) Channel.
-- TempVoice-Lanes können über das Panel konfiguriert werden (Owner Claim, Kick/Ban, User-Limit, Regionenfilter, Mindest-Rang usw.).
-- Clip Submission hat Cooldown und sammelt Einreichungen pro Woche.
-- Deadlock Coaching: private Threads führen durch Rang-, Subrang- und Heldenauswahl; informiert Coaching-Team.
-- Feedback Hub: erlaubt anonymes Feedback an das Community-Team.
-- Voice Leaderboard & Stats: Befehle !vstats und !vleaderboard zeigen Voice-Aktivität.
-- Deadlock Team Balancer: !balance Befehle helfen faire Teams zu erstellen.
-- Steam-Verknüpfung via /account_verknüpfen; erinnert bei Voice ohne Link. Verified-Rolle wird automatisch nach Prüfung vergeben.
-- Für ein Lane 1:1 ist @cuzyoul immer zu Haben dadurch kansnt du dich einfach duelieren und verbessern.
-- Für ein Coaching oder gernerelle Hilfe zum Server zu Deadlock ist @earlysalty immer zu Haben
-- Warum habe ich die Meldung 2FA Requirement for Moderation?`--> Dann hast du einer der Rollen wie Streamer,VIP (haben Rechte um Mitgleieder in Voice Calls zu Verschieben), Community Moderator Server Dev Moderator haben alle teilweise bis viele Moderations rechte.
-Zufällige Fragen:
-Gehört der Deadlock Master Bot zu diesem Server? Ja er gehört zu dem Server und übernimmt die Wichtigsten aufgaben des Servers, bitte schalte ihn nicht Stumm sonst sind einige Funktionen nicht verfügbar.
-Warum bekomme ich eine DM von dem Bot nach Server join? Das ist gewollt und dient dazu das Servererlebniss zu verbessern und dir den einstieg in den Server zu ermöglichen. 
-Was ist dieses Kleiner Tipp für besseres Voice-Erlebnis vom Bot da warum bekomme ich das? Info nur für dich, die User sollen ihren Steam Account verknüpfen dafür gibt es mehrere Optionen, dies Dient dazu das wir 1. für Organistaorische Zwecke das Steam Profil mit dem Discord Profil haben, 2. für Statusanzeigen auf den Voice Kanälen, ob die Lane sich in einem Match in der Lobby befindet und ggf Minute. 
-""".strip()
+# --- Session Management --------------------------------------------------------
 
 
-# --- UI -----------------------------------------------------------------------
-
-
-class FAQModal(discord.ui.Modal):
-    """Modal, um Fragen an das Server FAQ zu stellen."""
-
-    question_input: discord.ui.TextInput
+class FAQSession:
+    """Hält Kontext für einen FAQ-Chat."""
 
     def __init__(
         self,
-        faq_cog: ServerFAQ,
-        *,
-        title: str = "Server FAQ",
-        default_question: str | None = None,
+        user_id: int,
+        thread_id: int,
+        created_at: datetime,
     ) -> None:
-        super().__init__(title=title, timeout=None)
-        self.faq_cog = faq_cog
-        self.question_input = discord.ui.TextInput(
-            label="Welche Frage hast du zum Server?",
-            placeholder="Beschreibe dein Anliegen möglichst konkret.",
-            style=discord.TextStyle.long,
-            required=True,
-            max_length=400,
-            default=default_question or "",
-        )
-        self.add_item(self.question_input)
+        self.user_id = user_id
+        self.thread_id = thread_id
+        self.created_at = created_at
+        self.messages: list[dict[str, str]] = []  # [{"role": "user"|"assistant", "content": ...}]
+        self.last_activity = datetime.utcnow()
 
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        await self.faq_cog.handle_interaction_question(
-            interaction=interaction,
-            question=self.question_input.value,
-            defer=True,
-        )
+    def add_user_message(self, content: str) -> None:
+        self.messages.append({"role": "user", "content": content})
+        self.last_activity = datetime.utcnow()
 
+    def add_assistant_message(self, content: str) -> None:
+        self.messages.append({"role": "assistant", "content": content})
+        self.last_activity = datetime.utcnow()
 
-class FAQAskView(discord.ui.View):
-    """View mit Button, um das FAQ-Modal aufzurufen."""
-
-    def __init__(self, faq_cog: ServerFAQ) -> None:
-        super().__init__(timeout=120)
-        self.faq_cog = faq_cog
-
-    @discord.ui.button(
-        label="Frage stellen",
-        style=discord.ButtonStyle.primary,
-        emoji="❓",
-    )
-    async def ask_button(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button[FAQAskView],
-    ) -> None:  # pragma: no cover
-        if interaction.response.is_done():
-            await interaction.followup.send(
-                "Bitte nutze /faq, um eine neue Frage zu stellen.",
-                ephemeral=True,
-            )
-            return
-
-        await interaction.response.send_modal(FAQModal(self.faq_cog))
+    def get_conversation_context(self) -> str:
+        """Gibt die Konversation als String zurück für den AI-Prompt."""
+        if not self.messages:
+            return ""
+        lines = []
+        for msg in self.messages[-10:]:  # Letzte 10 Nachrichten
+            role_label = "User" if msg["role"] == "user" else "Assistent"
+            lines.append(f"{role_label}: {msg['content']}")
+        return "\n".join(lines)
 
 
 # --- Cog ----------------------------------------------------------------------
 
 
 class ServerFAQ(commands.Cog):
-    """Deadlock-spezifischer FAQ-Bot, der auf GPT-Antworten zurückgreift."""
+    """Chat-basierter FAQ Bot mit MiniMax."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        # session_id (int) -> FAQSession
+        self._sessions: dict[int, FAQSession] = {}
+        # thread_id -> session_id
+        self._thread_to_session: dict[int, int] = {}
+        # user_id -> session_id (nur ein aktiver Chat pro User)
+        self._user_to_session: dict[int, int] = {}
+        self._lock = asyncio.Lock()
 
-    # ---- Antwort erzeugen ----------------------------------------------------
+    # ---- Session Management ----
+
+    async def _get_or_create_session(
+        self,
+        user_id: int,
+        thread_id: int,
+    ) -> FAQSession:
+        async with self._lock:
+            # Bestehende Session für User oder Thread?
+            if user_id in self._user_to_session:
+                sid = self._user_to_session[user_id]
+                session = self._sessions.get(sid)
+                if session:
+                    return session
+            if thread_id in self._thread_to_session:
+                sid = self._thread_to_session[thread_id]
+                session = self._sessions.get(sid)
+                if session:
+                    return session
+
+            # Neue Session
+            session = FAQSession(
+                user_id=user_id,
+                thread_id=thread_id,
+                created_at=datetime.utcnow(),
+            )
+            self._sessions[id(session)] = session
+            self._thread_to_session[thread_id] = id(session)
+            self._user_to_session[user_id] = id(session)
+            return session
+
+    async def _cleanup_old_sessions(self) -> None:
+        """Entfernt Sessions älter als SESSION_TIMEOUT_HOURS."""
+        async with self._lock:
+            now = datetime.utcnow()
+            expired = [
+                sid for sid, s in self._sessions.items()
+                if (now - s.last_activity).total_seconds() > SESSION_TIMEOUT_HOURS * 3600
+            ]
+            for sid in expired:
+                session = self._sessions.pop(sid, None)
+                if session:
+                    self._thread_to_session.pop(session.thread_id, None)
+                    self._user_to_session.pop(session.user_id, None)
+
+    # ---- Thread Creation ----
+
+    async def _create_faq_thread(
+        self,
+        interaction: discord.Interaction,
+        user: discord.User,
+    ) -> discord.Thread:
+        """Erstellt einen neuen FAQ-Thread für den User."""
+        guild = interaction.guild
+        if not guild:
+            raise ValueError("Kein Guild")
+
+        channel = guild.get_channel(FAQ_THREAD_CHANNEL_ID)
+        if not channel:
+            raise ValueError(f"Thread-Channel {FAQ_THREAD_CHANNEL_ID} nicht gefunden")
+
+        thread_name = f"FAQ-{user.name}-{datetime.utcnow().strftime('%d.%m %H:%M')}"
+        thread = await channel.create_thread(
+            name=thread_name,
+            type=discord.ChannelType.public_thread,
+            invitable=False,
+        )
+        # User zum Thread hinzufügen
+        await thread.add_user(user)
+        return thread
+
+    # ---- AI Answer Generation ----
 
     async def _generate_answer(
         self,
-        *,
-        question: str,
-        user: discord.abc.User | discord.Member | None,
-        channel: discord.abc.GuildChannel | discord.Thread | None,
+        session: FAQSession,
+        new_question: str,
     ) -> tuple[str, dict[str, Any]]:
-        """Fragt das Sprachmodell an und gibt Antwort + Metadaten zurück."""
+        """Generiert Antwort mit Kontext der bisherigen Konversation."""
+        metadata: dict[str, Any] = {}
 
-        metadata: dict[str, Any] = {
-            "user_id": getattr(user, "id", None),
-            "channel_id": getattr(channel, "id", None),
-            "guild_id": getattr(getattr(channel, "guild", None), "id", None)
-            if channel is not None
-            else getattr(getattr(user, "guild", None), "id", None),
-        }
+        ai = getattr(self.bot, "get_cog", lambda n: None)("AIConnector")
+        if not ai:
+            return "Der FAQ-Service ist aktuell nicht verfügbar. Bitte versuche es später erneut.", metadata
 
-        patchnote_context = changelogs.get_context_for_question(question)
+        conversation_context = session.get_conversation_context()
 
-        context_parts = [FAQ_CONTEXT]
+        # Patchnotes-Kontext falls relevant
+        patchnote_context = ""
+        try:
+            from service import changelogs
+            patchnote_context = changelogs.get_context_for_question(new_question)
+        except Exception:
+            pass
+
+        # Prompt zusammensetzen
+        context_parts = [DOCS_CONTEXT]
         if patchnote_context:
-            context_parts.append(f"Patchnotes:\n{patchnote_context}")
+            context_parts.append(f"Patchnotes-Kontext:\n{patchnote_context}")
 
-        composed_user_prompt = (
-            "Kontext:\n" + "\n\n".join(context_parts) + f"\n\nFrage:\n{question.strip()}"
+        if conversation_context:
+            context_parts.append(f"Bisherige Konversation:\n{conversation_context}")
+
+        full_prompt = (
+            "Dokumentation:\n" + "\n\n---\n\n".join(context_parts)
+            + f"\n\nNeue Frage vom User:\n{new_question.strip()}"
         )
 
-        ai = getattr(self.bot, "get_cog", lambda name: None)("AIConnector")
-        if not ai:
-            fallback = (
-                "Der FAQ-Bot steht aktuell nicht zur Verfügung. "
-                "Ich bin mir nicht sicher. Wende dich bitte mit dieser Frage an @earlysalty, den Server Owner."
-            )
-            metadata["error"] = "no_ai_connector"
-            return fallback, metadata
-
-        answer_text, meta_resp = await ai.generate_text(
-            provider="openai",
-            prompt=composed_user_prompt,
-            system_prompt=FAQ_SYSTEM_PROMPT,
+        answer_text, meta = await ai.generate_text(
+            provider=PRIMARY_PROVIDER,
+            prompt=full_prompt,
+            system_prompt=SYSTEM_PROMPT,
             model=PRIMARY_MODEL,
             max_output_tokens=MAX_OUTPUT_TOKENS,
             temperature=0.3,
         )
-        metadata.update(meta_resp)
+        metadata.update(meta)
 
         if not answer_text:
-            fallback = "Ich bin mir nicht sicher. Wende dich bitte mit dieser Frage an @earlysalty, den Server Owner."
-            metadata.setdefault("error", "no_response")
-            return fallback, metadata
+            return "Ich konnte keine Antwort generieren. Bitte versuche es später erneut.", metadata
 
-        return answer_text, metadata
+        return answer_text.strip(), metadata
 
-    # ---- Handling der Interaktion -------------------------------------------
+    # ---- Message Handler ----
 
-    async def handle_interaction_question(
+    async def _handle_thread_message(
         self,
-        *,
-        interaction: discord.Interaction,
-        question: str,
-        defer: bool,
+        message: discord.Message,
     ) -> None:
-        if defer:
-            await interaction.response.defer(ephemeral=True, thinking=True)
+        """Verarbeitet eine Nachricht in einem FAQ-Thread."""
+        # Bot-Nachrichten ignorieren
+        if message.author.id == self.bot.user.id:
+            return
 
-        answer, metadata = await self._generate_answer(
-            question=question,
-            user=interaction.user,
-            channel=interaction.channel,
-        )
+        # Nur in Threads die wir kennen
+        if message.channel.id not in self._thread_to_session:
+            return
 
-        guild_id = interaction.guild_id
-        channel_id = interaction.channel_id
-        user_id = interaction.user.id if interaction.user else None
+        session_id = self._thread_to_session[message.channel.id]
+        session = self._sessions.get(session_id)
+        if not session:
+            return
 
-        if "feedback" in question.lower() and "feedback hub" not in answer.lower():
-            answer = (
-                f"{answer}\n\nFür anonymes Feedback nutzt du im Feedback Hub den Button "
-                "„Anonymes Feedback senden“."
-            )
+        # Nur der Thread-Owner darf chatten
+        if message.author.id != session.user_id:
+            return
 
-        # Persist Logs
-        faq_logs.store_exchange(
-            guild_id=guild_id,
-            channel_id=channel_id,
-            user_id=user_id,
+        question = message.content.strip()
+        if not question:
+            return
+
+        # Thinking-Message senden
+        async with message.channel.typing():
+            session.add_user_message(question)
+            answer, metadata = await self._generate_answer(session, question)
+
+        session.add_assistant_message(answer)
+
+        # Logging
+        await self._log_qa(
+            user_id=message.author.id,
+            username=str(message.author),
             question=question,
             answer=answer,
             model=metadata.get("model"),
-            metadata=metadata,
         )
 
-        # Antwort bauen
-        cleaned_answer = (answer or "").strip()
-        if not cleaned_answer:
-            cleaned_answer = "Ich bin mir nicht sicher. Wende dich bitte mit dieser Frage an @earlysalty, den Server Owner."
-
-        if len(cleaned_answer) <= 4096:
-            embed = discord.Embed(
-                title="Server FAQ",
-                description=cleaned_answer,
-                colour=discord.Colour.blurple(),
+        # Antwort ephemeral senden (nur User sieht sie)
+        try:
+            await message.reply(answer, suppress_embeds=True)
+        except discord.HTTPException:
+            # Fallback: direkt antworten wenn reply nicht geht
+            await message.channel.send(
+                f"{message.author.mention}: {answer}",
+                suppress_embeds=True,
             )
-            footer = "Deadlock Master Bot • FAQ-Antwort"
-            if DEBUG_FAQ and metadata:
-                err = metadata.get("error")
-                used_model = metadata.get("model")
-                if err:
-                    footer += f" • DEBUG: error={str(err)[:60]} • model={used_model}"
-                else:
-                    footer += f" • model={used_model}"
-            embed.set_footer(text=footer)
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        else:
-            await interaction.followup.send(cleaned_answer, ephemeral=True)
 
-    # ---- Commands ------------------------------------------------------------
+    # ---- Logging ----
+
+    async def _log_qa(
+        self,
+        user_id: int,
+        username: str,
+        question: str,
+        answer: str,
+        model: str | None,
+    ) -> None:
+        """Loggt Q&A in den dedizierten Channel."""
+        channel = self.bot.get_channel(LOG_CHANNEL_ID)
+        if not channel:
+            log.warning("Log-Channel %d nicht gefunden", LOG_CHANNEL_ID)
+            return
+
+        embed = discord.Embed(
+            title="FAQ Chat",
+            color=discord.Colour.blue(),
+            timestamp=datetime.utcnow(),
+        )
+        embed.add_field(name="User", value=f"{username} ({user_id})", inline=False)
+        embed.add_field(name="Frage", value=question[:1024], inline=False)
+        embed.add_field(name="Antwort", value=answer[:1024] if answer else "(leer)", inline=False)
+        if model:
+            embed.set_footer(text=f"Model: {model}")
+
+        try:
+            await channel.send(embed=embed)
+        except Exception as exc:
+            log.error("Konnte Q&A nicht loggen: %s", exc)
+
+    # ---- Discord Event ----
+
+    @commands.Cog.listener("on_message")
+    async def on_message(self, message: discord.Message) -> None:
+        """Reagiert auf Nachrichten in FAQ-Threads."""
+        if message.guild is None:
+            return
+        if not isinstance(message.channel, discord.Thread):
+            return
+        if message.author.bot:
+            return
+
+        # Periodic cleanup
+        if message.id % 50 == 0:  # Alle 50 Nachrichten aufräumen
+            asyncio.create_task(self._cleanup_old_sessions())
+
+        await self._handle_thread_message(message)
+
+    # ---- Commands ----
 
     @app_commands.command(
         name="faq",
-        description="Öffnet das Server FAQ und beantwortet Server-bezogene Fragen.",
+        description="Startet einen FAQ-Chat mit dem Server-Assistenten.",
     )
     @app_commands.guild_only()
     async def faq(self, interaction: discord.Interaction) -> None:
-        if interaction.response.is_done():
+        """Startet einen neuen FAQ-Chat für den User."""
+        await interaction.response.defer(ephemeral=True)
+
+        user = interaction.user
+
+        try:
+            thread = await self._create_faq_thread(interaction, user)
+        except ValueError as exc:
             await interaction.followup.send(
-                "Du kannst nur eine Anfrage gleichzeitig stellen.",
+                f"❌ Konnte keinen Chat erstellen: {exc}",
                 ephemeral=True,
             )
             return
-        await interaction.response.send_modal(FAQModal(self))
-
-    @app_commands.command(
-        name="serverfaq",
-        description="Stelle dem Deadlock Server FAQ eine Frage zum Discord-Server.",
-    )
-    @app_commands.describe(
-        frage="Formuliere deine Frage zum Server, seinen Rollen, Kanälen oder Bots.",
-    )
-    @app_commands.guild_only()
-    async def serverfaq(self, interaction: discord.Interaction, frage: str) -> None:
-        await self.handle_interaction_question(
-            interaction=interaction,
-            question=frage,
-            defer=True,
-        )
-
-    @commands.command(name="faq")
-    async def faq_prefix(self, ctx: commands.Context) -> None:
-        if ctx.guild is None:
-            await ctx.reply("Bitte nutze diesen Befehl auf dem Server.")
+        except discord.HTTPException:
+            await interaction.followup.send(
+                "❌ Konnte keinen Chat erstellen. Bitte versuche es später erneut.",
+                ephemeral=True,
+            )
             return
 
-        view = FAQAskView(self)
-        description = (
-            "Nutze die Schaltfläche, um das Deadlock Server FAQ zu öffnen. "
-            "Alternativ steht dir jederzeit der Slash-Befehl /faq zur Verfügung."
+        session = await self._get_or_create_session(user.id, thread.id)
+
+        # Willkommensnachricht im Thread
+        welcome = (
+            f"👋 **{user.name}**, willkommen beim FAQ-Chat!\n\n"
+            "Stell mir Fragen zum Server, zu Kanälen, Rollen, Bots oder Deadlock.\n"
+            "Ich kann mich an unsere bisherige Unterhaltung erinnern - du kannst also "
+            "auch Rückfragen stellen.\n\n"
+            "⏱️ Dieser Chat bleibt 24 Stunden aktiv."
         )
 
-        embed = discord.Embed(
-            title="Deadlock Server FAQ",
-            description=description,
-            colour=discord.Colour.blurple(),
-        )
-        embed.set_footer(text="Deadlock Master Bot • FAQ")
+        try:
+            await thread.send(welcome)
+        except discord.HTTPException:
+            pass
 
-        await ctx.reply(embed=embed, view=view, mention_author=False)
+        await interaction.followup.send(
+            f"✅ Dein FAQ-Chat wurde erstellt: {thread.mention}\n\n"
+            "Klicke auf den Link und stell deine Frage(n) dort.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="faqclose",
+        description="Beendet den aktuellen FAQ-Chat.",
+    )
+    @app_commands.guild_only()
+    async def faqclose(self, interaction: discord.Interaction) -> None:
+        """Beendet den FAQ-Chat des Users."""
+        user_id = interaction.user.id
+        channel = interaction.channel
+
+        if not isinstance(channel, discord.Thread):
+            await interaction.response.send_message(
+                "❌ Dieser Befehl funktioniert nur in einem FAQ-Thread.",
+                ephemeral=True,
+            )
+            return
+
+        session_id = self._thread_to_session.get(channel.id)
+        if not session_id:
+            await interaction.response.send_message(
+                "❌ Das ist kein aktiver FAQ-Thread.",
+                ephemeral=True,
+            )
+            return
+
+        session = self._sessions.get(session_id)
+        if not session or session.user_id != user_id:
+            await interaction.response.send_message(
+                "❌ Das ist nicht dein FAQ-Thread.",
+                ephemeral=True,
+            )
+            return
+
+        async with self._lock:
+            self._sessions.pop(session_id, None)
+            self._thread_to_session.pop(channel.id, None)
+            self._user_to_session.pop(user_id, None)
+
+        try:
+            await channel.send("🛑 Dieser FAQ-Chat wurde beendet.")
+            await channel.edit(archived=True)
+        except discord.HTTPException:
+            pass
+
+        await interaction.response.send_message(
+            "✅ Dein FAQ-Chat wurde beendet.",
+            ephemeral=True,
+        )
 
 
 async def setup(bot: commands.Bot) -> None:
@@ -416,19 +479,13 @@ async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(faq_cog)
 
     try:
-        bot.tree.add_command(faq_cog.serverfaq)
+        bot.tree.add_command(faq_cog.faq)
     except app_commands.CommandAlreadyRegistered:
-        bot.tree.remove_command(
-            faq_cog.serverfaq.name,
-            type=discord.AppCommandType.chat_input,
-        )
-        bot.tree.add_command(faq_cog.serverfaq)
+        bot.tree.remove_command("faq", type=discord.AppCommandType.chat_input)
+        bot.tree.add_command(faq_cog.faq)
 
     try:
-        bot.tree.add_command(faq_cog.faq)
+        bot.tree.add_command(faq_cog.faqclose)
     except app_commands.CommandAlreadyRegistered:
-        bot.tree.remove_command(
-            faq_cog.faq.name,
-            type=discord.AppCommandType.chat_input,
-        )
-        bot.tree.add_command(faq_cog.faq)
+        bot.tree.remove_command("faqclose", type=discord.AppCommandType.chat_input)
+        bot.tree.add_command(faq_cog.faqclose)

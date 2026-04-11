@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import time
+from typing import Any
 
 import discord
 
@@ -15,6 +16,11 @@ _STEAM_LOG_CHANNEL_ID = 1374364800817303632
 
 class PresenceMixin:
     """Presence, Ready-Tasks und Voice-Routing."""
+
+    _steam_bridge_internal_self_heal_enabled: bool = (
+        (os.getenv("STEAM_BRIDGE_INTERNAL_SELF_HEAL") or "").strip().lower()
+        in {"1", "true", "yes", "y", "on"}
+    )
 
     def active_cogs(self) -> list[str]:
         """Aktuell geladene Extensions (runtime), nur 'cogs.'-Namespace."""
@@ -136,12 +142,95 @@ class PresenceMixin:
                 new_name,
             )
 
-    # State für Steam Bridge Login-Check
-    _steam_not_logged_in_since: float | None = None
-    _steam_login_alert_at: float = 0.0
+    # State für Steam-Bridge-Health-Self-Heal
+    _steam_bridge_unhealthy_since: float | None = None
+    _steam_bridge_unhealthy_reason: str | None = None
+    _steam_bridge_restart_cooldown_until: float = 0.0
+
+    @staticmethod
+    def _extract_steam_bridge_health_issue(snapshot: dict[str, Any]) -> dict[str, Any] | None:
+        runtime = snapshot.get("runtime", {}) if isinstance(snapshot, dict) else {}
+        diagnostics = snapshot.get("diagnostics", {}) if isinstance(snapshot, dict) else {}
+        now = time.time()
+
+        logged_on = bool(runtime.get("logged_on", False))
+        logging_in = bool(runtime.get("logging_in", False))
+        steam_id64 = str(runtime.get("steam_id64") or "").strip()
+        last_error = runtime.get("last_error")
+        if isinstance(last_error, dict):
+            last_error_message = str(last_error.get("message") or "").strip()
+        elif last_error:
+            last_error_message = str(last_error).strip()
+        else:
+            last_error_message = ""
+
+        recent_failed_friend_requests = int(
+            diagnostics.get("recent_failed_friend_requests", 0) or 0
+        )
+        oldest_pending_friend_request_age = diagnostics.get(
+            "oldest_pending_friend_request_age_seconds"
+        )
+        if oldest_pending_friend_request_age is not None:
+            try:
+                oldest_pending_friend_request_age = int(oldest_pending_friend_request_age)
+            except (TypeError, ValueError):
+                oldest_pending_friend_request_age = None
+
+        if not logging_in and not logged_on:
+            return {
+                "reason": "not_logged_in",
+                "summary": "Bridge läuft, ist aber nicht bei Steam eingeloggt.",
+                "details": {
+                    "logged_on": logged_on,
+                    "logging_in": logging_in,
+                    "steam_id64": steam_id64 or None,
+                    "last_error": last_error_message or None,
+                    "recent_failed_friend_requests": recent_failed_friend_requests,
+                    "oldest_pending_friend_request_age_seconds": oldest_pending_friend_request_age,
+                    "detected_at": now,
+                },
+            }
+
+        if logged_on and not steam_id64:
+            return {
+                "reason": "missing_steam_id",
+                "summary": "Bridge meldet Login, aber keine Steam-ID.",
+                "details": {
+                    "logged_on": logged_on,
+                    "logging_in": logging_in,
+                    "last_error": last_error_message or None,
+                    "recent_failed_friend_requests": recent_failed_friend_requests,
+                    "oldest_pending_friend_request_age_seconds": oldest_pending_friend_request_age,
+                    "detected_at": now,
+                },
+            }
+
+        stalled_friend_requests = (
+            recent_failed_friend_requests >= 2
+            and (oldest_pending_friend_request_age or 0) >= 120
+            and last_error_message.lower() in {"noconnection", "not logged in", "request timed out"}
+        )
+        if stalled_friend_requests:
+            return {
+                "reason": "friend_requests_stalled",
+                "summary": "Steam-Friend-Requests laufen in Timeouts und hängen fest.",
+                "details": {
+                    "logged_on": logged_on,
+                    "logging_in": logging_in,
+                    "steam_id64": steam_id64 or None,
+                    "last_error": last_error_message or None,
+                    "recent_failed_friend_requests": recent_failed_friend_requests,
+                    "oldest_pending_friend_request_age_seconds": oldest_pending_friend_request_age,
+                    "detected_at": now,
+                },
+            }
+
+        return None
 
     async def _check_steam_bridge_login_health(self) -> None:
-        """Erkennt wenn die Steam Bridge läuft aber nicht eingeloggt ist, schickt Alert und startet neu."""
+        """Sauberer Self-Heal für die Steam Bridge anhand von Runtime-State und Task-Diagnostik."""
+        if not self._steam_bridge_internal_self_heal_enabled:
+            return
         if not self.standalone_manager:
             return
         try:
@@ -150,10 +239,11 @@ class PresenceMixin:
             return
 
         if not state_info.get("running"):
-            self._steam_not_logged_in_since = None
+            self._steam_bridge_unhealthy_since = None
+            self._steam_bridge_unhealthy_reason = None
             return  # Prozess läuft nicht – ensure_autostart kümmert sich darum
 
-        # Login-Status aus DB lesen
+        # Runtime- und Diagnostik-Status aus DB lesen
         try:
             from service import db
 
@@ -170,6 +260,41 @@ class PresenceMixin:
                         payload = json.loads(row["payload"])
                     except Exception:  # noqa: S110
                         pass
+                now_ts = int(time.time())
+                recent_failed_friend_requests_row = db.query_one(
+                    """
+                    SELECT COUNT(*) AS count
+                      FROM steam_tasks
+                     WHERE type='AUTH_SEND_FRIEND_REQUEST'
+                       AND status='FAILED'
+                       AND updated_at >= ?
+                    """,
+                    (now_ts - 900,),
+                )
+                oldest_pending_friend_request_row = db.query_one(
+                    """
+                    SELECT MIN(requested_at) AS oldest_requested_at
+                      FROM steam_friend_requests
+                     WHERE status='pending'
+                    """,
+                )
+                diagnostics = {
+                    "recent_failed_friend_requests": int(
+                        recent_failed_friend_requests_row["count"] or 0
+                    )
+                    if recent_failed_friend_requests_row
+                    else 0,
+                    "oldest_pending_friend_request_age_seconds": None,
+                }
+                if (
+                    oldest_pending_friend_request_row
+                    and oldest_pending_friend_request_row["oldest_requested_at"] is not None
+                ):
+                    diagnostics["oldest_pending_friend_request_age_seconds"] = max(
+                        0,
+                        now_ts - int(oldest_pending_friend_request_row["oldest_requested_at"]),
+                    )
+                payload["diagnostics"] = diagnostics
                 return int(row["heartbeat"] or 0), payload
 
             heartbeat, payload = await asyncio.to_thread(_get_state)
@@ -179,41 +304,53 @@ class PresenceMixin:
 
         # Heartbeat muss frisch sein (sonst Bridge schreibt gerade noch nicht)
         if not heartbeat or time.time() - heartbeat > 90:
-            self._steam_not_logged_in_since = None
+            self._steam_bridge_unhealthy_since = None
+            self._steam_bridge_unhealthy_reason = None
             return
 
-        runtime = payload.get("runtime", {})
-        logged_on = runtime.get("logged_on", False)
-
-        if logged_on:
-            if self._steam_not_logged_in_since is not None:
-                logging.info("Steam Bridge ist wieder eingeloggt – Health-Check OK")
-            self._steam_not_logged_in_since = None
+        issue = self._extract_steam_bridge_health_issue(payload)
+        if issue is None:
+            if self._steam_bridge_unhealthy_since is not None:
+                logging.info("Steam Bridge Health-Check wieder OK")
+            self._steam_bridge_unhealthy_since = None
+            self._steam_bridge_unhealthy_reason = None
             return
 
-        # Nicht eingeloggt – Timer starten
         now = time.time()
-        if self._steam_not_logged_in_since is None:
-            self._steam_not_logged_in_since = now
-            return  # Erste Erkennung – erstmal abwarten
-
-        not_logged_in_secs = now - self._steam_not_logged_in_since
-        grace_period = 180  # 3 Minuten Toleranz (z.B. kurz nach Start)
-        if not_logged_in_secs < grace_period:
+        reason = str(issue.get("reason") or "unknown")
+        if self._steam_bridge_unhealthy_reason != reason:
+            self._steam_bridge_unhealthy_since = now
+            self._steam_bridge_unhealthy_reason = reason
+            logging.warning(
+                "Steam Bridge Health-Check: Problem erkannt (%s): %s",
+                reason,
+                issue.get("summary") or "ohne Beschreibung",
+            )
             return
 
-        # Cooldown: nicht mehr als einmal alle 10 Minuten
-        if now - self._steam_login_alert_at < 600:
+        if self._steam_bridge_unhealthy_since is None:
+            self._steam_bridge_unhealthy_since = now
             return
 
-        self._steam_login_alert_at = now
-        self._steam_not_logged_in_since = None  # Reset – nächste Runde wieder sauber
+        unhealthy_for_seconds = now - self._steam_bridge_unhealthy_since
+        grace_period = 180
+        if unhealthy_for_seconds < grace_period:
+            return
 
-        minutes_down = int(not_logged_in_secs / 60)
-        last_error = runtime.get("last_error")
+        if now < self._steam_bridge_restart_cooldown_until:
+            return
+
+        self._steam_bridge_restart_cooldown_until = now + 600
+        self._steam_bridge_unhealthy_since = None
+        self._steam_bridge_unhealthy_reason = None
+
+        details = issue.get("details", {}) if isinstance(issue.get("details"), dict) else {}
+        minutes_down = int(unhealthy_for_seconds / 60)
+        last_error = details.get("last_error")
         error_info = f" (letzter Fehler: `{last_error}`)" if last_error else ""
         logging.warning(
-            "Steam Bridge health check: nicht eingeloggt seit %d Min%s – starte Neustart",
+            "Steam Bridge health check: %s seit %d Min%s – starte sauberen Neustart",
+            reason,
             minutes_down,
             error_info or "",
         )
@@ -224,14 +361,14 @@ class PresenceMixin:
 
         if channel:
             await channel.send(
-                f"{ping} ⚠️ **Steam Bridge nicht eingeloggt** seit {minutes_down} Min.{error_info} – versuche Neustart..."
+                f"{ping} ⚠️ **Steam Bridge Self-Heal**: `{reason}` seit {minutes_down} Min.{error_info} – starte sauberen Neustart..."
             )
 
         try:
             await self.standalone_manager.restart("steam")
-            logging.info("Steam Bridge Neustart durch Login-Health-Check ausgelöst")
+            logging.info("Steam Bridge Neustart durch Self-Heal ausgelöst: %s", reason)
             if channel:
-                await channel.send("🔄 Steam Bridge Neustart wurde gestartet.")
+                await channel.send("🔄 Steam Bridge Neustart wurde gestartet. Login und Session werden komplett neu aufgebaut.")
         except Exception as exc:
             logging.error("Steam Bridge Neustart fehlgeschlagen: %s", exc)
             if channel:

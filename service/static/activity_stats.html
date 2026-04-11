@@ -1,0 +1,1057 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aktivitätsstatistik – EarlySalty Deadlock</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+/* ── Fonts ── */
+@font-face {
+  font-family: "Manrope";
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url("/fonts/manrope-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Sora";
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url("/fonts/sora-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* ── Theme ── */
+:root {
+  --bg: #07151d;
+  --background: #0b1d28;
+  --card: #102635;
+  --card-hover: #173448;
+  --primary: #ff7a18;
+  --primary-hover: #ff8d39;
+  --accent: #10b7ad;
+  --accent-hover: #1dd4ca;
+  --success: #2ecc71;
+  --warning: #f5b642;
+  --danger: #ff6b5e;
+  --secondary: #8ea8bb;
+  --text-primary: #e9f1f7;
+  --text-secondary: #9bb3c5;
+  --border: rgba(194, 221, 240, 0.14);
+  --border-hover: rgba(194, 221, 240, 0.3);
+  --font-sans: "Manrope", "Segoe UI", sans-serif;
+  --font-display: "Sora", "Manrope", sans-serif;
+  --r: 14px;
+  --r-sm: 10px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; background: var(--bg); }
+
+body {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  min-height: 100vh;
+  background:
+    radial-gradient(1200px 520px at 90% -10%, rgba(255,122,24,.18), transparent 65%),
+    radial-gradient(900px 460px at 12% -20%, rgba(16,183,173,.24), transparent 60%),
+    linear-gradient(160deg, #07151d 0%, #081a24 55%, #0a202c 100%);
+  -webkit-font-smoothing: antialiased;
+  position: relative;
+}
+
+/* Grid pattern */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px);
+  background-size: 36px 36px;
+  mask-image: radial-gradient(ellipse at top, black 40%, transparent 75%);
+  opacity: 0.35;
+  z-index: 0;
+}
+
+/* ── Nav ── */
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 200;
+  height: 62px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 32px;
+  background: rgba(7,21,29,.88);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-bottom: 1px solid var(--border);
+}
+.nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 17px;
+  font-weight: 800;
+  font-family: var(--font-display);
+  color: var(--text-primary);
+  text-decoration: none;
+  letter-spacing: -.02em;
+}
+.nav-brand-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--primary), var(--accent));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  flex-shrink: 0;
+}
+.nav-title {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.last-updated {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* ── Layout ── */
+.main {
+  position: relative;
+  z-index: 1;
+  max-width: 1300px;
+  margin: 0 auto;
+  padding: 32px 28px 80px;
+}
+
+/* ── Cards ── */
+.card {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(160deg, rgba(16,38,53,.92), rgba(10,30,42,.92));
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 26px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.25), inset 0 1px 0 rgba(255,255,255,.05);
+}
+.card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(120deg, rgba(255,255,255,.06), transparent 35%);
+  opacity: 0.4;
+}
+.card-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+  gap: 12px;
+  position: relative;
+  z-index: 1;
+}
+.card-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .8px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-display);
+}
+
+/* ── Tabs ── */
+.tabs {
+  display: flex;
+  gap: 6px;
+  background: rgba(12,35,49,.72);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 6px;
+  margin-bottom: 28px;
+  flex-wrap: wrap;
+  box-shadow: 0 16px 40px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.04);
+}
+.tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: all .18s ease;
+}
+.tab-btn:hover { background: var(--card-hover); color: var(--text-primary); }
+.tab-btn.active {
+  background: linear-gradient(135deg, var(--primary), var(--accent));
+  color: #fff;
+  box-shadow: 0 4px 15px rgba(255,122,24,.35);
+}
+.tab-btn img {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+}
+.tab-icon { font-size: 16px; }
+
+/* ── Charts ── */
+.chart-wrap {
+  position: relative;
+  height: 300px;
+}
+.chart-wrap.tall { height: 340px; }
+
+/* ── Rank Select ── */
+.rank-select-wrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+  position: relative;
+  z-index: 1;
+}
+.rank-select-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.rank-select {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all .15s;
+  min-width: 180px;
+}
+.rank-select:hover { border-color: var(--border-hover); background: var(--card-hover); }
+.rank-select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(16,183,173,.2); }
+.rank-select option { background: var(--card); color: var(--text-primary); }
+
+/* ── Best Times Cards ── */
+.best-times-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 20px;
+  margin-top: 20px;
+  position: relative;
+  z-index: 1;
+}
+.best-time-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 22px;
+  position: relative;
+  overflow: hidden;
+  transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
+}
+.best-time-card:hover {
+  transform: translateY(-3px);
+  border-color: var(--border-hover);
+  box-shadow: 0 14px 28px rgba(0,0,0,.24);
+}
+.best-time-card .card-bg-glow {
+  position: absolute;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  opacity: 0.06;
+  pointer-events: none;
+}
+.best-time-card .rank-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+  position: relative;
+}
+.best-time-card .rank-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  object-fit: cover;
+}
+.best-time-card .rank-name {
+  font-size: 15px;
+  font-weight: 700;
+  font-family: var(--font-display);
+  text-transform: capitalize;
+}
+.best-time-card .peak-info {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.best-time-card .peak-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+}
+.best-time-card .peak-time {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+}
+.best-time-card .peak-badge {
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-weight: 700;
+  font-size: 12px;
+}
+.best-time-card .peak-count {
+  color: var(--text-secondary);
+}
+.best-time-card .trend-bar {
+  height: 6px;
+  background: var(--card-hover);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 16px;
+}
+.best-time-card .trend-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width .6s ease;
+}
+
+/* ── Rank Distribution ── */
+.dist-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+@media (max-width: 900px) {
+  .dist-grid { grid-template-columns: 1fr; }
+}
+.donut-wrap {
+  position: relative;
+  height: 260px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.donut-center {
+  position: absolute;
+  text-align: center;
+}
+.donut-center-value {
+  font-size: 32px;
+  font-weight: 800;
+  color: var(--text-primary);
+  font-family: var(--font-display);
+}
+.donut-center-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: .5px;
+}
+
+/* ── Timeline ── */
+.timeline-controls {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.rank-legend {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 20px;
+  justify-content: center;
+  position: relative;
+  z-index: 1;
+}
+.rank-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all .15s;
+  user-select: none;
+}
+.rank-legend-item:hover {
+  border-color: var(--border-hover);
+  color: var(--text-primary);
+  background: var(--card-hover);
+}
+.rank-legend-item.dimmed {
+  opacity: 0.35;
+  text-decoration: line-through;
+}
+.rank-legend-item img {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  object-fit: cover;
+}
+.rank-legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* ── Metric Toggle ── */
+.metric-toggle {
+  display: flex;
+  gap: 4px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+  margin-bottom: 20px;
+  width: fit-content;
+}
+.metric-btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: all .15s;
+}
+.metric-btn:hover { color: var(--text-primary); }
+.metric-btn.active {
+  background: var(--primary);
+  color: #fff;
+}
+
+/* ── Loading ── */
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 60px;
+  color: var(--text-secondary);
+  font-size: 14px;
+  gap: 12px;
+}
+.loading::before {
+  content: '';
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Error ── */
+.error-state {
+  text-align: center;
+  padding: 60px;
+  color: var(--danger);
+}
+
+/* ── Tab Content ── */
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+/* ── Section Title ── */
+.section-title {
+  font-size: 16px;
+  font-weight: 700;
+  font-family: var(--font-display);
+  color: var(--text-primary);
+  margin-bottom: 16px;
+  letter-spacing: -.02em;
+  position: relative;
+  z-index: 1;
+}
+
+/* ── No Data ── */
+.no-data {
+  text-align: center;
+  padding: 40px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+/* ── Voice Summary Cards ── */
+.voice-stat-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 20px;
+  text-align: center;
+  transition: all .18s ease;
+}
+.voice-stat-card:hover {
+  border-color: var(--border-hover);
+  transform: translateY(-2px);
+}
+.voice-stat-value {
+  font-size: 28px;
+  font-weight: 800;
+  font-family: var(--font-display);
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+.voice-stat-value.accent { color: var(--accent); }
+.voice-stat-value.primary { color: var(--primary); }
+.voice-stat-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: .5px;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: #071923; }
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #1a3f57, #204e6b);
+  border-radius: 999px;
+  border: 2px solid #071923;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #20506f, #2c698e);
+}
+
+/* Selection */
+::selection {
+  background: color-mix(in srgb, var(--primary) 45%, transparent);
+  color: #ffffff;
+}
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-brand">
+    <div class="nav-brand-icon">⚡</div>
+    <span>Deadlock Aktivität</span>
+  </div>
+  <div class="nav-title">
+    <span class="last-updated" id="lastUpdated">Lädt...</span>
+  </div>
+</nav>
+
+<main class="main">
+
+  <!-- Tab Navigation -->
+  <div class="tabs" id="tabNav">
+    <button class="tab-btn active" data-tab="timeline">
+      <span class="tab-icon">📈</span> Timeline
+    </button>
+    <button class="tab-btn" data-tab="distribution">
+      <span class="tab-icon">🎯</span> Rang Verteilung
+    </button>
+    <button class="tab-btn" data-tab="besttimes">
+      <span class="tab-icon">⏰</span> Beste Zeit
+    </button>
+    <button class="tab-btn" data-tab="voice">
+      <span class="tab-icon">🎤</span> Voice Aktivität
+    </button>
+  </div>
+
+  <!-- TAB: Timeline -->
+  <div id="tab-timeline" class="tab-content active">
+    <div class="card">
+      <div class="card-hd">
+        <span class="card-label">📈 Aktivitäts-Timeline (24h)</span>
+      </div>
+      <div class="metric-toggle" id="metricToggle">
+        <button class="metric-btn active" data-metric="players" onclick="setMetric('players')">Spieler</button>
+        <button class="metric-btn" data-metric="hours" onclick="setMetric('hours')">Stunden</button>
+      </div>
+      <div class="chart-wrap tall">
+        <canvas id="timelineChart"></canvas>
+      </div>
+      <div class="rank-legend" id="timelineLegend"></div>
+    </div>
+  </div>
+
+  <!-- TAB: Distribution -->
+  <div id="tab-distribution" class="tab-content">
+    <div class="card" style="margin-bottom: 24px;">
+      <div class="card-hd">
+        <span class="card-label">🎯 Rang-Verteilung</span>
+      </div>
+      <div class="dist-grid">
+        <div class="donut-wrap">
+          <canvas id="donutChart"></canvas>
+          <div class="donut-center">
+            <div class="donut-center-value" id="totalPlayers">0</div>
+            <div class="donut-center-label">Spieler</div>
+          </div>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="weeklyChart"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB: Best Times -->
+  <div id="tab-besttimes" class="tab-content">
+    <div class="card">
+      <div class="card-hd">
+        <span class="card-label">⏰ Beste Zeitfenster für deinen Rang</span>
+      </div>
+      <div class="rank-select-wrap">
+        <span class="rank-select-label">Wähle deinen Rang:</span>
+        <select class="rank-select" id="rankSelect" onchange="loadBestTimes()">
+          <option value="">-- Rang wählen --</option>
+        </select>
+      </div>
+      <div class="best-times-grid" id="bestTimesGrid">
+        <div class="loading">Wähle einen Rang aus</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB: Voice Aktivität -->
+  <div id="tab-voice" class="tab-content">
+    <div class="card" style="margin-bottom: 24px;">
+      <div class="card-hd">
+        <span class="card-label">🎤 Voice Aktivität (letzte 14 Tage)</span>
+        <div class="metric-toggle" style="margin:0;">
+          <button class="metric-btn" data-mode="hour" onclick="setVoiceMode('hour')">Stündlich</button>
+          <button class="metric-btn active" data-mode="day" onclick="setVoiceMode('day')">Täglich</button>
+          <button class="metric-btn" data-mode="week" onclick="setVoiceMode('week')">Wöchentlich</button>
+        </div>
+      </div>
+      <div class="chart-wrap tall">
+        <canvas id="voiceChart"></canvas>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-hd">
+        <span class="card-label">📊 Zusammenfassung</span>
+      </div>
+      <div class="voice-summary-grid" id="voiceSummary" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;position:relative;z-index:1;">
+        <div class="loading">Lädt...</div>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<script>
+const RANK_ORDER = [
+  "initiate", "seeker", "alchemist", "arcanist", "ritualist",
+  "emissary", "archon", "oracle", "phantom", "ascendant", "eternus"
+];
+const RANK_COLORS = {
+  initiate: "#cb643b", seeker: "#96c86f", alchemist: "#0e5d8b",
+  arcanist: "#3c591e", ritualist: "#b15926", emissary: "#b73f3c",
+  archon: "#705691", oracle: "#a74905", phantom: "#8d7b69",
+  ascendant: "#c59951", eternus: "#1eb6a7"
+};
+const DAY_NAMES = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+
+let timelineChart = null;
+let donutChart = null;
+let weeklyChart = null;
+let globalTimeline = { timeline: [], peak_times: {}, rank_order: [] };
+let globalDist = { distribution: {}, rank_order: [], weekly_trend: [] };
+let currentMetric = 'players';
+let voiceChart = null;
+let currentVoiceMode = 'day';
+let globalVoiceHistory = { summary: {}, daily: [], hourly: [] };
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  initTabs();
+  initRankSelect();
+  loadAllData();
+});
+
+function initTabs() {
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const tab = btn.dataset.tab;
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById('tab-' + tab).classList.add('active');
+      if (tab === 'voice' && !globalVoiceHistory.daily?.length) {
+        loadVoiceHistory();
+      }
+    });
+  });
+}
+
+function initRankSelect() {
+  const select = document.getElementById('rankSelect');
+  RANK_ORDER.forEach(rank => {
+    const opt = document.createElement('option');
+    opt.value = rank;
+    opt.textContent = rank.charAt(0).toUpperCase() + rank.slice(1);
+    select.appendChild(opt);
+  });
+}
+
+// ── Metric Toggle ──────────────────────────────────────────────────────────────
+function setMetric(metric) {
+  currentMetric = metric;
+  document.querySelectorAll('.metric-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.metric === metric);
+  });
+  renderTimeline();
+}
+
+// ── Voice History ─────────────────────────────────────────────────────────────
+async function loadVoiceHistory() {
+  try {
+    const data = await fetch(`/api/voice-history?range=14&mode=${currentVoiceMode}`).then(r => r.json());
+    globalVoiceHistory = data;
+    renderVoiceChart();
+    renderVoiceSummary();
+  } catch (e) {
+    console.error('Failed to load voice history:', e);
+  }
+}
+
+function setVoiceMode(mode) {
+  currentVoiceMode = mode;
+  document.querySelectorAll('#tab-voice .metric-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.mode === mode);
+  });
+  loadVoiceHistory();
+}
+
+function renderVoiceChart() {
+  const ctx = document.getElementById('voiceChart').getContext('2d');
+  const data = globalVoiceHistory;
+
+  let labels, chartData, label;
+  if (currentVoiceMode === 'hour') {
+    labels = data.hourly?.map(h => h.bucket + ':00') || [];
+    chartData = data.hourly?.map(h => Math.round(h.total_seconds / 60)) || [];
+    label = 'Minuten';
+  } else if (currentVoiceMode === 'day') {
+    labels = data.daily?.map(d => d.day?.slice(5)) || [];
+    chartData = data.daily?.map(d => Math.round(d.total_seconds / 60)) || [];
+    label = 'Minuten';
+  } else {
+    labels = data.hourly?.map(h => 'Woche ' + h.bucket.split('-')[1]) || [];
+    chartData = data.hourly?.map(h => Math.round(h.total_seconds / 3600 * 10) / 10) || [];
+    label = 'Stunden';
+  }
+
+  if (voiceChart) voiceChart.destroy();
+  voiceChart = new Chart(ctx, {
+    type: 'bar',
+    data: { labels, datasets: [{ label, data: chartData, backgroundColor: 'rgba(16,183,173,.5)', borderColor: '#10b7ad', borderWidth: 1, borderRadius: 6 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { backgroundColor: 'rgba(10,30,42,.95)', titleColor: '#e9f1f7', bodyColor: '#9bb3c5', borderColor: 'rgba(194, 221, 240, 0.14)', borderWidth: 1 } },
+      scales: { x: { grid: { display: false }, ticks: { color: '#8ea8bb' } }, y: { grid: { color: 'rgba(194, 221, 240, 0.08)' }, ticks: { color: '#8ea8bb' }, beginAtZero: true } }
+    }
+  });
+}
+
+function renderVoiceSummary() {
+  const s = globalVoiceHistory.summary || {};
+  const totalMin = Math.round((s.total_seconds || 0) / 60);
+  const avgMin = s.avg_session_minutes || 0;
+  document.getElementById('voiceSummary').innerHTML = `
+    <div class="voice-stat-card">
+      <div class="voice-stat-value primary">${s.total_sessions || 0}</div>
+      <div class="voice-stat-label">Sessions</div>
+    </div>
+    <div class="voice-stat-card">
+      <div class="voice-stat-value accent">${totalMin >= 60 ? Math.round(totalMin / 60) + 'h' : totalMin + 'm'}</div>
+      <div class="voice-stat-label">Gesamte Zeit</div>
+    </div>
+    <div class="voice-stat-card">
+      <div class="voice-stat-value">${s.total_users || 0}</div>
+      <div class="voice-stat-label">Unique User</div>
+    </div>
+    <div class="voice-stat-card">
+      <div class="voice-stat-value">${avgMin || 0}m</div>
+      <div class="voice-stat-label">⌀ Session</div>
+    </div>
+  `;
+}
+
+// ── Load All Data ──────────────────────────────────────────────────────────────
+async function loadAllData() {
+  try {
+    const [tl, dist] = await Promise.all([
+      fetch(`/api/timeline?metric=${currentMetric}`).then(r => r.json()),
+      fetch('/api/rank-distribution').then(r => r.json())
+    ]);
+    globalTimeline = tl;
+    globalDist = dist;
+    document.getElementById('lastUpdated').textContent = 'Aktualisiert: ' + new Date(tl.generated_at).toLocaleTimeString('de-DE');
+    renderTimeline();
+    renderDistribution();
+  } catch (e) {
+    console.error('Failed to load data:', e);
+  }
+}
+
+// ── Timeline Chart ─────────────────────────────────────────────────────────────
+function renderTimeline() {
+  const ctx = document.getElementById('timelineChart').getContext('2d');
+  const rankOrder = globalTimeline.rank_order || RANK_ORDER;
+  const timeline = globalTimeline.timeline || [];
+
+  const datasets = rankOrder.map(rank => ({
+    label: rank,
+    data: timeline.map(t => t.ranks?.[rank] || 0),
+    borderColor: RANK_COLORS[rank] || '#ff7a18',
+    backgroundColor: (RANK_COLORS[rank] || '#ff7a18') + '18',
+    tension: 0.4,
+    fill: false,
+    pointRadius: 3,
+    pointHoverRadius: 5,
+    borderWidth: 2,
+    hidden: false,
+  }));
+
+  if (timelineChart) timelineChart.destroy();
+  timelineChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels: Array.from({length: 24}, (_, i) => i + ':00'), datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: 'rgba(10,30,42,.95)',
+          titleColor: '#e9f1f7',
+          bodyColor: '#9bb3c5',
+          borderColor: 'rgba(194, 221, 240, 0.14)',
+          borderWidth: 1,
+          padding: 12,
+          callbacks: {
+            label: ctx => `${ctx.dataset.label}: ${ctx.raw} ${currentMetric === 'hours' ? 'Stunden' : 'Spieler'}`
+          }
+        }
+      },
+      scales: {
+        x: { grid: { color: 'rgba(194, 221, 240, 0.08)' }, ticks: { color: '#8ea8bb' } },
+        y: { grid: { color: 'rgba(194, 221, 240, 0.08)' }, ticks: { color: '#8ea8bb' }, beginAtZero: true }
+      }
+    }
+  });
+
+  // Custom clickable legend
+  const legend = document.getElementById('timelineLegend');
+  legend.innerHTML = rankOrder.map(rank => `
+    <div class="rank-legend-item" data-rank="${rank}" onclick="toggleRank('${rank}')">
+      <img src="/rank_icons/${rank.charAt(0).toUpperCase() + rank.slice(1)}.webp"
+           alt="${rank}" style="width:18px;height:18px;border-radius:4px;object-fit:cover;"
+           onerror="this.style.display='none'">
+      <div class="rank-legend-dot" style="background:${RANK_COLORS[rank]}"></div>
+      <span>${rank.charAt(0).toUpperCase() + rank.slice(1)}</span>
+    </div>
+  `).join('');
+}
+
+// Toggle rank visibility in chart
+function toggleRank(rank) {
+  if (!timelineChart) return;
+  const idx = RANK_ORDER.indexOf(rank);
+  if (idx === -1) return;
+  const meta = timelineChart.getDatasetMeta(idx);
+  meta.hidden = !meta.hidden;
+  timelineChart.update();
+
+  const legendItem = document.querySelector(`.rank-legend-item[data-rank="${rank}"]`);
+  if (legendItem) {
+    legendItem.classList.toggle('dimmed', meta.hidden);
+  }
+}
+
+// ── Distribution Charts ───────────────────────────────────────────────────────
+function renderDistribution() {
+  const dist = globalDist.distribution || {};
+  const rankOrder = globalDist.rank_order || RANK_ORDER;
+
+  const total = Object.values(dist).reduce((a, b) => a + b, 0);
+  document.getElementById('totalPlayers').textContent = total;
+
+  const donutCtx = document.getElementById('donutChart').getContext('2d');
+  const distValues = rankOrder.map(r => dist[r] || 0);
+  if (donutChart) donutChart.destroy();
+  donutChart = new Chart(donutCtx, {
+    type: 'doughnut',
+    data: {
+      labels: rankOrder.map(r => r.charAt(0).toUpperCase() + r.slice(1)),
+      datasets: [{
+        data: distValues,
+        backgroundColor: rankOrder.map(r => RANK_COLORS[r] || '#ff7a18'),
+        borderColor: '#102635',
+        borderWidth: 2,
+        hoverOffset: 6
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: '65%',
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: 'rgba(10,30,42,.95)',
+          titleColor: '#e9f1f7',
+          bodyColor: '#9bb3c5',
+          borderColor: 'rgba(194, 221, 240, 0.14)',
+          borderWidth: 1,
+          callbacks: {
+            label: ctx => `${ctx.label}: ${ctx.raw} (${total > 0 ? Math.round(ctx.raw/total*100) : 0}%)`
+          }
+        }
+      }
+    }
+  });
+
+  const weeklyCtx = document.getElementById('weeklyChart').getContext('2d');
+  const weekly = globalDist.weekly_trend || [];
+  const weekLabels = weekly.map((w, i) => 'Woche ' + (weekly.length - i));
+  const weekDatasets = rankOrder.map(rank => ({
+    label: rank,
+    data: weekly.map(w => w.data?.[rank] || 0),
+    backgroundColor: RANK_COLORS[rank] || '#ff7a18',
+    borderRadius: 4,
+  }));
+  if (weeklyChart) weeklyChart.destroy();
+  weeklyChart = new Chart(weeklyCtx, {
+    type: 'bar',
+    data: { labels: weekLabels, datasets: weekDatasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: 'rgba(10,30,42,.95)',
+          titleColor: '#e9f1f7',
+          bodyColor: '#9bb3c5',
+          borderColor: 'rgba(194, 221, 240, 0.14)',
+          borderWidth: 1,
+        }
+      },
+      scales: {
+        x: { stacked: true, grid: { display: false }, ticks: { color: '#8ea8bb' } },
+        y: { stacked: true, grid: { color: 'rgba(194, 221, 240, 0.08)' }, ticks: { color: '#8ea8bb' }, beginAtZero: true }
+      }
+    }
+  });
+}
+
+// ── Best Times ─────────────────────────────────────────────────────────────────
+async function loadBestTimes() {
+  const rank = document.getElementById('rankSelect').value;
+  const grid = document.getElementById('bestTimesGrid');
+  if (!rank) { grid.innerHTML = '<div class="loading">Wähle einen Rang aus</div>'; return; }
+  grid.innerHTML = '<div class="loading">Lade...</div>';
+  try {
+    const data = await fetch(`/api/best-times?rank=${rank}`).then(r => r.json());
+    renderBestTimes(data, rank);
+  } catch (e) {
+    grid.innerHTML = '<div class="error-state">Fehler beim Laden</div>';
+  }
+}
+
+function renderBestTimes(data, rank) {
+  const grid = document.getElementById('bestTimesGrid');
+  const color = RANK_COLORS[rank] || '#ff7a18';
+  const peakHours = data.peak_hours || [];
+  const dayDist = data.day_distribution || [];
+  const maxDay = Math.max(...dayDist.map(d => d.count), 1);
+
+  grid.innerHTML = `
+    <div class="best-time-card" style="box-shadow: 0 10px 30px ${color}18;">
+      <div class="card-bg-glow" style="background: radial-gradient(circle at 50% 50%, ${color} 0%, transparent 70%);"></div>
+      <div class="rank-info">
+        <img src="/rank_icons/${rank.charAt(0).toUpperCase() + rank.slice(1)}.webp"
+             alt="${rank}" class="rank-icon"
+             onerror="this.style.display='none'">
+        <span class="rank-name" style="color:${color}">${rank.charAt(0).toUpperCase() + rank.slice(1)}</span>
+      </div>
+      <div class="peak-info">
+        ${peakHours.length === 0 ? '<div class="no-data">Keine Daten verfügbar</div>' : peakHours.map((p, i) => `
+          <div class="peak-row">
+            <div class="peak-time">
+              <span class="peak-badge" style="background:${color}22;color:${color}">${p.hour}:00 - ${(p.hour + 2) % 24}:00</span>
+            </div>
+            <span class="peak-count">${p.count} Sessions</span>
+          </div>
+        `).join('')}
+      </div>
+      <div class="trend-bar">
+        <div class="trend-bar-fill" style="width:${Math.round((dayDist.reduce((a,b) => a + b.count, 0) / maxDay) * 100)}%;background:${color}"></div>
+      </div>
+    </div>
+    <div class="best-time-card">
+      <div class="rank-info">
+        <span class="rank-name">Aktivität nach Tag</span>
+      </div>
+      <div class="peak-info">
+        ${dayDist.map((d, i) => `
+          <div class="peak-row">
+            <div class="peak-time">
+              <span class="peak-badge" style="background:var(--card-hover);color:var(--text-secondary)">${DAY_NAMES[i]}</span>
+            </div>
+            <div class="trend-bar" style="flex:1;margin-top:0;margin-left:8px;">
+              <div class="trend-bar-fill" style="width:${Math.round((d.count / maxDay) * 100)}%;background:${color}88"></div>
+            </div>
+            <span class="peak-count">${d.count}</span>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+</script>
+</body>
+</html>

@@ -140,6 +140,7 @@ class DashboardServer:
             default=DEFAULT_NSSM_RESTART_DELAY_SECONDS,
             env_name="MASTER_NSSM_RESTART_DELAY_SECONDS",
         )
+        self._systemd_service_name = os.getenv("MASTER_SYSTEMD_SERVICE_NAME", "deadlock-bot").strip()
         self._bot_restart_min_interval_seconds = self._parse_positive_float(
             os.getenv(
                 "MASTER_BOT_RESTART_MIN_INTERVAL_SECONDS",
@@ -1508,6 +1509,33 @@ class DashboardServer:
             self._nssm_restart_delay_seconds,
         )
         return True, f"Service restart requested ({self._nssm_service_name})"
+
+    def _schedule_systemd_service_restart(self) -> tuple[bool, str]:
+        """Schedule a systemd service restart (Linux)."""
+        if os.name == "nt":
+            return False, "systemd restart is only available on Linux hosts"
+        if not self._systemd_service_name:
+            return False, "systemd service name missing (MASTER_SYSTEMD_SERVICE_NAME)"
+        try:
+            import shutil
+            systemctl_path = shutil.which("systemctl")
+            if not systemctl_path:
+                return False, "systemctl not found in PATH"
+            result = subprocess.run(
+                [systemctl_path, "--user", "restart", self._systemd_service_name],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                return False, f"systemctl failed (exit={result.returncode}): {result.stderr.strip()}"
+            logger.info("systemd restart scheduled for service '%s'", self._systemd_service_name)
+            return True, f"systemd restart requested ({self._systemd_service_name})"
+        except subprocess.TimeoutExpired:
+            return False, "systemctl timed out after 30s"
+        except Exception as exc:
+            logger.exception("Failed to schedule systemd restart for service '%s': %s", self._systemd_service_name, exc)
+            return False, f"Failed to schedule systemd restart: {exc}"
 
     @staticmethod
     def _parse_positive_float(raw: str | None, *, default: float, env_name: str) -> float:
@@ -5394,22 +5422,38 @@ class DashboardServer:
                     parent_pid,
                 )
 
-            # Hard restart first (Windows service via NSSM).
-            service_restart_ok, service_message = self._schedule_nssm_service_restart()
-            if service_restart_ok:
-                self._last_bot_restart_request_monotonic = now
-                return self._json(
-                    {
-                        "ok": True,
-                        "message": f"Hard restart requested via service: {service_message}",
-                        "restart_mode": "nssm_service",
-                    }
+            # Hard restart first - try systemd on Linux, NSSM on Windows
+            if os.name != "nt":
+                service_restart_ok, service_message = self._schedule_systemd_service_restart()
+                if service_restart_ok:
+                    self._last_bot_restart_request_monotonic = now
+                    return self._json(
+                        {
+                            "ok": True,
+                            "message": f"Hard restart requested via systemd: {service_message}",
+                            "restart_mode": "systemd_service",
+                        }
+                    )
+                logger.warning(
+                    "systemd service restart unavailable: %s",
+                    self._safe_log_value(service_message),
+                )
+            else:
+                service_restart_ok, service_message = self._schedule_nssm_service_restart()
+                if service_restart_ok:
+                    self._last_bot_restart_request_monotonic = now
+                    return self._json(
+                        {
+                            "ok": True,
+                            "message": f"Hard restart requested via NSSM: {service_message}",
+                            "restart_mode": "nssm_service",
+                        }
+                    )
+                logger.warning(
+                    "NSSM service restart unavailable: %s",
+                    self._safe_log_value(service_message),
                 )
 
-            logger.warning(
-                "NSSM service restart unavailable: %s",
-                self._safe_log_value(service_message),
-            )
             if not lifecycle:
                 return self._json(
                     {

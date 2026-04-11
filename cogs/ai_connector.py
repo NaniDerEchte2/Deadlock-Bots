@@ -6,6 +6,11 @@ from typing import TYPE_CHECKING, Any
 from discord.ext import commands
 
 try:
+    import httpx
+except Exception:  # pragma: no cover - optional dependency
+    httpx = None  # type: ignore[assignment]
+
+try:
     from openai import OpenAI
 except Exception:  # pragma: no cover - optional dependency
     OpenAI = None  # type: ignore[assignment]
@@ -18,6 +23,14 @@ except Exception:  # pragma: no cover - optional dependency
     genai_types = None  # type: ignore[assignment]
 
 log = logging.getLogger(__name__)
+
+# --- MiniMax Defaults ---
+DEFAULT_MINIMAX_MODEL = os.getenv("MINIMAX_MODEL", "MiniMax-M2.7")
+DEFAULT_MINIMAX_BASE_URL = os.getenv("MINIMAX_BASE_URL", "https://api.minimax.chat/v1")
+DEFAULT_MINIMAX_TOKEN_PLAN_BASE_URL = os.getenv(
+    "MINIMAX_TOKEN_PLAN_BASE_URL",
+    "https://api.minimax.io/anthropic/v1",
+)
 
 if TYPE_CHECKING:
     from openai import OpenAI as OpenAIClient
@@ -85,6 +98,112 @@ class AIConnector(commands.Cog):
             return None
         return self._gemini_client
 
+    def _get_minimax_client(self) -> tuple[Any, str, str] | None:
+        """Returns (client, base_url, api_key) or None."""
+        token_plan_key = os.getenv("MINIMAX_TOKEN_PLAN_KEY")
+        api_key = token_plan_key or os.getenv("MINIMAX_API_KEY") or os.getenv("MINMAX")
+        if not api_key:
+            log.debug(
+                "Kein MiniMax Key in ENV gefunden (geprueft: MINIMAX_TOKEN_PLAN_KEY, MINIMAX_API_KEY, MINMAX)"
+            )
+            return None
+        if httpx is None:
+            log.debug("httpx Paket fehlt – MiniMax deaktiviert.")
+            return None
+        use_token_plan = bool(token_plan_key and api_key == token_plan_key)
+        base_url = (
+            DEFAULT_MINIMAX_TOKEN_PLAN_BASE_URL if use_token_plan else DEFAULT_MINIMAX_BASE_URL
+        )
+
+        class _MiniMaxClient:
+            def __init__(inner_self, api_key: str, base_url: str, use_token_plan: bool) -> None:
+                inner_self.api_key = api_key
+                inner_self.base_url = base_url
+                inner_self.use_token_plan = use_token_plan
+                inner_self._http = httpx.Client(timeout=60.0)
+
+            def generate(
+                inner_self,
+                *,
+                prompt: str,
+                system_prompt: str | None,
+                model: str,
+                max_output_tokens: int,
+                temperature: float,
+            ) -> str | None:
+                if inner_self.use_token_plan:
+                    headers = {
+                        "x-api-key": inner_self.api_key,
+                        "anthropic-version": "2023-06-01",
+                        "Content-Type": "application/json",
+                    }
+                    payload = {
+                        "model": model if model != "MiniMax-Text-01" else "MiniMax-M2.7",
+                        "system": system_prompt or "",
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": prompt,
+                                    }
+                                ],
+                            }
+                        ],
+                        "max_tokens": max_output_tokens,
+                        "temperature": temperature,
+                    }
+                    resp = inner_self._http.post(
+                        f"{inner_self.base_url}/messages",
+                        headers=headers,
+                        json=payload,
+                    )
+                else:
+                    headers = {
+                        "Authorization": f"Bearer {inner_self.api_key}",
+                        "Content-Type": "application/json",
+                    }
+                    messages = []
+                    if system_prompt:
+                        messages.append({"role": "system", "content": system_prompt})
+                    messages.append({"role": "user", "content": prompt})
+
+                    payload = {
+                        "model": model,
+                        "messages": messages,
+                        "max_tokens": max_output_tokens,
+                        "temperature": temperature,
+                    }
+                    resp = inner_self._http.post(
+                        f"{inner_self.base_url}/text/chatcompletion_v2",
+                        headers=headers,
+                        json=payload,
+                    )
+                if resp.status_code != 200:
+                    log.debug(
+                        "MiniMax API Fehler: %s - %s", resp.status_code, resp.text
+                    )
+                    return None
+                data = resp.json()
+
+                if inner_self.use_token_plan:
+                    fragments = []
+                    for item in data.get("content", []) or []:
+                        if item.get("type") == "text" and item.get("text"):
+                            fragments.append(str(item["text"]))
+                    if fragments:
+                        return "".join(fragments).strip()
+                    log.debug("MiniMax Token Plan Antwort ohne Textinhalt: %s", data)
+                    return None
+
+                choices = data.get("choices", [])
+                if choices:
+                    return choices[0].get("message", {}).get("content", "")
+                return None
+
+        return (_MiniMaxClient(api_key, base_url, use_token_plan), base_url, api_key)
+
     # ---------- Public API ----------
     async def generate_text(
         self,
@@ -133,6 +252,19 @@ class AIConnector(commands.Cog):
                 meta["usage"] = usage
             if text is None:
                 meta["error"] = "openai_unavailable"
+            return text, meta
+
+        if provider == "minimax":
+            text = await self._generate_minimax(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                model=model or DEFAULT_MINIMAX_MODEL,
+                max_output_tokens=mot,
+                temperature=temperature,
+            )
+            meta["model"] = model or DEFAULT_MINIMAX_MODEL
+            if text is None:
+                meta["error"] = "minimax_unavailable"
             return text, meta
 
         meta["error"] = "unknown_provider"
@@ -256,6 +388,31 @@ class AIConnector(commands.Cog):
                 "total_tokens": getattr(usage_raw, "total_tokens", None),
             }
         return text or None, usage
+
+    async def _generate_minimax(
+        self,
+        *,
+        prompt: str,
+        system_prompt: str | None,
+        model: str,
+        max_output_tokens: int,
+        temperature: float,
+    ) -> str | None:
+        client_data = self._get_minimax_client()
+        if not client_data:
+            return None
+        client, _, _ = client_data
+
+        def _call_model() -> str | None:
+            return client.generate(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                model=model,
+                max_output_tokens=max_output_tokens,
+                temperature=temperature,
+            )
+
+        return await asyncio.to_thread(_call_model)
 
     # ---------- Commands ----------
     @commands.command(name="aiob")

@@ -20,12 +20,25 @@ def _log_src(modname: str, module: types.ModuleType) -> None:
         logging.getLogger().error("SRC %s -> %r", modname, exc)
 
 
+def _keyring_enabled() -> bool:
+    override = (os.getenv("DEADLOCK_ENABLE_KEYRING") or "").strip().lower()
+    if override in {"1", "true", "yes", "on"}:
+        return True
+    if override in {"0", "false", "no", "off"}:
+        return False
+    return os.name == "nt"
+
+
 def _load_secrets_from_keyring() -> None:
     """
     Versucht, sensitive Geheimnisse aus dem Windows Credential Manager (Tresor) zu laden
     und in os.environ zu injizieren.
     Service Name: 'DeadlockBot'
     """
+    if not _keyring_enabled():
+        logging.getLogger().debug("Keyring/Tresor-Check deaktiviert.")
+        return
+
     try:
         import keyring
     except ImportError:

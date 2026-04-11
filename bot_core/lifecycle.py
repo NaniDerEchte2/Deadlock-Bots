@@ -128,6 +128,20 @@ class BotLifecycle:
         except Exception as exc:  # pragma: no cover - defensive reload
             logger.warning("Module reload skipped for service.dashboard: %s", exc)
 
+        try:
+            import service.public_stats as service_public_stats
+
+            importlib.reload(service_public_stats)
+        except Exception as exc:  # pragma: no cover - defensive reload
+            logger.warning("Module reload skipped for service.public_stats: %s", exc)
+
+        try:
+            import cogs.public_stats_cog as public_stats_cog_module
+
+            importlib.reload(public_stats_cog_module)
+        except Exception as exc:  # pragma: no cover - defensive reload
+            logger.warning("Module reload skipped for cogs.public_stats_cog: %s", exc)
+
         import bot_core.control as control_module_ref
         import bot_core.master_bot as master_module_ref
 

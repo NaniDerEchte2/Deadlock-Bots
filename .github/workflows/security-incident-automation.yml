@@ -4,16 +4,6 @@ on:
   schedule:
     - cron: "11 */6 * * *"
   workflow_dispatch:
-  workflow_run:
-    workflows:
-      - "CodeQL Advanced (auto-detect)"
-      - "🔒 Deep Security Scan (Optimized)"
-      - "Secret Scanning"
-      - "🏗️ IaC Security (Optimized)"
-      - "🐳 Container Security (Optimized)"
-      - "🧪 Continuous Fuzzing"
-      - "📦 Supply Chain Provenance"
-    types: [completed]
 
 permissions:
   contents: read
