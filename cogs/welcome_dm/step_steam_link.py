@@ -36,32 +36,38 @@ _LINKS_ENABLED: bool = _oauth is not None
 
 _STEAM_LINK_DM_DESC = dedent(
     """
-    **Verknüpfe deinen Steam-Account**
-    Für Rang, Live-Status in den Voice Lanes und eine bessere Spielersuche.
+    **Verknüpfung notwendig** für Rang, Live-Status und Spielersuche.
     """
 ).strip()
 
 
 _STEAM_LINK_DETAILED_DESC = dedent(
     """
-    **Warum verknüpfen?**
-    • Dein Rang wird korrekt erkannt und auf dem Server sauber zugeordnet.
-    • Dein Live-Status in den Voice Lanes funktioniert zuverlässig.
-    • In der Spielersuche wirst du korrekt eingestuft.
+    **Was bringt das?**
+    • Rang wird korrekt erkannt und auf dem Server zugeordnet
+    • Live-Status in den Voice Lanes funktioniert
+    • Spielersuche funktioniert richtig für dich
 
-    **Ablauf:**
-    • **Direkt bei Steam anmelden**: Öffnet Steam OpenID zur Verknüpfung.
-    • Danach dem Steam-Bot eine Freundschaftsanfrage senden:
-      Freundescode: **820142646**.
+    **So funktioniert's:**
+    1. Du meldest dich kurz bei Steam an (OpenID - kein Passwort nötig)
+    2. Du gibst deinen Steam-Freundescode ein
+    3. Wir schicken dir eine Freundschaftsanfrage - einfach annehmen
+    4. Fertig! Du bist verifiziert
 
-    **Datenschutz-Kurzinfo:**
-    • Discord erhält aus diesem Schritt keine zusätzlichen Daten.
-    • Wir speichern nur die technisch nötigen IDs (Discord-ID und SteamID64).
-    • Wir erhalten keine Passwörter oder sonstige Zugangsdaten.
-    • Es werden keine Daten an Dritte weitergegeben.
+    **Was wir NICHT machen:**
+    ❌ Keine Passwörter oder Zugangsdaten
+    ❌ Keine Steam-Freundschaftsliste auslesen
+    ❌ Keine Spielstände oder Profile einsehen
+    ❌ Keine Daten an Dritte weitergeben
+    ❌ Keine Werbung oder Tracking
+
+    **Was wir speichern:**
+    ✓ Discord-ID (damit wir dich zuordnen können)
+    ✓ SteamID64 (technische ID von Steam)
+    ✓ Rang-Daten (nur zur Server-Zuordnung)
 
     **Open Source:**
-    • <https://github.com/NaniDerEchte2/Deadlock-Bots>
+    <https://github.com/NaniDerEchte2/Deadlock-Bots>
     """
 ).strip()
 
@@ -77,11 +83,10 @@ def steam_link_detailed_description() -> str:
 def build_steam_intro_embed() -> discord.Embed:
     """Intro/Erklärung für den Schritt mit allen verfügbaren Optionen."""
     em = discord.Embed(
-        title="Empfehlung für besseres Erlebnis",
+        title="Steam-Account verknüpfen",
         description=steam_link_detailed_description(),
         colour=discord.Colour.blurple(),
     )
-    em.set_footer(text="Kurzbefehl: /account_verknüpfen")
     return em
 
 
@@ -162,12 +167,12 @@ class SteamLinkStepView(discord.ui.View):
         if not urls.get("steam_openid_start"):
             if interaction.response.is_done():
                 await interaction.followup.send(
-                    "❌ Start-Link nicht konfiguriert. Bitte später erneut versuchen.",
+                    "❌ Verknüpfung gerade nicht möglich. Bitte später nochmal versuchen.",
                     ephemeral=True,
                 )
             else:
                 await interaction.response.send_message(
-                    "❌ Start-Link nicht konfiguriert. Bitte später erneut versuchen.",
+                    "❌ Verknüpfung gerade nicht möglich. Bitte später nochmal versuchen.",
                     ephemeral=True,
                 )
             return
