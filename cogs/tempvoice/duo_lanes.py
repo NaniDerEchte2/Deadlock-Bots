@@ -43,9 +43,7 @@ def parse_lane_index(channel_id: int, name: str) -> int | None:
         return None
 
 
-def plan_duo_lanes(
-    anchor_member_count: int, extra_snapshots: list[dict]
-) -> dict:
+def plan_duo_lanes(anchor_member_count: int, extra_snapshots: list[dict]) -> dict:
     """Plant die Lane-Konfiguration basierend auf Spieleranzahl."""
     occupied = sorted(
         [s for s in extra_snapshots if s["member_count"] > 0],
@@ -65,14 +63,13 @@ def plan_duo_lanes(
     # Nur Lane 2 erstellen wenn nötig
     extras_to_keep = max(0, desired_total - 1)
 
-    kept_existing = occupied + empty[:max(0, extras_to_keep - len(occupied))]
+    kept_existing = occupied + empty[: max(0, extras_to_keep - len(occupied))]
     reassignments = tuple(
         (snapshot["channel_id"], desired_index)
         for desired_index, snapshot in enumerate(kept_existing, start=2)
     )
     delete_ids = tuple(
-        snapshot["channel_id"]
-        for snapshot in empty[max(0, extras_to_keep - len(occupied)):]
+        snapshot["channel_id"] for snapshot in empty[max(0, extras_to_keep - len(occupied)) :]
     )
     create_indices = tuple(range(len(kept_existing) + 2, desired_total + 1))
 
@@ -187,11 +184,13 @@ class DuoLanes(commands.Cog):
                 lane_index = parse_lane_index(channel.id, channel.name)
                 if lane_index is None:
                     continue
-                snapshots.append({
-                    "channel_id": int(channel.id),
-                    "current_index": int(lane_index),
-                    "member_count": len(channel.members),
-                })
+                snapshots.append(
+                    {
+                        "channel_id": int(channel.id),
+                        "current_index": int(lane_index),
+                        "member_count": len(channel.members),
+                    }
+                )
 
             plan = plan_duo_lanes(len(anchor.members), snapshots)
             needs_resync = False
@@ -307,7 +306,9 @@ class DuoLanes(commands.Cog):
         after_channel = after.channel if after else None
         if before_channel == after_channel:
             return
-        if self._is_relevant_voice_channel(before_channel) or self._is_relevant_voice_channel(after_channel):
+        if self._is_relevant_voice_channel(before_channel) or self._is_relevant_voice_channel(
+            after_channel
+        ):
             self.schedule_sync(member.guild.id)
 
     @commands.Cog.listener()

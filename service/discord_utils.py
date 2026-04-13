@@ -334,7 +334,9 @@ def get_env_int(key: str, default: int) -> int:
     try:
         return int(raw)
     except ValueError:
-        logger.warning("Invalid int for %s=%s, using default %s", key, _safe_log_value(raw), default)
+        logger.warning(
+            "Invalid int for %s=%s, using default %s", key, _safe_log_value(raw), default
+        )
         return default
 
 

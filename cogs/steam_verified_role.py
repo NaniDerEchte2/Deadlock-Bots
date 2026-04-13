@@ -466,7 +466,9 @@ class SteamVerifiedRole(commands.Cog):
                 return False
             except discord.HTTPException as exc:
                 self._mark_member_transient_error(int(user_id))
-                log.warning("HTTP-Fehler beim Member-Lookup für remove_verified_role (%s): %s", user_id, exc)
+                log.warning(
+                    "HTTP-Fehler beim Member-Lookup für remove_verified_role (%s): %s", user_id, exc
+                )
                 return False
 
         if role_local not in member.roles:
