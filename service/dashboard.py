@@ -2012,6 +2012,9 @@ class DashboardServer:
 
         state_data = await asyncio.to_thread(db.validate_state, state)
         if not state_data:
+            # Fallback: Admin-Login-State liegt in-memory (erzeugt von _handle_discord_login)
+            if state in self._discord_oauth_states and self._discord_auth_required:
+                return await self._handle_discord_callback(request)
             return web.Response(text="OAuth state ungültig oder abgelaufen.", status=400)
         if str(state_data.get("provider") or "").strip().lower() != "discord":
             return web.Response(text="OAuth state provider mismatch.", status=400)
