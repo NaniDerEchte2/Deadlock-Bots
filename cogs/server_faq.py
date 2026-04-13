@@ -183,7 +183,8 @@ class ServerFAQ(commands.Cog):
         async with self._lock:
             now = datetime.utcnow()
             expired = [
-                sid for sid, s in self._sessions.items()
+                sid
+                for sid, s in self._sessions.items()
                 if (now - s.last_activity).total_seconds() > SESSION_TIMEOUT_HOURS * 3600
             ]
             for sid in expired:
@@ -230,7 +231,10 @@ class ServerFAQ(commands.Cog):
 
         ai = getattr(self.bot, "get_cog", lambda n: None)("AIConnector")
         if not ai:
-            return "Der FAQ-Service ist aktuell nicht verfügbar. Bitte versuche es später erneut.", metadata
+            return (
+                "Der FAQ-Service ist aktuell nicht verfügbar. Bitte versuche es später erneut.",
+                metadata,
+            )
 
         conversation_context = session.get_conversation_context()
 
@@ -238,6 +242,7 @@ class ServerFAQ(commands.Cog):
         patchnote_context = ""
         try:
             from service import changelogs
+
             patchnote_context = changelogs.get_context_for_question(new_question)
         except Exception:
             pass
@@ -251,7 +256,8 @@ class ServerFAQ(commands.Cog):
             context_parts.append(f"Bisherige Konversation:\n{conversation_context}")
 
         full_prompt = (
-            "Dokumentation:\n" + "\n\n---\n\n".join(context_parts)
+            "Dokumentation:\n"
+            + "\n\n---\n\n".join(context_parts)
             + f"\n\nNeue Frage vom User:\n{new_question.strip()}"
         )
 

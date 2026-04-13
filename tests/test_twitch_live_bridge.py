@@ -10,7 +10,6 @@ import discord
 from cogs.twitch.live_bridge import (
     TWITCH_INTERNAL_API_BASE_PATH,
     TWITCH_INTERNAL_TOKEN_HEADER,
-    TWITCH_LIVE_BUTTON_LABEL,
     TwitchLiveBridgeApiError,
     TwitchLiveBridgeCog,
     TwitchLiveInternalApiClient,
@@ -115,9 +114,7 @@ class _FakeInteractionResponse:
         view: discord.ui.View | None = None,
         ephemeral: bool = False,
     ) -> None:
-        self.sent_messages.append(
-            {"content": content, "view": view, "ephemeral": ephemeral}
-        )
+        self.sent_messages.append({"content": content, "view": view, "ephemeral": ephemeral})
         self._done = True
 
 
@@ -132,9 +129,7 @@ class _FakeFollowup:
         view: discord.ui.View | None = None,
         ephemeral: bool = False,
     ) -> None:
-        self.sent_messages.append(
-            {"content": content, "view": view, "ephemeral": ephemeral}
-        )
+        self.sent_messages.append({"content": content, "view": view, "ephemeral": ephemeral})
 
 
 class _FakeInteraction:

@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
 LOG = logging.getLogger("steam_bridge_watchdog")
 STOP_REQUESTED = False
 
@@ -156,9 +155,7 @@ def _load_snapshot(db_path: Path) -> tuple[int, dict[str, Any]]:
         ).fetchone()
 
         diagnostics = {
-            "recent_failed_friend_requests": int(
-                recent_failed_friend_requests_row["count"] or 0
-            )
+            "recent_failed_friend_requests": int(recent_failed_friend_requests_row["count"] or 0)
             if recent_failed_friend_requests_row
             else 0,
             "oldest_pending_friend_request_age_seconds": None,
@@ -325,8 +322,14 @@ def main() -> int:
         ),
         help="Command used to restart the host service.",
     )
-    parser.add_argument("--interval", type=int, default=int(os.getenv("STEAM_BRIDGE_WATCHDOG_INTERVAL", "30")))
-    parser.add_argument("--grace-period", type=int, default=int(os.getenv("STEAM_BRIDGE_WATCHDOG_GRACE_PERIOD", "180")))
+    parser.add_argument(
+        "--interval", type=int, default=int(os.getenv("STEAM_BRIDGE_WATCHDOG_INTERVAL", "30"))
+    )
+    parser.add_argument(
+        "--grace-period",
+        type=int,
+        default=int(os.getenv("STEAM_BRIDGE_WATCHDOG_GRACE_PERIOD", "180")),
+    )
     parser.add_argument(
         "--heartbeat-max-age",
         type=int,
@@ -338,7 +341,9 @@ def main() -> int:
         default=int(os.getenv("STEAM_BRIDGE_WATCHDOG_RESTART_COOLDOWN", "600")),
     )
     parser.add_argument("--once", action="store_true", help="Run one check and exit.")
-    parser.add_argument("--dry-run", action="store_true", help="Log restart actions without executing them.")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Log restart actions without executing them."
+    )
     parser.add_argument(
         "--verbose",
         action="store_true",

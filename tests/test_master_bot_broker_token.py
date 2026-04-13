@@ -28,7 +28,7 @@ class MasterBotLiveBridgeTests(unittest.IsolatedAsyncioTestCase):
 
         async def _load_extension(name: str) -> None:
             loaded_extensions.append(name)
-            setattr(fake_bot, "resolve_master_broker_view_spec", lambda spec: spec)
+            fake_bot.resolve_master_broker_view_spec = lambda spec: spec
 
         fake_bot = SimpleNamespace(
             runtime_mode=SimpleNamespace(role="master"),

@@ -7,10 +7,10 @@ from discord.ext import commands
 async def setup(bot: commands.Bot):
     # Beide Cogs in EINER Extension registrieren, mit sauberer Verkabelung.
     from .core import TempVoiceCore
+    from .duo_lanes import DuoLanes
     from .interface import TempVoiceInterface
     from .lane_sorting import TempVoiceLaneSorting
     from .new_player_lanes import NewPlayerAdaptiveLanes
-    from .duo_lanes import DuoLanes
     from .util import TempVoiceUtil
 
     core = TempVoiceCore(bot)

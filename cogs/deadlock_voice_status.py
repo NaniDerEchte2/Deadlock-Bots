@@ -45,6 +45,7 @@ _SUFFIX_REGEX = re.compile(
     re.IGNORECASE,
 )
 
+
 class DeadlockVoiceStatus(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -587,7 +588,9 @@ class DeadlockVoiceStatus(commands.Cog):
         candidate_stage = str(candidate["stage"]) if candidate else None
         candidate_minutes = list(candidate["minute_values"]) if candidate else []
         candidate_count = int(candidate["member_count"]) if candidate else 0
-        chosen_server_id = str(candidate["server_id"]) if candidate and candidate["server_id"] else None
+        chosen_server_id = (
+            str(candidate["server_id"]) if candidate and candidate["server_id"] else None
+        )
 
         if not candidate_stage or candidate_count < MIN_ACTIVE_PLAYERS:
             trace_payload["decision"] = {
@@ -738,7 +741,7 @@ class DeadlockVoiceStatus(commands.Cog):
             localized = self._safe_row_value(row, "deadlock_localized")
             if not localized:
                 continue
-            m = re.search(r'\((\d+)/(\d+)\)', str(localized))
+            m = re.search(r"\((\d+)/(\d+)\)", str(localized))
             if m:
                 total = int(m.group(2))
                 if max_total is None or total > max_total:

@@ -81,7 +81,10 @@ _DELETE_SQL_BY_TARGET: dict[tuple[str, str], str] = {
         "steam_friendship_miss_tracker",
         "user_id",
     ): "DELETE FROM steam_friendship_miss_tracker WHERE user_id=?",
-    ("steam_role_cleanup_pending", "user_id"): "DELETE FROM steam_role_cleanup_pending WHERE user_id=?",
+    (
+        "steam_role_cleanup_pending",
+        "user_id",
+    ): "DELETE FROM steam_role_cleanup_pending WHERE user_id=?",
     ("steam_beta_invites", "discord_id"): "DELETE FROM steam_beta_invites WHERE discord_id=?",
     ("beta_invite_intent", "discord_id"): "DELETE FROM beta_invite_intent WHERE discord_id=?",
     ("beta_invite_audit", "discord_id"): "DELETE FROM beta_invite_audit WHERE discord_id=?",

@@ -16,6 +16,7 @@ def _safe_log_value(value: Any) -> str:
     text = "" if value is None else str(value)
     return text.replace("\r", "\\r").replace("\n", "\\n")
 
+
 # ---------------- Static Config (edit here, no ENV needed) ----------------
 SECURITY_CONFIG: dict[str, object] = {
     # ID eines Textkanals, in den Beweise/Embeds gepostet werden.
@@ -655,7 +656,9 @@ class SecurityGuard(commands.Cog):
         for idx, msg in enumerate(sorted(msgs, key=lambda m: m.created_at)):
             channel_display = channel_names.get(msg.channel_id, str(msg.channel_id))
             ts = msg.created_at.strftime("%H:%M:%S")
-            snippet = msg.content.replace("\r", "\\r").replace("\n", "\\n").strip().replace("`", "'")
+            snippet = (
+                msg.content.replace("\r", "\\r").replace("\n", "\\n").strip().replace("`", "'")
+            )
             if len(snippet) > 160:
                 snippet = snippet[:157] + "..."
             attach_note = f" [attachments: {len(msg.attachments)}]" if msg.attachments else ""
