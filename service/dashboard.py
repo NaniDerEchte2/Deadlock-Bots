@@ -38,19 +38,26 @@ DEFAULT_DASHBOARD_OWNER_USER_ID = 662995601738170389
 DEADLOCK_MISSING_BUILD_ALERT_CHANNEL_ID = 1374364800817303632
 DEADLOCK_MISSING_BUILD_ALERT_INTERVAL_SECONDS = 300
 KEYRING_SERVICE_NAME = "DeadlockBot"
-MASTER_DASHBOARD_PUBLIC_URL = "https://admin.earlysalty.de"
+MASTER_DASHBOARD_PUBLIC_URL = "https://deutsche-deadlock-community.de"
 MASTER_DASHBOARD_DISCORD_REDIRECT_URI = (
-    f"{MASTER_DASHBOARD_PUBLIC_URL.rstrip('/')}/auth/discord/callback"
+    f"{MASTER_DASHBOARD_PUBLIC_URL.rstrip('/')}/callback/discord"
 )
 
 # Feste Steam-URLs (keine Ableitung/ENV mehr)
-MASTER_DASHBOARD_STEAM_PUBLIC_URL = "https://link.earlysalty.com"
-MASTER_DASHBOARD_STEAM_RETURN_URL = "https://link.earlysalty.com/steam/return"
+MASTER_DASHBOARD_STEAM_PUBLIC_URL = "https://deutsche-deadlock-community.de"
+MASTER_DASHBOARD_STEAM_RETURN_URL = "https://deutsche-deadlock-community.de/link/steam/return"
 MASTER_DASHBOARD_STEAM_RETURN_PATH = "/steam/return"
 
 MASTER_DASHBOARD_DEFAULT_SCHEME = "http"
 DISCORD_API_BASE_URL = "https://discord.com/api/v10"
 MASTER_DISCORD_ADMIN_LOGIN_URL = "/auth/discord/login?next=%2Fadmin"
+TURNIER_INTERNAL_API_TOKEN_ENV_NAMES = (
+    "TURNIER_INTERNAL_API_TOKEN",
+    "MASTER_BROKER_TOKEN",
+    "MAIN_BOT_INTERNAL_TOKEN",
+    "TWITCH_INTERNAL_API_TOKEN",
+)
+TWITCH_INTERNAL_API_TOKEN_ENV_NAMES = ("TWITCH_INTERNAL_API_TOKEN",)
 DEFAULT_NSSM_SERVICE_NAME = KEYRING_SERVICE_NAME
 DEFAULT_NSSM_RESTART_DELAY_SECONDS = 1.0
 DEFAULT_BOT_RESTART_MIN_INTERVAL_SECONDS = 15.0
@@ -158,6 +165,8 @@ class DashboardServer:
             "DISCORD_OAUTH_CLIENT_SECRET"
         ).strip()
         self._discord_redirect_uri = MASTER_DASHBOARD_DISCORD_REDIRECT_URI
+        self._turnier_internal_api_token = self._resolve_turnier_internal_api_token()
+        self._twitch_internal_api_token = self._resolve_twitch_internal_api_token()
         self._discord_auth_enabled = True
         self._discord_owner_user_id = DEFAULT_DASHBOARD_OWNER_USER_ID
         self._discord_moderator_role_id = DEFAULT_DASHBOARD_MODERATOR_ROLE_ID
@@ -349,8 +358,29 @@ class DashboardServer:
                     web.get("/admin", self._handle_index),
                     web.get("/auth/discord/login", self._handle_discord_login),
                     web.get("/auth/discord/callback", self._handle_discord_callback),
+                    web.get("/callback/discord", self._handle_callback_discord),
                     web.get("/auth/logout", self._handle_logout),
                     web.post("/auth/logout", self._handle_logout),
+                    web.post(
+                        "/internal/turnier/v1/discord/authorize-url",
+                        self._handle_turnier_discord_authorize_url,
+                    ),
+                    web.post(
+                        "/internal/turnier/v1/discord/session",
+                        self._handle_turnier_discord_session,
+                    ),
+                    web.post(
+                        "/internal/discord/v1/steam-link-session",
+                        self._handle_steam_link_discord_session,
+                    ),
+                    web.post(
+                        "/internal/twitch/v1/discord/authorize-url",
+                        self._handle_twitch_discord_authorize_url,
+                    ),
+                    web.post(
+                        "/internal/twitch/v1/discord/session",
+                        self._handle_twitch_discord_session,
+                    ),
                     web.get("/api/auth/me", self._handle_auth_me),
                     web.get("/api/status", self._handle_status),
                     web.post("/api/bot/restart", self._handle_bot_restart),
@@ -573,10 +603,52 @@ class DashboardServer:
             return ""
         return str(value or "").strip()
 
+    @staticmethod
+    def _resolve_turnier_internal_api_token() -> str:
+        for env_name in TURNIER_INTERNAL_API_TOKEN_ENV_NAMES:
+            token = (os.getenv(env_name) or "").strip()
+            if token:
+                return token
+        return ""
+
+    @staticmethod
+    def _resolve_twitch_internal_api_token() -> str:
+        for env_name in TWITCH_INTERNAL_API_TOKEN_ENV_NAMES:
+            token = (os.getenv(env_name) or "").strip()
+            if token:
+                return token
+        return ""
+
     def _is_discord_oauth_configured(self) -> bool:
         return bool(
             self._discord_client_id and self._discord_client_secret and self._discord_redirect_uri
         )
+
+    def _require_turnier_internal_api_access(self, request: web.Request) -> None:
+        peer = self._peer_host(request)
+        if not self._is_loopback_host(peer):
+            raise web.HTTPForbidden(text="loopback access required")
+
+        expected = str(self._turnier_internal_api_token or "").strip()
+        if not expected:
+            raise web.HTTPServiceUnavailable(text="turnier internal api token not configured")
+
+        presented = (request.headers.get("X-Internal-Token") or "").strip()
+        if not presented or not secrets.compare_digest(presented, expected):
+            raise web.HTTPUnauthorized(text="missing or invalid X-Internal-Token")
+
+    def _require_twitch_internal_api_access(self, request: web.Request) -> None:
+        peer = self._peer_host(request)
+        if not self._is_loopback_host(peer):
+            raise web.HTTPForbidden(text="loopback access required")
+
+        expected = str(self._twitch_internal_api_token or "").strip()
+        if not expected:
+            raise web.HTTPServiceUnavailable(text="twitch internal api token not configured")
+
+        presented = (request.headers.get("X-Internal-Token") or "").strip()
+        if not presented or not secrets.compare_digest(presented, expected):
+            raise web.HTTPUnauthorized(text="missing or invalid X-Internal-Token")
 
     def _is_auth_enforced(self) -> bool:
         return bool(self._discord_auth_required or self._auth_misconfigured)
@@ -1068,6 +1140,89 @@ class DashboardServer:
                     return None
                 data = await response.json()
         return data if isinstance(data, dict) else None
+
+    async def _fetch_discord_connections(self, access_token: str) -> list[dict[str, Any]] | None:
+        if not access_token:
+            return None
+        timeout = ClientTimeout(total=20)
+        headers = {"Authorization": f"Bearer {access_token}"}
+        async with ClientSession(timeout=timeout) as session:
+            async with session.get(
+                f"{DISCORD_API_BASE_URL}/users/@me/connections",
+                headers=headers,
+            ) as response:
+                if response.status != 200:
+                    body = await response.text()
+                    logger.warning(
+                        "Discord connections lookup failed (status=%s, body=%s)",
+                        response.status,
+                        self._safe_log_value(body[:200]),
+                    )
+                    return None
+                data = await response.json()
+        if not isinstance(data, list):
+            return None
+        return [item for item in data if isinstance(item, dict)]
+
+    @staticmethod
+    def _discord_avatar_url(user: dict[str, Any]) -> str:
+        discord_id = str(user.get("id") or "").strip()
+        avatar = str(user.get("avatar") or "").strip()
+        if not discord_id or not avatar:
+            return ""
+        ext = "gif" if avatar.startswith("a_") else "png"
+        return f"https://cdn.discordapp.com/avatars/{discord_id}/{avatar}.{ext}"
+
+    async def _fetch_discord_member_role_ids(
+        self,
+        discord_user_id: int,
+        *,
+        guild_id: int | None = None,
+    ) -> list[str]:
+        guilds: list[Any] = []
+        seen: set[int] = set()
+
+        if guild_id:
+            guild = self.bot.get_guild(int(guild_id))
+            if guild is not None:
+                guilds.append(guild)
+                seen.add(int(guild.id))
+
+        for configured_guild_id in self._discord_auth_guild_ids:
+            if configured_guild_id in seen:
+                continue
+            guild = self.bot.get_guild(configured_guild_id)
+            if guild is not None:
+                guilds.append(guild)
+                seen.add(int(guild.id))
+
+        if not guilds:
+            guilds = list(getattr(self.bot, "guilds", []) or [])
+
+        for guild in guilds:
+            member = guild.get_member(discord_user_id)
+            if member is None:
+                try:
+                    member = await guild.fetch_member(discord_user_id)
+                except Exception:
+                    member = None
+            if member is None:
+                continue
+
+            role_ids: list[str] = []
+            for role in getattr(member, "roles", []) or []:
+                role_id = getattr(role, "id", None)
+                if role_id is None:
+                    continue
+                try:
+                    normalized_role_id = int(role_id)
+                except (TypeError, ValueError):
+                    continue
+                if normalized_role_id == int(getattr(guild, "id", 0) or 0):
+                    continue
+                role_ids.append(str(normalized_role_id))
+            return role_ids
+        return []
 
     def _has_valid_auth(self, request: web.Request) -> bool:
         return bool(self._discord_auth_required and self._get_discord_auth_session(request))
@@ -1686,10 +1841,10 @@ class DashboardServer:
             _add_target("Steam OAuth Callback", steam_health_url, key="steam-oauth-callback")
 
         # Explicit Health Checks for Core Domains
-        _add_target("Main Site", "https://earlysalty.de/health", key="main-site")
+        _add_target("Main Site", "https://deutsche-deadlock-community.de/health", key="main-site")
         _add_target(
             "Steam Link Service",
-            "https://link.earlysalty.com/health",
+            "https://deutsche-deadlock-community.de/link/health",
             key="steam-link-service",
         )
 
@@ -1701,11 +1856,13 @@ class DashboardServer:
         pieces = [part for part in slug.split("-") if part]
         return "-".join(pieces) or "health"
 
-    def _normalized_discord_redirect_uri(self) -> str | None:
-        raw = (self._discord_redirect_uri or "").strip()
-        if not raw:
+    @staticmethod
+    def _normalize_discord_callback_uri(raw: str | None, *, expected_path: str) -> str | None:
+        safe_path = str(expected_path or "").strip() or "/callback/discord"
+        raw_value = (raw or "").strip()
+        if not raw_value:
             return None
-        candidate = raw if "://" in raw else f"https://{raw}"
+        candidate = raw_value if "://" in raw_value else f"https://{raw_value}"
         try:
             parsed = urlparse(candidate)
         except Exception:
@@ -1718,9 +1875,74 @@ class DashboardServer:
             return None
         if parsed.username or parsed.password or not parsed.netloc:
             return None
-        if (parsed.path or "").rstrip("/") != "/auth/discord/callback":
+        if (parsed.path or "").rstrip("/") != safe_path:
             return None
-        return urlunparse((scheme, parsed.netloc, "/auth/discord/callback", "", "", ""))
+        return urlunparse((scheme, parsed.netloc, safe_path, "", "", ""))
+
+    def _normalized_discord_redirect_uri(self) -> str | None:
+        return self._normalize_discord_callback_uri(
+            self._discord_redirect_uri,
+            expected_path="/callback/discord",
+        )
+
+    def _normalized_shared_discord_callback_uri(
+        self,
+        state_data: dict[str, Any] | None = None,
+    ) -> str | None:
+        metadata = state_data.get("metadata") if isinstance(state_data, dict) else None
+        candidates: list[str] = []
+        if isinstance(metadata, dict):
+            metadata_redirect_uri = str(metadata.get("redirect_uri") or "").strip()
+            if metadata_redirect_uri:
+                candidates.append(metadata_redirect_uri)
+
+        public_base = str(self._public_base_url or "").strip().rstrip("/")
+        if public_base:
+            candidates.append(f"{public_base}/callback/discord")
+
+        for candidate in candidates:
+            normalized = self._normalize_discord_callback_uri(
+                candidate,
+                expected_path="/callback/discord",
+            )
+            if normalized:
+                return normalized
+        return None
+
+    def _oauth_redirect_after_url(self, value: Any, *, fallback: str = "/admin") -> str:
+        return self._safe_template_href(str(value or "").strip(), fallback=fallback)
+
+    async def _store_oauth_state_result(
+        self,
+        state: str,
+        metadata: Any,
+        result: dict[str, Any],
+    ) -> None:
+        if isinstance(metadata, dict):
+            payload = dict(metadata)
+        elif metadata is None:
+            payload = {}
+        else:
+            payload = {"initial_metadata": metadata}
+
+        payload["oauth_result"] = result
+        try:
+            await db.execute_async(
+                "UPDATE oauth_states SET metadata = ? WHERE state = ?",
+                (
+                    json.dumps(
+                        self._sanitize(payload),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                    state,
+                ),
+            )
+        except Exception:
+            logger.exception(
+                "Failed to persist OAuth callback result for state=%s",
+                self._safe_log_value(state),
+            )
 
     async def _handle_discord_login(self, request: web.Request) -> web.StreamResponse:
         if not self._check_auth_rate_limit(request, max_requests=10, window_seconds=60.0):
@@ -1746,13 +1968,13 @@ class DashboardServer:
         if not redirect_uri:
             expected_redirect = (
                 str(self._discord_redirect_uri or "").strip()
-                or "https://admin.earlysalty.de/auth/discord/callback"
+                or "https://deutsche-deadlock-community.de/callback/discord"
             )
             raise web.HTTPServiceUnavailable(
                 text=(
-                    "Discord OAuth Redirect URI ist ungültig. "
-                    f"Erwartet wird exakt: {expected_redirect}."
-                )
+                "Discord OAuth Redirect URI ist ungültig. "
+                f"Erwartet wird exakt: {expected_redirect}."
+            )
             )
 
         self._cleanup_discord_auth_state()
@@ -1772,6 +1994,106 @@ class DashboardServer:
             }
         )
         raise web.HTTPFound(f"{DISCORD_API_BASE_URL}/oauth2/authorize?{query}")
+
+    async def _handle_callback_discord(self, request: web.Request) -> web.StreamResponse:
+        if not self._check_auth_rate_limit(request, max_requests=20, window_seconds=60.0):
+            raise web.HTTPTooManyRequests(
+                text="Zu viele OAuth-Callback-Anfragen. Bitte in einer Minute erneut versuchen.",
+                headers={"Retry-After": "60"},
+            )
+        if not self._is_discord_oauth_configured():
+            raise web.HTTPServiceUnavailable(
+                text="Discord OAuth ist nicht konfiguriert. Client ID/Secret fehlen."
+            )
+
+        state = (request.query.get("state") or "").strip()
+        if not state:
+            return web.Response(text="Fehlender OAuth state.", status=400)
+
+        state_data = await asyncio.to_thread(db.validate_state, state)
+        if not state_data:
+            return web.Response(text="OAuth state ungültig oder abgelaufen.", status=400)
+        if str(state_data.get("provider") or "").strip().lower() != "discord":
+            return web.Response(text="OAuth state provider mismatch.", status=400)
+
+        if not await asyncio.to_thread(db.consume_state, state):
+            return web.Response(text="OAuth state ungültig oder bereits verwendet.", status=400)
+
+        redirect_after = self._oauth_redirect_after_url(
+            state_data.get("redirect_after"),
+            fallback="/admin",
+        )
+        metadata = state_data.get("metadata")
+        completed_at = int(time.time())
+        error = (request.query.get("error") or "").strip()
+        if error:
+            await self._store_oauth_state_result(
+                state,
+                metadata,
+                {
+                    "provider": "discord",
+                    "status": "error",
+                    "completed_at": completed_at,
+                    "error": error,
+                },
+            )
+            raise web.HTTPFound(redirect_after)
+
+        code = (request.query.get("code") or "").strip()
+        if not code:
+            await self._store_oauth_state_result(
+                state,
+                metadata,
+                {
+                    "provider": "discord",
+                    "status": "error",
+                    "completed_at": completed_at,
+                    "error": "missing_code",
+                },
+            )
+            raise web.HTTPFound(redirect_after)
+
+        redirect_uri = self._normalized_shared_discord_callback_uri(state_data)
+        if not redirect_uri:
+            await self._store_oauth_state_result(
+                state,
+                metadata,
+                {
+                    "provider": "discord",
+                    "status": "error",
+                    "completed_at": completed_at,
+                    "error": "invalid_redirect_uri",
+                },
+            )
+            raise web.HTTPFound(redirect_after)
+
+        token_data = await self._exchange_discord_code(code, redirect_uri)
+        access_token = str((token_data or {}).get("access_token") or "").strip()
+        if not access_token:
+            await self._store_oauth_state_result(
+                state,
+                metadata,
+                {
+                    "provider": "discord",
+                    "status": "error",
+                    "completed_at": completed_at,
+                    "error": "token_exchange_failed",
+                },
+            )
+            raise web.HTTPFound(redirect_after)
+
+        discord_user = await self._fetch_discord_user(access_token)
+        result_payload: dict[str, Any] = {
+            "provider": "discord",
+            "status": "success",
+            "completed_at": completed_at,
+            "token": token_data,
+        }
+        if discord_user:
+            result_payload["user"] = discord_user
+
+        await self._store_oauth_state_result(state, metadata, result_payload)
+        raise web.HTTPFound(redirect_after)
 
     async def _handle_discord_callback(self, request: web.Request) -> web.StreamResponse:
         if not self._check_auth_rate_limit(request, max_requests=20, window_seconds=60.0):
@@ -1872,6 +2194,232 @@ class DashboardServer:
         response = web.HTTPFound(safe_destination)
         self._set_discord_session_cookie(response, request, session_id)
         raise response
+
+    async def _handle_turnier_discord_authorize_url(self, request: web.Request) -> web.Response:
+        self._require_turnier_internal_api_access(request)
+        if not self._is_discord_oauth_configured():
+            return web.json_response({"error": "discord_oauth_not_configured"}, status=503)
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid_json"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"error": "invalid_payload"}, status=400)
+
+        redirect_uri = str(payload.get("redirect_uri") or "").strip()
+        if not redirect_uri:
+            return web.json_response({"error": "missing_redirect_uri"}, status=400)
+
+        scope = str(payload.get("scope") or "identify guilds.members.read").strip()
+        if not scope:
+            scope = "identify guilds.members.read"
+
+        query = urlencode(
+            {
+                "client_id": self._discord_client_id,
+                "redirect_uri": redirect_uri,
+                "response_type": "code",
+                "scope": scope,
+            }
+        )
+        return web.json_response(
+            {"authorize_url": f"{DISCORD_API_BASE_URL}/oauth2/authorize?{query}"}
+        )
+
+    async def _handle_turnier_discord_session(self, request: web.Request) -> web.Response:
+        self._require_turnier_internal_api_access(request)
+        if not self._is_discord_oauth_configured():
+            return web.json_response({"error": "discord_oauth_not_configured"}, status=503)
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid_json"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"error": "invalid_payload"}, status=400)
+
+        code = str(payload.get("code") or "").strip()
+        redirect_uri = str(payload.get("redirect_uri") or "").strip()
+        guild_id = self._coerce_int(payload.get("guild_id"), None)
+        if not code or not redirect_uri:
+            return web.json_response({"error": "missing_code_or_redirect_uri"}, status=400)
+
+        token_data = await self._exchange_discord_code(code, redirect_uri)
+        access_token = str((token_data or {}).get("access_token") or "").strip()
+        if not access_token:
+            return web.json_response({"error": "discord_code_exchange_failed"}, status=502)
+
+        user = await self._fetch_discord_user(access_token)
+        if not user:
+            return web.json_response({"error": "discord_user_lookup_failed"}, status=502)
+
+        discord_user_id = self._coerce_int(user.get("id"), None)
+        if not discord_user_id:
+            return web.json_response({"error": "invalid_discord_user_id"}, status=502)
+
+        username = str(user.get("username") or "").strip()
+        global_name = str(user.get("global_name") or "").strip()
+        discord_name = global_name or username or f"User {discord_user_id}"
+        discord_avatar = self._discord_avatar_url(user)
+        discord_roles = await self._fetch_discord_member_role_ids(
+            int(discord_user_id),
+            guild_id=guild_id,
+        )
+
+        return web.json_response(
+            {
+                "discord_id": str(discord_user_id),
+                "discord_name": discord_name,
+                "discord_avatar": discord_avatar,
+                "discord_roles": discord_roles,
+            }
+        )
+
+    async def _handle_steam_link_discord_session(self, request: web.Request) -> web.Response:
+        self._require_turnier_internal_api_access(request)
+        if not self._is_discord_oauth_configured():
+            return web.json_response({"error": "discord_oauth_not_configured"}, status=503)
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid_json"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"error": "invalid_payload"}, status=400)
+
+        code = str(payload.get("code") or "").strip()
+        redirect_uri = str(payload.get("redirect_uri") or "").strip()
+        if not code or not redirect_uri:
+            return web.json_response({"error": "missing_code_or_redirect_uri"}, status=400)
+
+        token_data = await self._exchange_discord_code(code, redirect_uri)
+        access_token = str((token_data or {}).get("access_token") or "").strip()
+        if not access_token:
+            return web.json_response({"error": "discord_code_exchange_failed"}, status=502)
+
+        user = await self._fetch_discord_user(access_token)
+        if not user:
+            return web.json_response({"error": "discord_user_lookup_failed"}, status=502)
+
+        connections = await self._fetch_discord_connections(access_token)
+        if connections is None:
+            return web.json_response({"error": "discord_connections_lookup_failed"}, status=502)
+
+        discord_user_id = self._coerce_int(user.get("id"), None)
+        if not discord_user_id:
+            return web.json_response({"error": "invalid_discord_user_id"}, status=502)
+
+        username = str(user.get("username") or "").strip()
+        global_name = str(user.get("global_name") or "").strip()
+        discord_name = global_name or username or f"User {discord_user_id}"
+
+        steam_connection_ids: list[str] = []
+        seen_ids: set[str] = set()
+        for connection in connections:
+            if str(connection.get("type") or "").strip().lower() != "steam":
+                continue
+            candidates = [
+                str(connection.get("id") or "").strip(),
+                str(connection.get("name") or "").strip(),
+            ]
+            metadata = connection.get("metadata")
+            if isinstance(metadata, dict):
+                candidates.append(str(metadata.get("steam_id") or "").strip())
+            for candidate in candidates:
+                if not candidate or candidate in seen_ids:
+                    continue
+                seen_ids.add(candidate)
+                steam_connection_ids.append(candidate)
+
+        return web.json_response(
+            {
+                "discord_id": str(discord_user_id),
+                "discord_name": discord_name,
+                "steam_connection_ids": steam_connection_ids,
+            }
+        )
+
+    async def _handle_twitch_discord_authorize_url(self, request: web.Request) -> web.Response:
+        self._require_twitch_internal_api_access(request)
+        if not self._is_discord_oauth_configured():
+            return web.json_response({"error": "discord_oauth_not_configured"}, status=503)
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid_json"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"error": "invalid_payload"}, status=400)
+
+        redirect_uri = str(payload.get("redirect_uri") or "").strip()
+        if not redirect_uri:
+            return web.json_response({"error": "missing_redirect_uri"}, status=400)
+
+        scope = str(payload.get("scope") or "identify guilds.members.read").strip()
+        if not scope:
+            scope = "identify guilds.members.read"
+
+        query = urlencode(
+            {
+                "client_id": self._discord_client_id,
+                "redirect_uri": redirect_uri,
+                "response_type": "code",
+                "scope": scope,
+            }
+        )
+        return web.json_response(
+            {"authorize_url": f"{DISCORD_API_BASE_URL}/oauth2/authorize?{query}"}
+        )
+
+    async def _handle_twitch_discord_session(self, request: web.Request) -> web.Response:
+        self._require_twitch_internal_api_access(request)
+        if not self._is_discord_oauth_configured():
+            return web.json_response({"error": "discord_oauth_not_configured"}, status=503)
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid_json"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"error": "invalid_payload"}, status=400)
+
+        code = str(payload.get("code") or "").strip()
+        redirect_uri = str(payload.get("redirect_uri") or "").strip()
+        guild_id = self._coerce_int(payload.get("guild_id"), None)
+        if not code or not redirect_uri:
+            return web.json_response({"error": "missing_code_or_redirect_uri"}, status=400)
+
+        token_data = await self._exchange_discord_code(code, redirect_uri)
+        access_token = str((token_data or {}).get("access_token") or "").strip()
+        if not access_token:
+            return web.json_response({"error": "discord_code_exchange_failed"}, status=502)
+
+        user = await self._fetch_discord_user(access_token)
+        if not user:
+            return web.json_response({"error": "discord_user_lookup_failed"}, status=502)
+
+        discord_user_id = self._coerce_int(user.get("id"), None)
+        if not discord_user_id:
+            return web.json_response({"error": "invalid_discord_user_id"}, status=502)
+
+        username = str(user.get("username") or "").strip()
+        global_name = str(user.get("global_name") or "").strip()
+        discord_name = global_name or username or f"User {discord_user_id}"
+        discord_avatar = self._discord_avatar_url(user)
+        discord_roles = await self._fetch_discord_member_role_ids(
+            int(discord_user_id),
+            guild_id=guild_id,
+        )
+
+        return web.json_response(
+            {
+                "discord_id": str(discord_user_id),
+                "discord_name": discord_name,
+                "discord_avatar": discord_avatar,
+                "discord_roles": discord_roles,
+            }
+        )
 
     async def _handle_logout(self, request: web.Request) -> web.StreamResponse:
         session_id = (request.cookies.get(self._discord_session_cookie) or "").strip()
@@ -6207,7 +6755,7 @@ class DashboardServer:
     async def _handle_public_guild_stats(self, request: web.Request) -> web.Response:
         """Public endpoint for live guild stats (no auth required)."""
         headers = {
-            "Access-Control-Allow-Origin": "https://earlysalty.de",
+            "Access-Control-Allow-Origin": "https://deutsche-deadlock-community.de",
             "Access-Control-Allow-Methods": "GET",
             "Cache-Control": "public, max-age=30",
         }
@@ -6260,7 +6808,7 @@ class DashboardServer:
         """CORS preflight handler for public endpoints."""
         return web.Response(
             headers={
-                "Access-Control-Allow-Origin": "https://earlysalty.de",
+                "Access-Control-Allow-Origin": "https://deutsche-deadlock-community.de",
                 "Access-Control-Allow-Methods": "GET, OPTIONS",
                 "Access-Control-Allow-Headers": "Content-Type",
                 "Access-Control-Max-Age": "86400",

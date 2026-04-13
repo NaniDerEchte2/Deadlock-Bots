@@ -76,7 +76,10 @@ class Settings(BaseSettings):
     # --- Steam / Deadlock Integration ---
     steam_api_key: SecretStr | None = Field(None, alias="STEAM_API_KEY")
     steam_web_api_key: SecretStr | None = Field(None, alias="STEAM_WEB_API_KEY")
-    public_base_url: str = Field("https://link.earlysalty.com", alias="PUBLIC_BASE_URL")
+    # Public OAuth endpoints are exposed behind the shared /link reverse proxy path.
+    public_base_url: str = Field(
+        "https://deutsche-deadlock-community.de/link", alias="PUBLIC_BASE_URL"
+    )
     steam_poll_min_interval_sec: int = Field(86400, alias="STEAM_POLL_MIN_INTERVAL_SEC")
     steam_unfollow_miss_threshold: int = Field(2, alias="STEAM_UNFOLLOW_MISS_THRESHOLD")
     steam_poll_batch_size: int = Field(25, alias="STEAM_POLL_BATCH_SIZE")
@@ -89,16 +92,14 @@ class Settings(BaseSettings):
     streamer_notify_channel_id: int = Field(1374364800817303632, alias="STREAMER_NOTIFY_CHANNEL_ID")
 
     # --- Steam Link UI & OAuth ---
-    steam_return_path: str = Field("/steam/return", alias="STEAM_RETURN_PATH")
+    steam_return_path: str = Field("/callback/steam", alias="STEAM_RETURN_PATH")
     http_host: str = Field("127.0.0.1", alias="HTTP_HOST")
     http_port: int = Field(8888, alias="STEAM_OAUTH_PORT")
     link_cover_image: str = Field("", alias="LINK_COVER_IMAGE")
-    link_cover_label: str = Field("link.earlysalty.com", alias="LINK_COVER_LABEL")
+    link_cover_label: str = Field("link.deutsche-deadlock-community.de", alias="LINK_COVER_LABEL")
     link_button_label: str = Field("Via Discord verknüpfen", alias="LINK_BUTTON_LABEL")
     steam_button_label: str = Field("Direkt bei Steam anmelden", alias="STEAM_BUTTON_LABEL")
     steam_login_launch_ttl_sec: int = Field(900, alias="STEAM_LOGIN_LAUNCH_TTL_SEC")
-    discord_oauth_client_id: str | None = Field(None, alias="DISCORD_OAUTH_CLIENT_ID")
-    discord_oauth_client_secret: str | None = Field(None, alias="DISCORD_OAUTH_CLIENT_SECRET")
     discord_oauth_redirect: str | None = Field(None, alias="DISCORD_OAUTH_REDIRECT")
 
     # --- TempVoice IDs ---
