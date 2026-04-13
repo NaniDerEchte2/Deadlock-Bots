@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import json
 import logging
 import os
 import sqlite3
 import threading
+import time
 from collections.abc import AsyncIterator, Iterable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
@@ -51,6 +53,9 @@ DB_NAME = "deadlock.sqlite3"
 STEAM_TASKS_MAX_ROWS = int(os.environ.get("STEAM_TASKS_MAX_ROWS", "1000"))
 STEAM_TASKS_KV_NS = "steam_tasks"
 STEAM_TASKS_KV_MAX_ROWS_KEY = "max_rows"
+DEFAULT_OAUTH_STATE_TTL_SECONDS = int(
+    os.environ.get("DEADLOCK_OAUTH_STATE_TTL_SECONDS", "21600")
+)
 
 # ---- Modulweiter Zustand ----
 _CONN: sqlite3.Connection | None = None
@@ -867,6 +872,18 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
               answered_at INTEGER
             );
 
+            CREATE TABLE IF NOT EXISTS oauth_states (
+              state TEXT PRIMARY KEY,
+              provider TEXT NOT NULL,
+              flow_type TEXT NOT NULL,
+              requesting_service TEXT,
+              redirect_after TEXT NOT NULL,
+              created_at INTEGER NOT NULL,
+              expires_at INTEGER NOT NULL,
+              used INTEGER DEFAULT 0,
+              metadata TEXT
+            );
+
             """
         )
         # Steam-Task-Retention: Trigger + initial Cleanup
@@ -1090,6 +1107,12 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
                 "CREATE INDEX IF NOT EXISTS idx_issue_reports_user ON issue_reports(user_id, created_at DESC)"
             )
             c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_oauth_states_provider_flow ON oauth_states(provider, flow_type, used)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_oauth_states_expiry ON oauth_states(expires_at, used)"
+            )
+            c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_deadlock_heroes_hero ON deadlock_heroes(hero_id)"
             )
             c.execute(
@@ -1244,6 +1267,170 @@ def set_kv(ns: str, k: str, v: str) -> None:
 def get_kv(ns: str, k: str) -> str | None:
     row = query_one("SELECT v FROM kv_store WHERE ns=? AND k=?", (ns, k))
     return row[0] if row else None
+
+
+def _encode_oauth_state_metadata(metadata: Any) -> str | None:
+    if metadata is None:
+        return None
+    if isinstance(metadata, str):
+        text = metadata.strip()
+        return text or None
+    return json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))
+
+
+def _decode_oauth_state_metadata(raw: Any) -> Any:
+    if raw is None:
+        return None
+    if isinstance(raw, (bytes, bytearray)):
+        try:
+            raw = raw.decode("utf-8", errors="ignore")
+        except Exception:
+            return None
+    if not isinstance(raw, str):
+        return raw
+    text = raw.strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return text
+
+
+def create_state(
+    state: str,
+    provider: str,
+    flow_type: str,
+    redirect_after: str,
+    metadata: Any = None,
+    *,
+    requesting_service: str | None = None,
+    ttl_seconds: int | None = None,
+) -> dict[str, Any] | None:
+    safe_state = str(state or "").strip()
+    safe_provider = str(provider or "").strip()
+    safe_flow_type = str(flow_type or "").strip()
+    safe_redirect_after = str(redirect_after or "").strip()
+    if not safe_state:
+        raise ValueError("state must not be empty")
+    if not safe_provider:
+        raise ValueError("provider must not be empty")
+    if not safe_flow_type:
+        raise ValueError("flow_type must not be empty")
+    if not safe_redirect_after:
+        raise ValueError("redirect_after must not be empty")
+
+    metadata_payload = _encode_oauth_state_metadata(metadata)
+    derived_requesting_service = str(requesting_service or "").strip() or None
+    if derived_requesting_service is None and isinstance(metadata, dict):
+        candidate = str(metadata.get("requesting_service") or "").strip()
+        derived_requesting_service = candidate or None
+
+    now = int(time.time())
+    ttl = max(1, int(ttl_seconds or DEFAULT_OAUTH_STATE_TTL_SECONDS))
+    expires_at = now + ttl
+
+    execute(
+        """
+        INSERT INTO oauth_states(
+          state,
+          provider,
+          flow_type,
+          requesting_service,
+          redirect_after,
+          created_at,
+          expires_at,
+          used,
+          metadata
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+        ON CONFLICT(state) DO UPDATE SET
+          provider = excluded.provider,
+          flow_type = excluded.flow_type,
+          requesting_service = excluded.requesting_service,
+          redirect_after = excluded.redirect_after,
+          created_at = excluded.created_at,
+          expires_at = excluded.expires_at,
+          used = 0,
+          metadata = excluded.metadata
+        """,
+        (
+            safe_state,
+            safe_provider,
+            safe_flow_type,
+            derived_requesting_service,
+            safe_redirect_after,
+            now,
+            expires_at,
+            metadata_payload,
+        ),
+    )
+    return validate_state(safe_state, now=now)
+
+
+def validate_state(state: str, *, now: int | None = None) -> dict[str, Any] | None:
+    safe_state = str(state or "").strip()
+    if not safe_state:
+        return None
+
+    current = int(time.time() if now is None else now)
+    row = query_one(
+        """
+        SELECT
+          state,
+          provider,
+          flow_type,
+          requesting_service,
+          redirect_after,
+          created_at,
+          expires_at,
+          used,
+          metadata
+        FROM oauth_states
+        WHERE state = ?
+        """,
+        (safe_state,),
+    )
+    if not row:
+        return None
+    if int(row["used"] or 0) != 0:
+        return None
+    if int(row["expires_at"] or 0) <= current:
+        return None
+
+    return {
+        "state": str(row["state"] or ""),
+        "provider": str(row["provider"] or ""),
+        "flow_type": str(row["flow_type"] or ""),
+        "requesting_service": row["requesting_service"],
+        "redirect_after": str(row["redirect_after"] or ""),
+        "created_at": int(row["created_at"] or 0),
+        "expires_at": int(row["expires_at"] or 0),
+        "used": bool(row["used"]),
+        "metadata": _decode_oauth_state_metadata(row["metadata"]),
+    }
+
+
+def consume_state(state: str, *, now: int | None = None) -> bool:
+    safe_state = str(state or "").strip()
+    if not safe_state:
+        return False
+
+    current = int(time.time() if now is None else now)
+    with _LOCK:
+        cur = connect().execute(
+            """
+            UPDATE oauth_states
+            SET used = 1
+            WHERE state = ?
+              AND COALESCE(used, 0) = 0
+              AND expires_at > ?
+            """,
+            (safe_state, current),
+        )
+        try:
+            return bool(cur.rowcount and cur.rowcount > 0)
+        finally:
+            cur.close()
 
 
 # ---------- Transactions (async) ----------

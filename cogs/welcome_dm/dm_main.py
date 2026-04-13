@@ -40,7 +40,7 @@ STATUS_RETURNING = getattr(base_module, "STATUS_RETURNING", "returning")
 DEFAULT_BETA_INVITE_CHANNEL_URL = (
     "https://discord.com/channels/1289721245281292288/1428745737323155679"
 )
-DEFAULT_BETA_INVITE_SUPPORT_CONTACT = "@earlysalty"
+DEFAULT_BETA_INVITE_SUPPORT_CONTACT = "Deutsche Deadlock Community"
 
 BETA_INVITE_CHANNEL_URL = getattr(
     base_module,

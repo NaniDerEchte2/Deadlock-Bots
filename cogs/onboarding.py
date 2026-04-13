@@ -296,7 +296,7 @@ class OnboardingContentCreatorView(discord.ui.View):
             discord.ui.Button(
                 label="📊 Demo ansehen",
                 style=discord.ButtonStyle.link,
-                url="https://demo.earlysalty.com/",
+                url="https://deutsche-deadlock-community.de/demo/twitch/demo/",
                 row=0,
             )
         )

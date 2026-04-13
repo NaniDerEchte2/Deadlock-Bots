@@ -94,12 +94,12 @@ jobs:
           # External host-style request must be blocked.
           # Note: New security logic redirects to login (302) instead of raw 403.
           probe_expect "external-host-admin-blocked" 302 \
-            -H "Host: twitch.earlysalty.com" \
+            -H "Host: twitch.deutsche-deadlock-community.de" \
             http://127.0.0.1:8788/twitch/admin
 
           # Header spoofing must not bypass the block.
           probe_expect "spoofed-headers-admin-blocked" 302 \
-            -H "Host: twitch.earlysalty.com" \
+            -H "Host: twitch.deutsche-deadlock-community.de" \
             -H "X-Dashboard-Context: local" \
             -H "X-Forwarded-For: 127.0.0.1" \
             -H "X-Real-IP: 127.0.0.1" \
@@ -108,12 +108,12 @@ jobs:
 
           # Encoded/variant path must never open admin externally.
           probe_not_200 "encoded-admin-path-not-open" \
-            -H "Host: twitch.earlysalty.com" \
+            -H "Host: twitch.deutsche-deadlock-community.de" \
             http://127.0.0.1:8788/twitch/%61dmin
 
           # Public-style stats access without auth must not become implicitly admin.
           probe_not_200 "unauthenticated-stats-not-open" \
-            -H "Host: twitch.earlysalty.com" \
+            -H "Host: twitch.deutsche-deadlock-community.de" \
             http://127.0.0.1:8788/twitch/stats
 
       - name: Upload Auth Guard Server Log

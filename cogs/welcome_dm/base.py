@@ -29,7 +29,7 @@ STATUS_NEW_PLAYER = "new_player"
 
 # Beta-Invite Infos
 BETA_INVITE_CHANNEL_URL = "https://discord.com/channels/1289721245281292288/1428745737323155679"
-BETA_INVITE_SUPPORT_CONTACT = "@earlysalty"
+BETA_INVITE_SUPPORT_CONTACT = "Deutsche Deadlock Community"
 
 
 def build_step_embed(

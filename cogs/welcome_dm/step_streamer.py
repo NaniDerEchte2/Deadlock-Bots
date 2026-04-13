@@ -55,7 +55,7 @@ STREAMER_NOTIFY_CHANNEL_ID = 1374364800817303632
 MAIN_GUILD_ID = 1289721245281292288  # DM-Fallback + Guild-Sync
 
 # Demo-Dashboard URL (öffentlich, kein Login nötig)
-ANALYTICS_DEMO_URL = "https://demo.earlysalty.com/"
+ANALYTICS_DEMO_URL = "https://deutsche-deadlock-community.de/demo/twitch/demo/"
 
 
 # ------------------------------

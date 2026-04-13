@@ -11,7 +11,7 @@ Please do not create a public issue for undisclosed vulnerabilities.
 
 Report privately by email:
 
-- `mail@earlysalty.com`
+- `admin@deutsche-deadlock-community.de`
 
 Include, if possible:
 

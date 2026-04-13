@@ -125,7 +125,7 @@ jobs:
             -X POST \
             -H "$JSON_HEADER" \
             -H "$COOKIE_HEADER" \
-            -H "Origin: https://admin.earlysalty.de" \
+            -H "Origin: https://admin.deutsche-deadlock-community.de" \
             --data '{}' \
             "$BASE_URL/api/bot/restart" > /dev/null
 
@@ -135,7 +135,7 @@ jobs:
             -X POST \
             -H "$JSON_HEADER" \
             -H "$COOKIE_HEADER" \
-            -H "Origin: https://admin.earlysalty.de" \
+            -H "Origin: https://admin.deutsche-deadlock-community.de" \
             -H "$CSRF_HEADER" \
             --data '{}' \
             "$BASE_URL/api/bot/restart" > /dev/null
@@ -145,7 +145,7 @@ jobs:
             -X POST \
             -H "$JSON_HEADER" \
             -H "$COOKIE_HEADER" \
-            -H "Referer: https://admin.earlysalty.de/admin" \
+            -H "Referer: https://admin.deutsche-deadlock-community.de/admin" \
             -H "$CSRF_HEADER" \
             --data '{}' \
             "$BASE_URL/api/bot/restart" > /dev/null
