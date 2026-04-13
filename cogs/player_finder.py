@@ -77,6 +77,7 @@ DISCORD_RANK_ROLES: dict[int, tuple[str, int]] = {
     1331458087349129296: ("Eternus", 11),
     1397687886580547745: ("Unbekannt", 0),
 }
+UNVERIFIED_ROLE_RE = re.compile(r"^Unverifiziert\s+(.+)$", re.IGNORECASE)
 
 NEW_PLAYER_MAX_RANK = 4
 
@@ -260,6 +261,14 @@ class PlayerFinder(commands.Cog):
                 name, val = DISCORD_RANK_ROLES[role.id]
                 if val > best_val:
                     best_name, best_val = name, val
+        for role in member.roles:
+            unv_match = UNVERIFIED_ROLE_RE.match(getattr(role, "name", ""))
+            if not unv_match:
+                continue
+            rank_candidate = unv_match.group(1).strip()
+            val = RANK_NAME_TO_VALUE.get(rank_candidate.lower())
+            if val and val > best_val:
+                best_name, best_val = rank_candidate.title(), val
         return best_name, best_val
 
     def _get_lane_avg_rank(self, members: list[discord.Member]) -> float:
@@ -516,6 +525,14 @@ class PlayerFinder(commands.Cog):
             else:
                 status = "⚪ Offline"
 
+            has_steam = steam is not None
+            has_discord_online = member.status in (discord.Status.online, discord.Status.idle)
+            has_activity_pattern = bool(pattern_rows)
+
+            # Nur vorschlagen wenn Steam-präsent ODER Discord online/idle ODER Aktivitätsmuster vorhanden
+            if not has_steam and not has_discord_online and not has_activity_pattern:
+                continue
+
             candidates.append((member, status))
 
         # Sortieren: Lobby → Match → Discord online → idle → offline
@@ -631,6 +648,10 @@ class PlayerFinder(commands.Cog):
         if not guild:
             return
 
+        # User muss in einer Lobby (Voice-Channel) sein
+        if not (message.author.voice and message.author.voice.channel):
+            return
+
         output_channel = guild.get_channel(SUGGESTION_CHANNEL_ID)
         if not output_channel or not isinstance(output_channel, discord.abc.Messageable):
             return
@@ -640,70 +661,34 @@ class PlayerFinder(commands.Cog):
         self._steam_friend_cache = await self._get_steam_friend_ids()
 
         # Wenn der User IN einer Voice-Lane ist → suche gezielt für diese Lane
-        if message.author.voice and message.author.voice.channel:
-            target_channel = message.author.voice.channel
-            # Lane finden
-            for cat_id in [
-                NEW_PLAYER_CATEGORY_ID,
-                CASUAL_CATEGORY_ID,
-                RANKED_CATEGORY_ID,
-                STREET_BRAWL_CATEGORY_ID,
-            ]:
-                cat = guild.get_channel(cat_id)
-                if not isinstance(cat, discord.CategoryChannel):
-                    continue
-                if target_channel.category_id != cat_id:
-                    continue
-
-                members = [m for m in target_channel.members if not m.bot]
-                if len(members) < MIN_PLAYERS_FOR_SEARCH or len(members) > MAX_PLAYERS_FOR_SEARCH:
-                    return
-
-                lane_label = self._get_lane_label(cat_id)
-                candidates = await self._get_candidates_for_lane(
-                    guild, members, cat_id, steam_presence, self._steam_friend_cache,
-                )
-
-                embed = self._build_embed(guild, target_channel.name, lane_label, members, candidates, target_channel.id)
-                await output_channel.send(embed=embed)
-                return
-
-            return  # Lane nicht in einer der überwachten Kategorien
-
-        # User ist NICHT in Voice → generische LFG Suche (ähnlich lfg.py)
-        # Scanne alle Kategorien nach aktiven Lanes mit Platz
+        target_channel = message.author.voice.channel
+        # Lane finden
         for cat_id in [
             NEW_PLAYER_CATEGORY_ID,
             CASUAL_CATEGORY_ID,
             RANKED_CATEGORY_ID,
             STREET_BRAWL_CATEGORY_ID,
         ]:
-            lanes = self._scan_category_lanes(guild, cat_id)
-            for vc, members, _ in lanes:
-                if len(members) < MIN_PLAYERS_FOR_SEARCH or len(members) > MAX_PLAYERS_FOR_SEARCH:
-                    continue
+            cat = guild.get_channel(cat_id)
+            if not isinstance(cat, discord.CategoryChannel):
+                continue
+            if target_channel.category_id != cat_id:
+                continue
 
-                lane_label = self._get_lane_label(cat_id)
-                candidates = await self._get_candidates_for_lane(
-                    guild, members, cat_id, steam_presence, self._steam_friend_cache,
-                )
+            members = [m for m in target_channel.members if not m.bot]
+            if len(members) < MIN_PLAYERS_FOR_SEARCH or len(members) > MAX_PLAYERS_FOR_SEARCH:
+                return
 
-                if candidates:
-                    embed = self._build_embed(guild, vc.name, lane_label, members, candidates, vc.id)
-                    await output_channel.send(embed=embed)
-                    return
+            lane_label = self._get_lane_label(cat_id)
+            candidates = await self._get_candidates_for_lane(
+                guild, members, cat_id, steam_presence, self._steam_friend_cache,
+            )
 
-        # Keine aktive Lane mit Platz gefunden
-        embed = discord.Embed(
-            title="\U0001f50d Mitspieler-Vorschläge",
-            description=(
-                f"**{message.author.display_name}** sucht Mitspieler!\n\n"
-                "Aktuell ist keine Lane mit Platz verfügbar. "
-                "Mach einfach eine auf — es kommen erfahrungsgemäß schnell Leute dazu."
-            ),
-            color=discord.Color.blue(),
-        )
-        await output_channel.send(embed=embed)
+            embed = self._build_embed(guild, target_channel.name, lane_label, members, candidates, target_channel.id)
+            await output_channel.send(embed=embed)
+            return
+
+        return  # Lane nicht in einer der überwachten Kategorien
 
     # --- Event Listener ---
 

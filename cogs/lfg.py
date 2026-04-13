@@ -109,6 +109,7 @@ DISCORD_RANK_ROLES = {
     1331458087349129296: ("Eternus", 11),
     1397687886580547745: ("Unbekannt", 0),
 }
+UNVERIFIED_ROLE_RE = re.compile(r"^Unverifiziert\s+(.+)$", re.IGNORECASE)
 
 # Sub-Rank Rollen (z. B. "Ascendant 3" oder "Asc 3")
 RANK_SHORT_NAMES = {
@@ -254,6 +255,20 @@ class SmartLFGAgent(commands.Cog):
                 if score > highest_score:
                     highest_name, highest_val, highest_sub = r_name, r_val, None
                     highest_score = score
+
+            # Unverifiziert-Rollen: gleicher Rang-Name, aber immer Sub-Rank 3
+            unv_match = UNVERIFIED_ROLE_RE.match(getattr(role, "name", ""))
+            if unv_match:
+                rank_candidate = unv_match.group(1).strip()
+                r_val = RANK_NAME_TO_VALUE.get(rank_candidate.lower())
+                if r_val:
+                    sub = 3  # immer Sub-Rank 3 für unverifizierte Rollen
+                    score = r_val * 10 + sub
+                    if score > highest_score:
+                        highest_name = rank_candidate.title()
+                        highest_val = r_val
+                        highest_sub = sub
+                        highest_score = score
 
         if highest_val == 0:
             return (UNKNOWN_RANK_NAME, 0, None)
