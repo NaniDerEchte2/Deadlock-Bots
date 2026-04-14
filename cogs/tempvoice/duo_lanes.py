@@ -17,11 +17,10 @@ _cfg = get_guild_config()
 
 # Der Channel der beobachtet wird
 TRIGGER_CHANNEL_ID = 1411391356278018245
-TARGET_CATEGORY_ID = 1465839366634209361  # Kategorie für die neuen Channels
 EXPAND_THRESHOLD = 2  # Ab 2 Spielern wird ein neuer Channel erstellt
 SYNC_DEBOUNCE_SECONDS = 1.0
 STARTUP_SYNC_DELAY_SECONDS = 5.0
-LANE_BASE_NAME = "Duo Lane"
+LANE_BASE_NAME = "🗨️Off Topic Voice"
 LANE_NAME_RE = re.compile(rf"^{re.escape(LANE_BASE_NAME)}\s+(?P<index>[2-9]\d*)$")
 
 
@@ -159,18 +158,12 @@ class DuoLanes(commands.Cog):
         if not isinstance(anchor, discord.VoiceChannel):
             log.warning("duo lane anchor %s not found in guild %s", TRIGGER_CHANNEL_ID, guild.id)
             return
-        if anchor.category_id != TARGET_CATEGORY_ID:
-            log.warning(
-                "duo lane anchor %s is not in target category %s (got %s)",
-                anchor.id,
-                TARGET_CATEGORY_ID,
-                anchor.category_id,
-            )
-            return
 
         category = anchor.category
         if not isinstance(category, discord.CategoryChannel):
             return
+
+        target_category_id = anchor.category_id
 
         lock = self._lock_for(guild.id)
         async with lock:
@@ -201,7 +194,7 @@ class DuoLanes(commands.Cog):
                 channel = guild.get_channel(int(lane_id))
                 if not isinstance(channel, discord.VoiceChannel):
                     continue
-                if channel.category_id != TARGET_CATEGORY_ID:
+                if channel.category_id != target_category_id:
                     continue
                 if channel.members:
                     needs_resync = True
@@ -223,7 +216,7 @@ class DuoLanes(commands.Cog):
                 if not isinstance(channel, discord.VoiceChannel):
                     needs_resync = True
                     continue
-                if channel.category_id != TARGET_CATEGORY_ID:
+                if channel.category_id != target_category_id:
                     needs_resync = True
                     continue
                 if await self._apply_layout(channel, anchor, desired_index):
@@ -334,6 +327,7 @@ class DuoLanes(commands.Cog):
             return False
         if channel.id == TRIGGER_CHANNEL_ID:
             return True
-        if channel.category_id != TARGET_CATEGORY_ID:
+        anchor = channel.guild.get_channel(TRIGGER_CHANNEL_ID)
+        if anchor is None or channel.category_id != anchor.category_id:
             return False
         return parse_lane_index(channel.id, channel.name) is not None
