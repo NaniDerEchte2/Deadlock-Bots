@@ -16,6 +16,7 @@ from discord.ext import commands
 
 from service import db
 from service.config import settings
+from service.guild_config import get_guild_config
 from service.deadlock_voice_cohort import (
     evaluate_deadlock_presence_row,
     select_best_deadlock_presence,
@@ -24,11 +25,15 @@ from service.deadlock_voice_cohort import (
 
 log = logging.getLogger("DeadlockVoiceStatus")
 trace_log = logging.getLogger("DeadlockVoiceStatus.trace")
+_cfg = get_guild_config()
 
 TARGET_CATEGORY_IDS: set[int] = {
-    1289721245281292290,  # Chill Lanes
-    1412804540994162789,  # Comp/Ranked Lanes
-    1357422957017698478,  # Street Brawl
+    _cfg.VOICE_STATUS_CATEGORY_CHILL,
+    _cfg.VOICE_STATUS_CATEGORY_COMP,
+    _cfg.VOICE_STATUS_CATEGORY_STREET_BRAWL,
+}
+EXCLUDED_CHANNEL_IDS: set[int] = {
+    _cfg.TEMPVOICE_PERMANENT_CASUAL_CHANNEL,
 }
 
 POLL_INTERVAL_SECONDS = 60
@@ -156,6 +161,7 @@ class DeadlockVoiceStatus(commands.Cog):
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
     async def _update_all_channels(self) -> None:
+        await self._clear_excluded_channel_statuses()
         channels = self._collect_monitored_channels()
         if not channels:
             return
@@ -193,9 +199,38 @@ class DeadlockVoiceStatus(commands.Cog):
         result: list[discord.VoiceChannel] = []
         for guild in self.bot.guilds:
             for channel in guild.voice_channels:
+                if channel.id in EXCLUDED_CHANNEL_IDS:
+                    continue
                 if channel.category_id in TARGET_CATEGORY_IDS:
                     result.append(channel)
         return result
+
+    async def _clear_excluded_channel_statuses(self) -> None:
+        for guild in self.bot.guilds:
+            for channel_id in EXCLUDED_CHANNEL_IDS:
+                channel = guild.get_channel(int(channel_id))
+                if not isinstance(channel, discord.VoiceChannel):
+                    continue
+                base_name, current_suffix = self._split_suffix(channel.name)
+                base_name = self._resolve_base_name(channel, base_name)
+                await self._apply_channel_name(
+                    channel,
+                    base_name,
+                    None,
+                    None,
+                    None,
+                    current_suffix,
+                    None,
+                    None,
+                    None,
+                    debug_payload={
+                        "channel_id": channel.id,
+                        "channel_name": channel.name,
+                        "base_name": base_name,
+                        "current_suffix": current_suffix,
+                        "decision": {"reason": "excluded_channel"},
+                    },
+                )
 
     def _resolve_base_name(self, channel: discord.VoiceChannel, fallback_base: str) -> str:
         """Ermittelt den Basisnamen; für dynamische Chill-Lanes aus TempVoice-Regeln statt aus altem Channelnamen."""

@@ -24,6 +24,8 @@ SUPPORTED_CATEGORY_IDS: set[int] = {
     _cfg.TEMPVOICE_CATEGORY_CHILL,
     _cfg.TEMPVOICE_CATEGORY_COMP,
 }
+CHILL_STAGING_CHANNEL_ID = _cfg.TEMPVOICE_STAGING_CASUAL
+PERMANENT_CHILL_LANE_ID = _cfg.TEMPVOICE_PERMANENT_CASUAL_CHANNEL
 REORDER_DEBOUNCE_SECONDS = 2.0
 STARTUP_REORDER_DELAY_SECONDS = 5.0
 RANK_LABEL_RE = re.compile(
@@ -147,6 +149,10 @@ class TempVoiceLaneSorting(commands.Cog):
         key = (int(guild_id), int(category_id))
         lock = self._category_locks.setdefault(key, asyncio.Lock())
         async with lock:
+            reserved_start_position: int | None = None
+            if category_id == _cfg.TEMPVOICE_CATEGORY_CHILL:
+                reserved_start_position = await self._ensure_reserved_chill_slot(guild, category)
+
             lanes = [lane for lane in category.voice_channels if self._should_sort_lane(lane)]
             if len(lanes) <= 1:
                 return
@@ -164,7 +170,15 @@ class TempVoiceLaneSorting(commands.Cog):
                     )
                 )
 
-            moves = plan_lane_reorder(snapshots)
+            if reserved_start_position is not None:
+                ordered_entries = sorted(snapshots, key=lambda entry: entry.sort_key)
+                moves = []
+                for idx, entry in enumerate(ordered_entries):
+                    target_position = int(reserved_start_position) + idx
+                    if entry.current_position != target_position:
+                        moves.append((entry.lane_id, target_position))
+            else:
+                moves = plan_lane_reorder(snapshots)
             if not moves:
                 return
 
@@ -203,6 +217,47 @@ class TempVoiceLaneSorting(commands.Cog):
                         target_position,
                         exc,
                     )
+
+    async def _ensure_reserved_chill_slot(
+        self,
+        guild: discord.Guild,
+        category: discord.CategoryChannel,
+    ) -> int | None:
+        anchor = guild.get_channel(int(CHILL_STAGING_CHANNEL_ID))
+        fixed_lane = guild.get_channel(int(PERMANENT_CHILL_LANE_ID))
+        if not isinstance(anchor, discord.VoiceChannel):
+            return None
+        if not isinstance(fixed_lane, discord.VoiceChannel):
+            return None
+        if anchor.category_id != category.id or fixed_lane.category_id != category.id:
+            return None
+
+        desired_fixed_position = int(anchor.position) + 1
+        if int(fixed_lane.position) != desired_fixed_position:
+            try:
+                await fixed_lane.edit(
+                    position=desired_fixed_position,
+                    reason="TempVoice: permanent chill lane pinned below staging",
+                )
+            except discord.NotFound:
+                return None
+            except discord.Forbidden as exc:
+                log.warning(
+                    "TempVoice chill lane pin forbidden for %s -> %s: %s",
+                    fixed_lane.id,
+                    desired_fixed_position,
+                    exc,
+                )
+                return None
+            except discord.HTTPException as exc:
+                log.warning(
+                    "TempVoice chill lane pin HTTP error for %s -> %s: %s",
+                    fixed_lane.id,
+                    desired_fixed_position,
+                    exc,
+                )
+                return None
+        return int(anchor.position) + 2
 
     def _should_sort_lane(self, lane: discord.VoiceChannel | None) -> bool:
         if not isinstance(lane, discord.VoiceChannel):

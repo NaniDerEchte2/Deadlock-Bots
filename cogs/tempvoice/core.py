@@ -30,6 +30,7 @@ _cfg = get_guild_config()
 CASUAL_STAGING_ID = _cfg.TEMPVOICE_STAGING_CASUAL
 STAGING_CHANNEL_IDS: set[int] = set(_cfg.tempvoice_staging_channels)
 FIXED_LANE_IDS: set[int] = {
+    _cfg.TEMPVOICE_PERMANENT_CASUAL_CHANNEL,  # Permanenter Chill-Voice direkt unter dem Staging
     1411391356278018245,  # Dauerhafter Voice-Channel (nicht von TempVoice verwalten)
     1470126503252721845,  # Ausgenommen: nie von TempVoice verwalten/loeschen
 }
