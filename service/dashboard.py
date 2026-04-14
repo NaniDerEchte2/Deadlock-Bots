@@ -850,6 +850,13 @@ class DashboardServer:
             return fallback
         return candidate
 
+    def _public_dashboard_redirect_url(self, location: str | None, *, fallback: str = "/admin") -> str:
+        safe_path = self._safe_internal_redirect(location, fallback=fallback)
+        base_url = str(self._public_base_url or "").strip().rstrip("/")
+        if not base_url:
+            return safe_path
+        return f"{base_url}{safe_path}"
+
     def _build_discord_login_url(
         self, request: web.Request, *, next_path: str | None = None
     ) -> str:
@@ -980,6 +987,7 @@ class DashboardServer:
     def _set_discord_session_cookie(
         self, response: web.StreamResponse, request: web.Request, session_id: str
     ) -> None:
+        cookie_domain = self._discord_session_cookie_domain()
         response.set_cookie(
             self._discord_session_cookie,
             session_id,
@@ -988,18 +996,34 @@ class DashboardServer:
             secure=self._is_secure_request(request),
             samesite="Lax",
             path="/",
+            domain=cookie_domain,
         )
 
     def _clear_discord_session_cookie(
         self, response: web.StreamResponse, request: web.Request
     ) -> None:
+        cookie_domain = self._discord_session_cookie_domain()
         response.del_cookie(
             self._discord_session_cookie,
             path="/",
             httponly=True,
             samesite="Lax",
             secure=self._is_secure_request(request),
+            domain=cookie_domain,
         )
+
+    def _discord_session_cookie_domain(self) -> str | None:
+        redirect_uri = self._normalized_discord_redirect_uri()
+        if not redirect_uri:
+            return None
+        try:
+            parsed = urlparse(redirect_uri)
+        except Exception:
+            return None
+        hostname = str(parsed.hostname or "").strip().lower()
+        if not hostname or hostname in {"localhost", "127.0.0.1", "::1"}:
+            return None
+        return hostname
 
     def _get_discord_auth_session(self, request: web.Request) -> dict[str, Any] | None:
         if not self._discord_auth_required:
@@ -2399,7 +2423,7 @@ class DashboardServer:
         )
 
         destination = self._normalize_auth_next_path(state_data.get("next_path"))
-        safe_destination = self._safe_internal_redirect(destination, fallback="/admin")
+        safe_destination = self._public_dashboard_redirect_url(destination, fallback="/admin")
         response = web.HTTPFound(safe_destination)
         self._set_discord_session_cookie(response, request, session_id)
         raise response
