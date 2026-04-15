@@ -442,6 +442,8 @@ class DashboardServer:
                     # Public endpoints (no auth required)
                     web.get("/api/public/guild-stats", self._handle_public_guild_stats),
                     web.route("OPTIONS", "/api/public/guild-stats", self._handle_public_cors),
+                    web.get("/api/public/patch-notes", self._handle_public_patch_notes),
+                    web.route("OPTIONS", "/api/public/patch-notes", self._handle_public_cors),
                 ]
             )
 
@@ -7018,6 +7020,56 @@ class DashboardServer:
         self._public_stats_cache_time = now
 
         return web.json_response(data, headers=headers)
+
+    async def _handle_public_patch_notes(self, request: web.Request) -> web.Response:
+        """Public endpoint: all Deadlock patch notes in German, no auth required."""
+        headers = {
+            "Access-Control-Allow-Origin": "https://deutsche-deadlock-community.de",
+            "Access-Control-Allow-Methods": "GET",
+            "Cache-Control": "public, max-age=120",
+        }
+
+        import asyncio as _asyncio
+        from service import db as _db
+
+        def _detect_sections(content: str) -> list[str]:
+            sections = []
+            lower = content.lower()
+            if any(kw in lower for kw in ["## allgemein", "## general"]):
+                sections.append("allgemein")
+            if "## items" in lower:
+                sections.append("items")
+            if any(kw in lower for kw in ["## helden", "## heroes"]):
+                sections.append("helden")
+            return sections
+
+        def _fetch() -> list[dict]:
+            rows = _db.query_all(
+                """
+                SELECT id, title, url, posted_at, translated_content
+                FROM changelog_posts
+                WHERE translated_content IS NOT NULL AND translated_content != ''
+                ORDER BY id DESC
+                """
+            )
+            return [
+                {
+                    "id": row["id"],
+                    "title": row["title"] or "",
+                    "url": row["url"] or "",
+                    "posted_at": row["posted_at"] or "",
+                    "translated_content": row["translated_content"] or "",
+                    "sections": _detect_sections(row["translated_content"] or ""),
+                }
+                for row in rows
+            ]
+
+        try:
+            loop = _asyncio.get_event_loop()
+            patches = await loop.run_in_executor(None, _fetch)
+            return web.json_response({"patches": patches, "total": len(patches)}, headers=headers)
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500, headers=headers)
 
     async def _handle_public_cors(self, request: web.Request) -> web.Response:
         """CORS preflight handler for public endpoints."""
