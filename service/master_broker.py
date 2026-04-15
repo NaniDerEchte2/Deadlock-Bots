@@ -59,6 +59,7 @@ class _RichMessagePayload:
     content: str | None
     embed_dict: dict[str, Any]
     embed: discord.Embed
+    allowed_user_ids: list[int]
     allowed_role_ids: list[int]
     allowed_mentions: discord.AllowedMentions
     view_spec: dict[str, Any] | None
@@ -201,6 +202,14 @@ class MasterBroker:
                 [
                     web.get("/internal/master/v1/health", self._handle_health),
                     web.post("/internal/master/v1/discord/send-message", self._handle_send_message),
+                    web.post(
+                        "/internal/master/v1/discord/create-channel",
+                        self._handle_create_channel,
+                    ),
+                    web.post(
+                        "/internal/master/v1/discord/delete-channel",
+                        self._handle_delete_channel,
+                    ),
                     web.post(
                         "/internal/master/v1/discord/send-rich-message",
                         self._handle_send_rich_message,
@@ -847,7 +856,7 @@ class MasterBroker:
         return embed_dict, embed
 
     @classmethod
-    def _parse_role_id_list(cls, payload: dict[str, Any], key: str) -> list[int]:
+    def _parse_int_id_list(cls, payload: dict[str, Any], key: str) -> list[int]:
         raw_value = payload.get(key)
         if raw_value is None:
             return []
@@ -873,12 +882,23 @@ class MasterBroker:
             parsed.append(value)
         return parsed
 
+    @classmethod
+    def _parse_role_id_list(cls, payload: dict[str, Any], key: str) -> list[int]:
+        return cls._parse_int_id_list(payload, key)
+
     @staticmethod
-    def _build_allowed_mentions(allowed_role_ids: list[int]) -> discord.AllowedMentions:
+    def _build_allowed_mentions(
+        allowed_user_ids: list[int],
+        allowed_role_ids: list[int],
+    ) -> discord.AllowedMentions:
         return discord.AllowedMentions(
             everyone=False,
-            users=False,
-            roles=[discord.Object(id=role_id) for role_id in allowed_role_ids] if allowed_role_ids else False,
+            users=[discord.Object(id=user_id) for user_id in allowed_user_ids]
+            if allowed_user_ids
+            else False,
+            roles=[discord.Object(id=role_id) for role_id in allowed_role_ids]
+            if allowed_role_ids
+            else False,
             replied_user=False,
         )
 
@@ -922,6 +942,7 @@ class MasterBroker:
         channel_id = cls._parse_positive_payload_int(payload, "channel_id")
         content = cls._parse_optional_content(payload)
         embed_dict, embed = cls._parse_embed_dict(payload)
+        allowed_user_ids = cls._parse_int_id_list(payload, "allowed_user_ids")
         allowed_role_ids = cls._parse_role_id_list(payload, "allowed_role_ids")
         view_spec = cls._parse_view_spec(payload)
         if content is None and not embed_dict:
@@ -931,8 +952,9 @@ class MasterBroker:
             content=content,
             embed_dict=embed_dict,
             embed=embed,
+            allowed_user_ids=allowed_user_ids,
             allowed_role_ids=allowed_role_ids,
-            allowed_mentions=cls._build_allowed_mentions(allowed_role_ids),
+            allowed_mentions=cls._build_allowed_mentions(allowed_user_ids, allowed_role_ids),
             view_spec=view_spec,
         )
 
@@ -950,6 +972,24 @@ class MasterBroker:
         if callable(fetch_channel):
             try:
                 return await fetch_channel(channel_id)
+            except Exception:
+                return None
+        return None
+
+    async def _resolve_user(self, user_id: int) -> Any | None:
+        user = None
+        try:
+            user = self.bot.get_user(user_id)
+        except Exception:
+            user = None
+
+        if user is not None:
+            return user
+
+        fetch_user = getattr(self.bot, "fetch_user", None)
+        if callable(fetch_user):
+            try:
+                return await fetch_user(user_id)
             except Exception:
                 return None
         return None
@@ -1076,12 +1116,27 @@ class MasterBroker:
         try:
             payload = await self._read_json_object(request)
             idempotency_key = self._extract_idempotency_key(request, payload)
-            channel_id = self._parse_positive_payload_int(payload, "channel_id")
             content = str(payload.get("content") or "").strip()
             if not content:
                 raise ValueError("content is required")
             if len(content) > 2000:
                 raise ValueError("content exceeds Discord limit (2000)")
+            channel_id_raw = payload.get("channel_id")
+            user_id_raw = payload.get("user_id")
+            if channel_id_raw is None and user_id_raw is None:
+                raise ValueError("channel_id or user_id is required")
+            if channel_id_raw is not None and user_id_raw is not None:
+                raise ValueError("channel_id and user_id are mutually exclusive")
+            channel_id = (
+                self._parse_positive_payload_int(payload, "channel_id")
+                if channel_id_raw is not None
+                else None
+            )
+            user_id = (
+                self._parse_positive_payload_int(payload, "user_id")
+                if user_id_raw is not None
+                else None
+            )
         except ValueError as exc:
             return self._error_response(
                 request=request,
@@ -1097,48 +1152,69 @@ class MasterBroker:
                 message="invalid JSON payload",
             )
 
-        allowlist_rejected = self._allowlist_check(
-            request=request,
-            idempotency_key=idempotency_key,
-            scope="channel",
-            value=channel_id,
-            enabled=self._channel_allowlist_enabled,
-            allowed_ids=self._allowed_channel_ids,
-        )
-        if allowlist_rejected is not None:
-            return allowlist_rejected
+        if channel_id is not None:
+            allowlist_rejected = self._allowlist_check(
+                request=request,
+                idempotency_key=idempotency_key,
+                scope="channel",
+                value=channel_id,
+                enabled=self._channel_allowlist_enabled,
+                allowed_ids=self._allowed_channel_ids,
+            )
+            if allowlist_rejected is not None:
+                return allowlist_rejected
 
-        operation_payload = {"channel_id": channel_id, "content": content}
+        operation_payload = {"content": content}
+        if channel_id is not None:
+            operation_payload["channel_id"] = channel_id
+        if user_id is not None:
+            operation_payload["user_id"] = user_id
         payload_hash = self._payload_hash(operation_payload)
 
         async def _operation() -> web.Response:
-            channel = None
+            channel_id_value: int | None = channel_id
             try:
-                channel = self.bot.get_channel(channel_id)
-            except Exception:
-                channel = None
-
-            if channel is None:
-                fetch_channel = getattr(self.bot, "fetch_channel", None)
-                if callable(fetch_channel):
-                    try:
-                        channel = await fetch_channel(channel_id)
-                    except Exception:
-                        channel = None
-
-            if channel is None or not hasattr(channel, "send"):
-                return self._error_response(
-                    request=request,
-                    status=404,
-                    code="not_found",
-                    message=f"channel {channel_id} not found",
-                    idempotency_key=idempotency_key,
-                )
-
-            try:
-                message = await channel.send(content)
+                if channel_id is not None:
+                    channel = await self._resolve_channel(channel_id)
+                    if channel is None or not hasattr(channel, "send"):
+                        return self._error_response(
+                            request=request,
+                            status=404,
+                            code="not_found",
+                            message=f"channel {channel_id} not found",
+                            idempotency_key=idempotency_key,
+                        )
+                    message = await channel.send(content=content)
+                else:
+                    user = await self._resolve_user(user_id)
+                    if user is None:
+                        return self._error_response(
+                            request=request,
+                            status=404,
+                            code="not_found",
+                            message=f"user {user_id} not found",
+                            idempotency_key=idempotency_key,
+                        )
+                    dm_channel = getattr(user, "dm_channel", None)
+                    if dm_channel is None and hasattr(user, "create_dm"):
+                        dm_channel = await user.create_dm()
+                    if dm_channel is None or not hasattr(dm_channel, "send"):
+                        return self._error_response(
+                            request=request,
+                            status=502,
+                            code="discord_error",
+                            message="failed to open DM channel",
+                            idempotency_key=idempotency_key,
+                        )
+                    message = await dm_channel.send(content=content)
+                    channel_id_value = int(getattr(dm_channel, "id", 0) or 0) or None
             except Exception as exc:
-                logger.error("Master broker send_message failed (channel=%s): %s", channel_id, exc)
+                logger.error(
+                    "Master broker send_message failed (channel=%s user=%s): %s",
+                    channel_id,
+                    user_id,
+                    exc,
+                )
                 return self._error_response(
                     request=request,
                     status=502,
@@ -1148,7 +1224,8 @@ class MasterBroker:
                 )
 
             result = {
-                "channel_id": channel_id,
+                "channel_id": channel_id if channel_id is not None else channel_id_value,
+                "user_id": user_id,
                 "message_id": int(getattr(message, "id", 0) or 0),
             }
             return self._success_response(
@@ -1160,6 +1237,160 @@ class MasterBroker:
         return await self._run_idempotent_action(
             request=request,
             action="discord.send_message",
+            idempotency_key=idempotency_key,
+            payload_hash=payload_hash,
+            operation=_operation,
+        )
+
+    async def _handle_create_channel(self, request: web.Request) -> web.Response:
+        rejected = self._authorize(request)
+        if rejected is not None:
+            return rejected
+
+        try:
+            payload = await self._read_json_object(request)
+            idempotency_key = self._extract_idempotency_key(request, payload)
+            name = str(payload.get("name") or "").strip()
+            if not name:
+                raise ValueError("name is required")
+            if len(name) > 100:
+                raise ValueError("name exceeds Discord limit (100)")
+            category_id = self._parse_positive_payload_int(payload, "category_id")
+            topic = str(payload.get("topic") or "").strip() or None
+        except ValueError as exc:
+            return self._error_response(
+                request=request,
+                status=400,
+                code="bad_request",
+                message=str(exc),
+            )
+        except Exception:
+            return self._error_response(
+                request=request,
+                status=400,
+                code="bad_request",
+                message="invalid JSON payload",
+            )
+
+        payload_hash = self._payload_hash(
+            {"name": name, "category_id": category_id, "topic": topic}
+        )
+
+        async def _operation() -> web.Response:
+            category = await self._resolve_channel(category_id)
+            if category is None or getattr(category, "guild", None) is None:
+                return self._error_response(
+                    request=request,
+                    status=404,
+                    code="not_found",
+                    message=f"category {category_id} not found",
+                    idempotency_key=idempotency_key,
+                )
+
+            guild = getattr(category, "guild", None)
+            if guild is None or not hasattr(guild, "create_text_channel"):
+                return self._error_response(
+                    request=request,
+                    status=502,
+                    code="discord_error",
+                    message="guild unavailable for channel creation",
+                    idempotency_key=idempotency_key,
+                )
+
+            try:
+                channel = await guild.create_text_channel(name=name, category=category, topic=topic)
+            except Exception as exc:
+                logger.error(
+                    "Master broker create_channel failed (category=%s name=%s): %s",
+                    category_id,
+                    name,
+                    exc,
+                )
+                return self._error_response(
+                    request=request,
+                    status=502,
+                    code="discord_error",
+                    message="failed to create channel",
+                    idempotency_key=idempotency_key,
+                )
+
+            result = {
+                "channel_id": int(getattr(channel, "id", 0) or 0),
+                "category_id": category_id,
+                "name": name,
+            }
+            return self._success_response(
+                request=request,
+                idempotency_key=idempotency_key,
+                result=result,
+            )
+
+        return await self._run_idempotent_action(
+            request=request,
+            action="discord.create_channel",
+            idempotency_key=idempotency_key,
+            payload_hash=payload_hash,
+            operation=_operation,
+        )
+
+    async def _handle_delete_channel(self, request: web.Request) -> web.Response:
+        rejected = self._authorize(request)
+        if rejected is not None:
+            return rejected
+
+        try:
+            payload = await self._read_json_object(request)
+            idempotency_key = self._extract_idempotency_key(request, payload)
+            channel_id = self._parse_positive_payload_int(payload, "channel_id")
+        except ValueError as exc:
+            return self._error_response(
+                request=request,
+                status=400,
+                code="bad_request",
+                message=str(exc),
+            )
+        except Exception:
+            return self._error_response(
+                request=request,
+                status=400,
+                code="bad_request",
+                message="invalid JSON payload",
+            )
+
+        payload_hash = self._payload_hash({"channel_id": channel_id})
+
+        async def _operation() -> web.Response:
+            channel = await self._resolve_channel(channel_id)
+            if channel is None or not hasattr(channel, "delete"):
+                return self._error_response(
+                    request=request,
+                    status=404,
+                    code="not_found",
+                    message=f"channel {channel_id} not found",
+                    idempotency_key=idempotency_key,
+                )
+
+            try:
+                await channel.delete()
+            except Exception as exc:
+                logger.error("Master broker delete_channel failed (channel=%s): %s", channel_id, exc)
+                return self._error_response(
+                    request=request,
+                    status=502,
+                    code="discord_error",
+                    message="failed to delete channel",
+                    idempotency_key=idempotency_key,
+                )
+
+            return self._success_response(
+                request=request,
+                idempotency_key=idempotency_key,
+                result={"channel_id": channel_id},
+            )
+
+        return await self._run_idempotent_action(
+            request=request,
+            action="discord.delete_channel",
             idempotency_key=idempotency_key,
             payload_hash=payload_hash,
             operation=_operation,
@@ -1216,6 +1447,7 @@ class MasterBroker:
             "channel_id": rich_payload.channel_id,
             "content": rich_payload.content,
             "embed": rich_payload.embed_dict,
+            "allowed_user_ids": rich_payload.allowed_user_ids,
             "allowed_role_ids": rich_payload.allowed_role_ids,
             "view_spec": rich_payload.view_spec,
         }
@@ -1338,6 +1570,7 @@ class MasterBroker:
             "message_id": message_id,
             "content": rich_payload.content,
             "embed": rich_payload.embed_dict,
+            "allowed_user_ids": rich_payload.allowed_user_ids,
             "allowed_role_ids": rich_payload.allowed_role_ids,
             "view_spec": rich_payload.view_spec,
         }

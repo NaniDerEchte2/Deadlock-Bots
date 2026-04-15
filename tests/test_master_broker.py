@@ -45,6 +45,7 @@ class _FakeChannel:
         self.sent_calls: list[dict[str, Any]] = []
         self._message = message or _FakeMessage(4321)
         self.fetch_calls: list[int] = []
+        self.deleted = False
 
     async def send(self, **kwargs: Any) -> _FakeMessage:
         self.sent_calls.append(dict(kwargs))
@@ -55,6 +56,42 @@ class _FakeChannel:
         if self._message.id == message_id:
             return self._message
         return None
+
+    async def delete(self) -> None:
+        self.deleted = True
+
+
+class _FakeDmUser:
+    def __init__(self, user_id: int, *, dm_channel: _FakeChannel | None = None) -> None:
+        self.id = user_id
+        self.dm_channel = dm_channel or _FakeChannel(9000 + user_id)
+
+    async def create_dm(self) -> _FakeChannel:
+        return self.dm_channel
+
+
+class _FakeCategory:
+    def __init__(self, channel_id: int, guild: "_FakeGuild") -> None:
+        self.id = channel_id
+        self.guild = guild
+
+
+class _FakeGuild:
+    def __init__(self, guild_id: int = 1) -> None:
+        self.id = guild_id
+        self.created_channels: list[dict[str, Any]] = []
+
+    async def create_text_channel(self, *, name: str, category: _FakeCategory, topic: str | None = None) -> _FakeChannel:
+        channel = _FakeChannel(7000 + len(self.created_channels) + 1)
+        self.created_channels.append(
+            {
+                "name": name,
+                "category": category,
+                "topic": topic,
+                "channel": channel,
+            }
+        )
+        return channel
 
 
 class _TrackingTestView(discord.ui.View):
@@ -76,17 +113,32 @@ class _TrackingTestView(discord.ui.View):
 
 
 class _FakeBot:
-    def __init__(self, *, channel: _FakeChannel | None = None) -> None:
-        self._channel = channel
+    def __init__(self, *, channel: Any | None = None, user: _FakeDmUser | None = None) -> None:
+        self._channels: dict[int, Any] = {}
+        if channel is not None:
+            self._channels[int(channel.id)] = channel
+        self._users: dict[int, _FakeDmUser] = {}
+        if user is not None:
+            self._users[int(user.id)] = user
         self.added_views: list[tuple[discord.ui.View, int | None]] = []
 
-    def get_channel(self, channel_id: int) -> _FakeChannel | None:
-        if self._channel is not None and self._channel.id == channel_id:
-            return self._channel
-        return None
+    def add_channel(self, channel: Any) -> None:
+        self._channels[int(channel.id)] = channel
 
-    async def fetch_channel(self, channel_id: int) -> _FakeChannel | None:
+    def add_user(self, user: _FakeDmUser) -> None:
+        self._users[int(user.id)] = user
+
+    def get_channel(self, channel_id: int) -> Any | None:
+        return self._channels.get(int(channel_id))
+
+    async def fetch_channel(self, channel_id: int) -> Any | None:
         return self.get_channel(channel_id)
+
+    def get_user(self, user_id: int) -> _FakeDmUser | None:
+        return self._users.get(int(user_id))
+
+    async def fetch_user(self, user_id: int) -> _FakeDmUser | None:
+        return self.get_user(user_id)
 
     def add_view(self, view: discord.ui.View, *, message_id: int | None = None) -> None:
         self.added_views.append((view, message_id))
@@ -105,6 +157,63 @@ class MasterBrokerTests(unittest.IsolatedAsyncioTestCase):
     @staticmethod
     def _payload(response) -> dict[str, Any]:
         return json.loads(response.text)
+
+    async def test_send_message_supports_dm_by_user_id(self) -> None:
+        user = _FakeDmUser(123)
+        bot = _FakeBot(user=user)
+        broker = MasterBroker(bot, token="secret-token")
+        request = _FakeRequest(
+            {
+                "user_id": 123,
+                "content": "Direktnachricht",
+            },
+            headers=self._headers("req-dm"),
+        )
+
+        response = await broker._handle_send_message(request)
+
+        self.assertEqual(response.status, 200)
+        body = self._payload(response)
+        self.assertEqual(body["result"]["user_id"], 123)
+        self.assertEqual(body["result"]["channel_id"], user.dm_channel.id)
+        self.assertEqual(user.dm_channel.sent_calls[0]["content"], "Direktnachricht")
+
+    async def test_create_and_delete_channel_endpoints(self) -> None:
+        guild = _FakeGuild()
+        category = _FakeCategory(555, guild)
+        bot = _FakeBot(channel=category)
+        broker = MasterBroker(bot, token="secret-token")
+
+        create_request = _FakeRequest(
+            {
+                "name": "match-alpha-vs-bravo",
+                "category_id": 555,
+                "topic": "Test Topic",
+            },
+            headers=self._headers("req-create"),
+        )
+        create_response = await broker._handle_create_channel(create_request)
+
+        self.assertEqual(create_response.status, 200)
+        create_body = self._payload(create_response)
+        created_channel = guild.created_channels[0]["channel"]
+        self.assertEqual(create_body["result"]["channel_id"], created_channel.id)
+        self.assertEqual(guild.created_channels[0]["name"], "match-alpha-vs-bravo")
+        self.assertEqual(guild.created_channels[0]["topic"], "Test Topic")
+
+        bot.add_channel(created_channel)
+        delete_request = _FakeRequest(
+            {
+                "channel_id": created_channel.id,
+            },
+            headers=self._headers("req-delete"),
+        )
+        delete_response = await broker._handle_delete_channel(delete_request)
+
+        self.assertEqual(delete_response.status, 200)
+        delete_body = self._payload(delete_response)
+        self.assertEqual(delete_body["result"]["channel_id"], created_channel.id)
+        self.assertTrue(created_channel.deleted)
 
     async def test_send_rich_message_builds_link_button_and_allowed_mentions(self) -> None:
         channel = _FakeChannel(111)
