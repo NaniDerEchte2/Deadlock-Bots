@@ -286,31 +286,40 @@ class FAQChat(commands.Cog):
         self._panel_message_id = msg.id
         log.info("FAQ Panel View restored: %s", msg.id)
 
-    async def _ensure_panel(self) -> None:
-        """Erstellt Panel falls keins existiert."""
-        if self._panel_message_id:
-            log.info("FAQ: panel already exists (%s), skipping create", self._panel_message_id)
-            return
-
-        channel = self.bot.get_channel(PANEL_CHANNEL_ID)
-        if not channel:
-            log.warning("FAQ: panel channel %s nicht gefunden", PANEL_CHANNEL_ID)
-            return
-
+    def _build_panel_embed(self) -> discord.Embed:
         embed = discord.Embed(
             title="FAQ - Häufig gestellte Fragen",
             description=(
                 "Stell eine Frage zum Server, zu Kanälen, Rollen oder Deadlock.\n"
-                "Klicke auf den Button und du bekommst einen privaten Chat.\n\n"
+                "Klicke auf den Button – **ein Bot** versucht deine Frage zu beantworten.\n"
+                "Deine Frage geht **nicht** an die Community.\n\n"
                 "⏱️ Chats werden nach 24 Stunden automatisch geschlossen."
             ),
             colour=discord.Colour.blurple(),
         )
         embed.set_footer(text="Deadlock Master Bot • FAQ Chat")
+        return embed
+
+    async def _ensure_panel(self) -> None:
+        """Erstellt Panel falls keins existiert, aktualisiert es andernfalls."""
+        channel = self.bot.get_channel(PANEL_CHANNEL_ID)
+        if not channel:
+            log.warning("FAQ: panel channel %s nicht gefunden", PANEL_CHANNEL_ID)
+            return
+
+        if self._panel_message_id:
+            try:
+                msg = await channel.fetch_message(self._panel_message_id)
+                await msg.edit(embed=self._build_panel_embed())
+                log.info("FAQ Panel aktualisiert: msg_id=%s", self._panel_message_id)
+                return
+            except (discord.NotFound, discord.Forbidden):
+                log.info("FAQ: stored panel message nicht gefunden, erstelle neu")
+                self._panel_message_id = None
 
         view = FAQPanelView(self)
         try:
-            msg = await channel.send(embed=embed, view=view)
+            msg = await channel.send(embed=self._build_panel_embed(), view=view)
             await _store_panel_msg_id(msg.id)
             self._panel_message_id = msg.id
             log.info("FAQ Panel erstellt: msg_id=%s channel=%s", msg.id, channel.id)
