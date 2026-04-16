@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 from cogs.tempvoice.new_player_lanes import (
     ANCHOR_CHANNEL_ID,
@@ -65,23 +66,43 @@ class NewPlayerAdaptiveLanesTests(unittest.TestCase):
         self.assertEqual(plan.create_indices, ())
 
     def test_resolve_new_player_rank_prefers_verified_roles(self) -> None:
-        role_ids = {
-            1492960891619250408,  # Initiate (unverifiziert)
-            1331457699992436829,  # Alchemist (verifiziert)
-        }
+        roles = [
+            SimpleNamespace(id=1492960891619250408, name="Initiate (unverifiziert)"),
+            SimpleNamespace(id=1331457699992436829, name="Alchemist"),
+        ]
 
-        self.assertEqual(resolve_new_player_rank_value(role_ids), 3)
+        self.assertEqual(resolve_new_player_rank_value(roles), 3)
+
+    def test_resolve_new_player_rank_supports_precise_verified_elo_roles(self) -> None:
+        roles = [
+            SimpleNamespace(id=999001, name="Initiate 6"),
+            SimpleNamespace(id=999002, name="Arcanist 2"),
+        ]
+
+        self.assertEqual(resolve_new_player_rank_value(roles), 4)
+
+    def test_resolve_new_player_rank_supports_verified_shortnames(self) -> None:
+        roles = [
+            SimpleNamespace(id=999003, name="Arc 4"),
+        ]
+
+        self.assertEqual(resolve_new_player_rank_value(roles), 4)
 
     def test_resolve_new_player_rank_falls_back_to_unverified_roles(self) -> None:
-        role_ids = {
-            1492959966284218611,  # Seeker (unverifiziert)
-            1492960274096066831,  # Arcanist (unverifiziert)
-        }
+        roles = [
+            SimpleNamespace(id=1492959966284218611, name="Seeker (unverifiziert)"),
+            SimpleNamespace(id=1492960274096066831, name="Arcanist (unverifiziert)"),
+        ]
 
-        self.assertEqual(resolve_new_player_rank_value(role_ids), 4)
+        self.assertEqual(resolve_new_player_rank_value(roles), 4)
 
     def test_resolve_new_player_rank_ignores_non_matching_roles(self) -> None:
-        self.assertIsNone(resolve_new_player_rank_value({123, 456}))
+        roles = [
+            SimpleNamespace(id=123, name="Moderator"),
+            SimpleNamespace(id=456, name="Ritualist 4"),
+        ]
+
+        self.assertIsNone(resolve_new_player_rank_value(roles))
 
 
 if __name__ == "__main__":

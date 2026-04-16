@@ -22,8 +22,16 @@ SYNC_DEBOUNCE_SECONDS = 1.0
 STARTUP_SYNC_DELAY_SECONDS = 5.0
 RETURN_TO_STAGING_WINDOW_SECONDS = 4 * 60
 LANE_NAME_RE = re.compile(rf"^{re.escape(LANE_BASE_NAME)}\s+(?P<index>[2-9]\d*)$")
+NEW_PLAYER_MAX_RANK_VALUE = 4
+RANK_SHORT_NAMES = {
+    "Initiate": "Ini",
+    "Seeker": "See",
+    "Alchemist": "Alc",
+    "Arcanist": "Arc",
+}
+SHORT_NAME_TO_RANK = {v.casefold(): k for k, v in RANK_SHORT_NAMES.items()}
 
-VERIFIED_NEW_PLAYER_RANK_ROLES: dict[int, int] = {
+VERIFIED_RANK_ROLES: dict[int, int] = {
     1331457571118387210: 1,  # Initiate
     1331457652877955072: 2,  # Seeker
     1331457699992436829: 3,  # Alchemist
@@ -35,6 +43,15 @@ UNVERIFIED_NEW_PLAYER_RANK_ROLES: dict[int, int] = {
     1492960350755225730: 3,  # Alchemist (unverifiziert)
     1492960274096066831: 4,  # Arcanist (unverifiziert)
 }
+RANK_NAME_TO_VALUE = {
+    "initiate": 1,
+    "seeker": 2,
+    "alchemist": 3,
+    "arcanist": 4,
+}
+_RANK_NAMES_FOR_REGEX = list(RANK_NAME_TO_VALUE.keys()) + list(RANK_SHORT_NAMES.values())
+_SUBRANK_PATTERN = "|".join(re.escape(n) for n in _RANK_NAMES_FOR_REGEX)
+SUBRANK_ROLE_RE = re.compile(rf"^({_SUBRANK_PATTERN})\s+([1-6])$", re.IGNORECASE)
 ELIGIBLE_STAGING_IDS: set[int] = {
     _cfg.TEMPVOICE_STAGING_CASUAL,
     _cfg.TEMPVOICE_STAGING_COMP,
@@ -55,11 +72,43 @@ class ManagedLanePlan:
     create_indices: tuple[int, ...]
 
 
-def resolve_new_player_rank_value(role_ids: set[int]) -> int | None:
-    verified_matches = [rank for role_id, rank in VERIFIED_NEW_PLAYER_RANK_ROLES.items() if role_id in role_ids]
-    if verified_matches:
-        return max(verified_matches)
+def _resolve_verified_rank_from_roles(member_roles: list[discord.Role]) -> int | None:
+    highest_rank_value = 0
+    highest_score = -1
 
+    for role in member_roles:
+        role_name = str(getattr(role, "name", "")).strip()
+        match = SUBRANK_ROLE_RE.fullmatch(role_name)
+        if match:
+            name_part = match.group(1).casefold()
+            subrank = int(match.group(2))
+            rank_name = SHORT_NAME_TO_RANK.get(name_part, name_part)
+            rank_value = RANK_NAME_TO_VALUE.get(rank_name.casefold())
+            if rank_value is None:
+                continue
+            score = rank_value * 6 + subrank
+            if score > highest_score:
+                highest_score = score
+                highest_rank_value = rank_value
+            continue
+
+        rank_value = VERIFIED_RANK_ROLES.get(int(getattr(role, "id", 0)))
+        if rank_value is None:
+            continue
+        score = rank_value * 6
+        if score > highest_score:
+            highest_score = score
+            highest_rank_value = rank_value
+
+    return highest_rank_value or None
+
+
+def resolve_new_player_rank_value(member_roles: list[discord.Role]) -> int | None:
+    verified_rank = _resolve_verified_rank_from_roles(member_roles)
+    if verified_rank is not None:
+        return verified_rank
+
+    role_ids = {int(getattr(role, "id", 0)) for role in member_roles}
     unverified_matches = [
         rank for role_id, rank in UNVERIFIED_NEW_PLAYER_RANK_ROLES.items() if role_id in role_ids
     ]
@@ -155,8 +204,10 @@ class NewPlayerAdaptiveLanes(commands.Cog):
         return isinstance(channel, discord.VoiceChannel) and int(channel.id) in ELIGIBLE_STAGING_IDS
 
     def _get_member_new_player_rank(self, member: discord.Member) -> int | None:
-        role_ids = {int(role.id) for role in getattr(member, "roles", [])}
-        return resolve_new_player_rank_value(role_ids)
+        rank_value = resolve_new_player_rank_value(list(getattr(member, "roles", [])))
+        if rank_value is None or rank_value > NEW_PLAYER_MAX_RANK_VALUE:
+            return None
+        return rank_value
 
     def _pick_target_lane(
         self, category: discord.CategoryChannel | None

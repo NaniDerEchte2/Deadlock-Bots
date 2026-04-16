@@ -70,6 +70,89 @@ Row = sqlite3.Row  # Typalias für Konsumenten
 _TX_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar("deadlock_db_tx_depth", default=0)
 
 
+def _table_columns(cursor: sqlite3.Cursor, table_name: str) -> list[str]:
+    rows = cursor.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return [str(row[1]) for row in rows]
+
+
+def _migrate_legacy_coaching_sessions(cursor: sqlite3.Cursor) -> None:
+    tables = cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='coaching_sessions'"
+    ).fetchone()
+    if not tables:
+        return
+
+    columns = _table_columns(cursor, "coaching_sessions")
+    if "id" in columns and "discord_user_id" in columns:
+        return
+    if "user_id" not in columns:
+        return
+
+    log.warning("Migrating legacy coaching_sessions table to the current schema")
+    cursor.execute("ALTER TABLE coaching_sessions RENAME TO coaching_sessions_legacy")
+    cursor.execute(
+        """
+        CREATE TABLE coaching_sessions (
+          id TEXT PRIMARY KEY,
+          request_id INTEGER,
+          coach_id TEXT,
+          discord_user_id INTEGER NOT NULL,
+          discord_username TEXT,
+          discord_channel_id INTEGER,
+          discord_thread_id INTEGER,
+          status TEXT DEFAULT 'active',
+          role_assigned_at INTEGER,
+          role_reminder_at INTEGER,
+          role_expires_at INTEGER,
+          voice_channel_id INTEGER,
+          voice_started_at INTEGER,
+          voice_last_seen_at INTEGER,
+          survey_sent_at INTEGER,
+          scheduled_at INTEGER,
+          started_at INTEGER DEFAULT (strftime('%s','now')),
+          completed_at INTEGER,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+        )
+        """
+    )
+    cursor.execute(
+        """
+        INSERT INTO coaching_sessions (
+          id,
+          request_id,
+          coach_id,
+          discord_user_id,
+          discord_username,
+          discord_channel_id,
+          discord_thread_id,
+          status,
+          voice_channel_id,
+          voice_started_at,
+          voice_last_seen_at,
+          survey_sent_at,
+          started_at,
+          created_at
+        )
+        SELECT
+          COALESCE(match_id, 'legacy-' || user_id || '-' || COALESCE(thread_id, rowid)),
+          NULL,
+          NULL,
+          user_id,
+          NULL,
+          NULL,
+          thread_id,
+          CASE WHEN COALESCE(is_active, 1) = 1 THEN 'active' ELSE 'completed' END,
+          voice_channel_id,
+          voice_started_at,
+          voice_last_seen_at,
+          survey_sent_at,
+          CAST(COALESCE(strftime('%s', created_at), strftime('%s', 'now')) AS INTEGER),
+          CAST(COALESCE(strftime('%s', created_at), strftime('%s', 'now')) AS INTEGER)
+        FROM coaching_sessions_legacy
+        """
+    )
+
+
 class DBCursorProxy:
     """Small compatibility wrapper around sqlite3.Cursor."""
 
@@ -884,11 +967,107 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
               metadata TEXT
             );
 
+            -- ========== COACHING SYSTEM ==========
+
+            -- Coaches (Bot-seitig mit discord_user_id für Rollen)
+            CREATE TABLE IF NOT EXISTS coaches (
+              id TEXT PRIMARY KEY,
+              discord_user_id INTEGER UNIQUE NOT NULL,
+              discord_username TEXT,
+              display_name TEXT,
+              avatar_url TEXT,
+              bio TEXT,
+              specialties_json TEXT DEFAULT '[]',
+              availability_json TEXT DEFAULT '{}',
+              status TEXT DEFAULT 'pending',
+              website_coach_id TEXT,
+              created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+              updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+            );
+
+            -- Coaching Requests (Pre-Coaching gesammelte Daten)
+            CREATE TABLE IF NOT EXISTS coaching_requests (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              discord_user_id INTEGER NOT NULL,
+              discord_username TEXT,
+              rank TEXT NOT NULL,
+              subrank TEXT NOT NULL,
+              hero TEXT,
+              games_played TEXT,
+              hours_played TEXT,
+              availability TEXT,
+              current_problems TEXT,
+              ai_summary TEXT,
+              ai_insights_json TEXT,
+              status TEXT DEFAULT 'pending',
+              message_id INTEGER,
+              channel_id INTEGER,
+              role_assigned_at INTEGER,
+              role_expires_at INTEGER,
+              role_removed_at INTEGER,
+              created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+              updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+            );
+
+            -- Coaching Sessions (Aktive Sessions)
+            CREATE TABLE IF NOT EXISTS coaching_sessions (
+              id TEXT PRIMARY KEY,
+              request_id INTEGER,
+              coach_id TEXT,
+              discord_user_id INTEGER NOT NULL,
+              discord_username TEXT,
+              discord_channel_id INTEGER,
+              discord_thread_id INTEGER,
+              status TEXT DEFAULT 'active',
+              role_assigned_at INTEGER,
+              role_reminder_at INTEGER,
+              role_expires_at INTEGER,
+              voice_channel_id INTEGER,
+              voice_started_at INTEGER,
+              voice_last_seen_at INTEGER,
+              survey_sent_at INTEGER,
+              scheduled_at INTEGER,
+              started_at INTEGER DEFAULT (strftime('%s','now')),
+              completed_at INTEGER,
+              created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+            );
+
+            -- Coaching Surveys (Post-Coaching Feedback)
+            CREATE TABLE IF NOT EXISTS coaching_surveys (
+              id TEXT PRIMARY KEY,
+              session_id TEXT UNIQUE,
+              rating INTEGER CHECK(rating >= 0 AND rating <= 10),
+              feedback_text TEXT,
+              improved_areas TEXT,
+              unresolved_items TEXT,
+              would_recommend INTEGER,
+              created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+            );
+
+            -- Coach Applications
+            CREATE TABLE IF NOT EXISTS coach_applications (
+              id TEXT PRIMARY KEY,
+              discord_user_id INTEGER UNIQUE NOT NULL,
+              discord_username TEXT,
+              display_name TEXT,
+              application_text TEXT,
+              experience_text TEXT,
+              rank TEXT,
+              specialties_json TEXT DEFAULT '[]',
+              availability_json TEXT DEFAULT '{}',
+              status TEXT DEFAULT 'pending',
+              reviewed_by INTEGER,
+              reviewed_at INTEGER,
+              created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+              updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+            );
+
             """
         )
         # Steam-Task-Retention: Trigger + initial Cleanup
         _ensure_steam_tasks_cap_trigger(c, STEAM_TASKS_MAX_ROWS)
         prune_steam_tasks(conn=c, limit=STEAM_TASKS_MAX_ROWS)
+        _migrate_legacy_coaching_sessions(c)
         # Nachträglich hinzugefügte Spalten idempotent sicherstellen
         try:
             c.execute("ALTER TABLE voice_stats ADD COLUMN total_points INTEGER NOT NULL DEFAULT 0")
@@ -975,6 +1154,20 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
         except sqlite3.OperationalError as exc:
             if "duplicate column name" not in str(exc).lower():
                 raise
+        for alter_sql in (
+            "ALTER TABLE coaching_requests ADD COLUMN role_assigned_at INTEGER",
+            "ALTER TABLE coaching_requests ADD COLUMN role_expires_at INTEGER",
+            "ALTER TABLE coaching_requests ADD COLUMN role_removed_at INTEGER",
+            "ALTER TABLE coaching_sessions ADD COLUMN voice_channel_id INTEGER",
+            "ALTER TABLE coaching_sessions ADD COLUMN voice_started_at INTEGER",
+            "ALTER TABLE coaching_sessions ADD COLUMN voice_last_seen_at INTEGER",
+            "ALTER TABLE coaching_sessions ADD COLUMN survey_sent_at INTEGER",
+        ):
+            try:
+                c.execute(alter_sql)
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
         # Ko-fi pending payments: token Spalte hinzufügen
         try:
             c.execute("ALTER TABLE beta_invite_pending_payments ADD COLUMN token TEXT")
@@ -1127,6 +1320,18 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_deadlock_hero_builds_sync_status ON deadlock_hero_builds(sync_status, last_alerted_at)"
             )
+            # Coaching Indizes
+            c.execute("CREATE INDEX IF NOT EXISTS idx_coaching_requests_status ON coaching_requests(status, created_at)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_coaching_requests_user ON coaching_requests(discord_user_id)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_coaching_requests_expires ON coaching_requests(role_expires_at)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_coaching_sessions_coach ON coaching_sessions(coach_id)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_coaching_sessions_user ON coaching_sessions(discord_user_id)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_coaching_sessions_status ON coaching_sessions(status)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_coaching_sessions_expires ON coaching_sessions(role_expires_at)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_coaching_sessions_voice ON coaching_sessions(voice_channel_id, survey_sent_at)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_coaching_surveys_session ON coaching_surveys(session_id)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_coach_applications_status ON coach_applications(status)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_coaches_discord ON coaches(discord_user_id)")
             # Performance Indexes (2026-02-20)
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_steam_links_verified ON steam_links(verified, user_id)"

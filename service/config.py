@@ -90,6 +90,19 @@ class Settings(BaseSettings):
     streamer_role_id: int = Field(1313624729466441769, alias="STREAMER_ROLE_ID")
     content_creator_role_id: int = Field(1466630749255106590, alias="CONTENT_CREATOR_ROLE_ID")
     streamer_notify_channel_id: int = Field(1374364800817303632, alias="STREAMER_NOTIFY_CHANNEL_ID")
+    coach_role_id: int = Field(1494372744286965941, alias="COACH_ROLE_ID")
+    coaching_active_role_id: int = Field(1371929762913587292, alias="COACHING_ACTIVE_ROLE_ID")
+    coaching_request_channel_id: int = Field(
+        1461682293105229979, alias="COACHING_REQUEST_CHANNEL_ID"
+    )
+    coaching_panel_channel_id: int = Field(
+        1494373349944459355, alias="COACHING_PANEL_CHANNEL_ID"
+    )
+    coaching_voice_category_id: int = Field(
+        1459526231686119600, alias="COACHING_VOICE_CATEGORY_ID"
+    )
+    coaching_role_expiry_hours: int = Field(48, alias="COACHING_ROLE_EXPIRY_HOURS")
+    coaching_reminders_enabled: bool = Field(False, alias="COACHING_REMINDERS_ENABLED")
 
     # --- Steam Link UI & OAuth ---
     steam_return_path: str = Field("/callback/steam", alias="STEAM_RETURN_PATH")

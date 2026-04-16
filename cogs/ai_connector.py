@@ -114,6 +114,14 @@ class AIConnector(commands.Cog):
         base_url = (
             DEFAULT_MINIMAX_TOKEN_PLAN_BASE_URL if use_token_plan else DEFAULT_MINIMAX_BASE_URL
         )
+        log.info(
+            "MiniMax client init: mode=%s base_url=%s key_env=%s",
+            "token_plan" if use_token_plan else "standard",
+            base_url,
+            "MINIMAX_TOKEN_PLAN_KEY"
+            if use_token_plan
+            else ("MINIMAX_API_KEY" if os.getenv("MINIMAX_API_KEY") else "MINMAX"),
+        )
 
         class _MiniMaxClient:
             def __init__(inner_self, api_key: str, base_url: str, use_token_plan: bool) -> None:
@@ -181,7 +189,7 @@ class AIConnector(commands.Cog):
                         json=payload,
                     )
                 if resp.status_code != 200:
-                    log.debug(
+                    log.warning(
                         "MiniMax API Fehler: %s - %s", resp.status_code, resp.text
                     )
                     return None
@@ -194,7 +202,7 @@ class AIConnector(commands.Cog):
                             fragments.append(str(item["text"]))
                     if fragments:
                         return "".join(fragments).strip()
-                    log.debug("MiniMax Token Plan Antwort ohne Textinhalt: %s", data)
+                    log.warning("MiniMax Token Plan Antwort ohne Textinhalt: %s", data)
                     return None
 
                 choices = data.get("choices", [])
