@@ -2054,6 +2054,20 @@ class TempVoiceCore(commands.Cog):
                     after_channel.id,
                     ",".join(str(s) for s in STAGING_CHANNEL_IDS),
                 )
+                new_player_router = self.bot.get_cog("NewPlayerAdaptiveLanes")
+                if new_player_router is not None:
+                    try:
+                        rerouted = await new_player_router.maybe_route_new_player(member, after_channel)
+                    except Exception as e:
+                        rerouted = False
+                        log.debug(
+                            "TempVoice: new player routing hook failed for %s in staging %s: %r",
+                            member.id,
+                            after_channel.id,
+                            e,
+                        )
+                    if rerouted:
+                        return
                 await self._create_lane(member, after_channel)
         except Exception as e:
             log.warning("Auto-lane create failed: %s", _safe_log_value(e))

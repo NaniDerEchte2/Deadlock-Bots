@@ -3,13 +3,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from dataclasses import dataclass
 
 import discord
 from discord.ext import commands
 
+from service.guild_config import get_guild_config
 
 log = logging.getLogger("NewPlayerAdaptiveLanes")
+_cfg = get_guild_config()
 
 TARGET_CATEGORY_ID = 1465839366634209361
 ANCHOR_CHANNEL_ID = 1470126503252721845
@@ -17,7 +20,25 @@ LANE_BASE_NAME = "🆕Neue Spieler Lane"
 EXPAND_THRESHOLD = 6
 SYNC_DEBOUNCE_SECONDS = 1.0
 STARTUP_SYNC_DELAY_SECONDS = 5.0
+RETURN_TO_STAGING_WINDOW_SECONDS = 4 * 60
 LANE_NAME_RE = re.compile(rf"^{re.escape(LANE_BASE_NAME)}\s+(?P<index>[2-9]\d*)$")
+
+VERIFIED_NEW_PLAYER_RANK_ROLES: dict[int, int] = {
+    1331457571118387210: 1,  # Initiate
+    1331457652877955072: 2,  # Seeker
+    1331457699992436829: 3,  # Alchemist
+    1331457724848017539: 4,  # Arcanist
+}
+UNVERIFIED_NEW_PLAYER_RANK_ROLES: dict[int, int] = {
+    1492960891619250408: 1,  # Initiate (unverifiziert)
+    1492959966284218611: 2,  # Seeker (unverifiziert)
+    1492960350755225730: 3,  # Alchemist (unverifiziert)
+    1492960274096066831: 4,  # Arcanist (unverifiziert)
+}
+ELIGIBLE_STAGING_IDS: set[int] = {
+    _cfg.TEMPVOICE_STAGING_CASUAL,
+    _cfg.TEMPVOICE_STAGING_COMP,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +53,19 @@ class ManagedLanePlan:
     reassignments: tuple[tuple[int, int], ...]
     delete_ids: tuple[int, ...]
     create_indices: tuple[int, ...]
+
+
+def resolve_new_player_rank_value(role_ids: set[int]) -> int | None:
+    verified_matches = [rank for role_id, rank in VERIFIED_NEW_PLAYER_RANK_ROLES.items() if role_id in role_ids]
+    if verified_matches:
+        return max(verified_matches)
+
+    unverified_matches = [
+        rank for role_id, rank in UNVERIFIED_NEW_PLAYER_RANK_ROLES.items() if role_id in role_ids
+    ]
+    if unverified_matches:
+        return max(unverified_matches)
+    return None
 
 
 def lane_name_for_index(index: int) -> str:
@@ -100,6 +134,8 @@ class NewPlayerAdaptiveLanes(commands.Cog):
         self._sync_tasks: dict[int, asyncio.Task] = {}
         self._guild_locks: dict[int, asyncio.Lock] = {}
         self._startup_task: asyncio.Task | None = None
+        self._routed_users: set[int] = set()
+        self._routed_at: dict[int, float] = {}
 
     async def cog_load(self) -> None:
         self._startup_task = asyncio.create_task(self._schedule_startup_syncs())
@@ -112,6 +148,108 @@ class NewPlayerAdaptiveLanes(commands.Cog):
                 task.cancel()
         self._sync_tasks.clear()
         self._dirty_guilds.clear()
+        self._routed_users.clear()
+        self._routed_at.clear()
+
+    def _is_eligible_staging(self, channel: discord.VoiceChannel | None) -> bool:
+        return isinstance(channel, discord.VoiceChannel) and int(channel.id) in ELIGIBLE_STAGING_IDS
+
+    def _get_member_new_player_rank(self, member: discord.Member) -> int | None:
+        role_ids = {int(role.id) for role in getattr(member, "roles", [])}
+        return resolve_new_player_rank_value(role_ids)
+
+    def _pick_target_lane(
+        self, category: discord.CategoryChannel | None
+    ) -> discord.VoiceChannel | None:
+        if not isinstance(category, discord.CategoryChannel):
+            return None
+
+        candidates: list[discord.VoiceChannel] = []
+        for channel in category.voice_channels:
+            if len(channel.members) >= EXPAND_THRESHOLD:
+                continue
+            if channel.id == ANCHOR_CHANNEL_ID or parse_lane_index(channel.id, channel.name) is not None:
+                candidates.append(channel)
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda channel: (-len(channel.members), channel.position, channel.id))
+        return candidates[0]
+
+    async def maybe_route_new_player(
+        self, member: discord.Member, staging: discord.VoiceChannel
+    ) -> bool:
+        if not self._is_eligible_staging(staging):
+            return False
+
+        member_id = int(member.id)
+        if member_id in self._routed_users:
+            routed_at = self._routed_at.get(member_id)
+            if routed_at and (time.time() - routed_at) <= RETURN_TO_STAGING_WINDOW_SECONDS:
+                log.info(
+                    "new player routing skipped for %s in staging %s: returning within %ss -> normal flow",
+                    member_id,
+                    staging.id,
+                    RETURN_TO_STAGING_WINDOW_SECONDS,
+                )
+            return False
+
+        rank_value = self._get_member_new_player_rank(member)
+        if rank_value is None:
+            return False
+
+        target_category = member.guild.get_channel(TARGET_CATEGORY_ID)
+        if not isinstance(target_category, discord.CategoryChannel):
+            log.warning(
+                "new player routing skipped for %s: target category %s missing",
+                member_id,
+                TARGET_CATEGORY_ID,
+            )
+            return False
+
+        target_lane = self._pick_target_lane(target_category)
+        if not target_lane:
+            log.info(
+                "new player routing fallback for %s in staging %s: no lane with capacity",
+                member_id,
+                staging.id,
+            )
+            return False
+
+        try:
+            await member.move_to(target_lane, reason="Neue Spieler Routing")
+        except discord.Forbidden as exc:
+            log.warning(
+                "new player move forbidden for member=%s staging=%s target=%s: %s",
+                member_id,
+                staging.id,
+                target_lane.id,
+                exc,
+            )
+            return False
+        except discord.HTTPException as exc:
+            log.warning(
+                "new player move failed for member=%s staging=%s target=%s: %s",
+                member_id,
+                staging.id,
+                target_lane.id,
+                exc,
+            )
+            return False
+
+        self._routed_users.add(member_id)
+        self._routed_at[member_id] = time.time()
+        self.schedule_sync(member.guild.id)
+        log.info(
+            "new player routed: member=%s staging=%s rank_value=%s target=%s members_before=%s",
+            member_id,
+            staging.id,
+            rank_value,
+            target_lane.id,
+            max(0, len(target_lane.members) - 1),
+        )
+        return True
 
     async def _schedule_startup_syncs(self) -> None:
         try:
@@ -314,6 +452,12 @@ class NewPlayerAdaptiveLanes(commands.Cog):
         after_channel = after.channel if after else None
         if before_channel == after_channel:
             return
+        if (
+            self._is_eligible_staging(after_channel)
+            and int(member.id) in self._routed_at
+            and (time.time() - self._routed_at[int(member.id)]) > RETURN_TO_STAGING_WINDOW_SECONDS
+        ):
+            self._routed_at.pop(int(member.id), None)
         if self._is_relevant_voice_channel(before_channel) or self._is_relevant_voice_channel(after_channel):
             self.schedule_sync(member.guild.id)
 

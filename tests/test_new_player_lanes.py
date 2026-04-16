@@ -8,6 +8,7 @@ from cogs.tempvoice.new_player_lanes import (
     lane_name_for_index,
     parse_lane_index,
     plan_managed_lanes,
+    resolve_new_player_rank_value,
 )
 
 
@@ -62,6 +63,25 @@ class NewPlayerAdaptiveLanesTests(unittest.TestCase):
         self.assertEqual(plan.reassignments, ((302, 2), (303, 3)))
         self.assertEqual(plan.delete_ids, (304,))
         self.assertEqual(plan.create_indices, ())
+
+    def test_resolve_new_player_rank_prefers_verified_roles(self) -> None:
+        role_ids = {
+            1492960891619250408,  # Initiate (unverifiziert)
+            1331457699992436829,  # Alchemist (verifiziert)
+        }
+
+        self.assertEqual(resolve_new_player_rank_value(role_ids), 3)
+
+    def test_resolve_new_player_rank_falls_back_to_unverified_roles(self) -> None:
+        role_ids = {
+            1492959966284218611,  # Seeker (unverifiziert)
+            1492960274096066831,  # Arcanist (unverifiziert)
+        }
+
+        self.assertEqual(resolve_new_player_rank_value(role_ids), 4)
+
+    def test_resolve_new_player_rank_ignores_non_matching_roles(self) -> None:
+        self.assertIsNone(resolve_new_player_rank_value({123, 456}))
 
 
 if __name__ == "__main__":
