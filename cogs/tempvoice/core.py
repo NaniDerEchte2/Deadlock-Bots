@@ -437,6 +437,13 @@ class TempVoiceCore(commands.Cog):
         owner_id = self.lane_initial_owner.get(lane_id)
         return int(owner_id) if owner_id else None
 
+    def _extract_lane_number(self, base_name: str) -> str | None:
+        """Extract the trailing number from a lane name (e.g., 'Lane 1' -> '1')."""
+        if not base_name:
+            return None
+        match = re.search(r'\s+(\d+)$', base_name)
+        return match.group(1) if match else None
+
     def _desired_prefix_for_rules(self, lane: discord.VoiceChannel, rules: dict[str, Any]) -> str:
         if rules.get("prefix_from_rank"):
             owner_id = self.lane_owner.get(lane.id)
@@ -444,13 +451,7 @@ class TempVoiceCore(commands.Cog):
             owner_prefix = _rank_prefix_for(member) if member else None
             if owner_prefix:
                 return owner_prefix
-            avg_prefix = self._average_rank_prefix_for_lane(lane)
-            if avg_prefix:
-                return avg_prefix
-            stored_base = self.lane_base.get(lane.id) or _strip_suffixes(lane.name)
-            if stored_base:
-                return stored_base
-            return CASUAL_RANK_FALLBACK
+            return "Lane"
         return str(rules.get("prefix") or "Lane")
 
     def _store_lane_rules(self, lane_id: int, rules: dict[str, Any]):
@@ -1517,7 +1518,10 @@ class TempVoiceCore(commands.Cog):
     def _compose_name(self, lane: discord.VoiceChannel) -> str:
         rules = self.lane_rules.get(lane.id) or self._rules_for_category(lane.category)
         if rules.get("prefix_from_rank"):
-            base = self._desired_prefix_for_rules(lane, rules)
+            prefix = self._desired_prefix_for_rules(lane, rules)
+            current_base = self.lane_base.get(lane.id) or _strip_suffixes(lane.name)
+            number = self._extract_lane_number(current_base)
+            base = f"{prefix} {number}" if number else prefix
         else:
             base = self.lane_base.get(lane.id) or _strip_suffixes(lane.name)
         parts = [base]
