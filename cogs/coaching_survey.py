@@ -287,6 +287,7 @@ class CoachingSurveyCog(commands.Cog):
             log.error(f"Failed to send survey DM to {user_id}: {e}")
             return False
 
+    @commands.Cog.listener()
     async def on_voice_state_update(
         self,
         member: discord.Member,

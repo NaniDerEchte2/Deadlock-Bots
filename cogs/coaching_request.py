@@ -71,15 +71,6 @@ def _format_ai_summary_for_embed(value: str, *, limit: int = DISCORD_EMBED_FIELD
     return truncated + "…"
 
 
-def _get_availability_label(value: str) -> str:
-    labels = {
-        "weekday_evening": "Weekday Abends (18-22)",
-        "weekend_morning": "Weekend Morgens (10-14)",
-        "weekend_afternoon": "Weekend Nachmittags (14-18)",
-        "weekday_morning": "Weekday Morgens",
-        "anytime": "Jederzeit",
-    }
-    return labels.get(value, value)
 
 
 class CoachClaimButton(discord.ui.Button):
@@ -102,96 +93,102 @@ class CoachClaimButton(discord.ui.Button):
                 ephemeral=True,
             )
             return
+
+        # Coach role check first — before defer, so we can respond cleanly.
+        coach_role = interaction.guild.get_role(settings.coach_role_id)
+        if not coach_role or coach_role not in interaction.user.roles:
+            await interaction.response.send_message(
+                "❌ Nur Coaches können sich für Sessions melden!",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
         _CLAIM_IN_PROGRESS.add(self.request_id)
-
         try:
-            # Check if user has coach role
-            coach_role = interaction.guild.get_role(settings.coach_role_id)
-            if not coach_role or coach_role not in interaction.user.roles:
-                await interaction.response.send_message(
-                    "❌ Nur Coaches können sich für Sessions melden!", ephemeral=True
-                )
-                return
-
-            # Get request
-            request = db.query_one("SELECT * FROM coaching_requests WHERE id=?", (self.request_id,))
+            request = db.query_one(
+                "SELECT * FROM coaching_requests WHERE id=?",
+                (self.request_id,),
+            )
             if not request:
-                await interaction.response.send_message(
-                    "❌ Request nicht gefunden.", ephemeral=True
-                )
+                await interaction.followup.send("❌ Request nicht gefunden.", ephemeral=True)
                 return
             if request["status"] == "matched":
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "❌ Diese Anfrage wurde bereits von einem Coach geclaimt.",
                     ephemeral=True,
                 )
                 return
 
-            # Get author
             author = interaction.guild.get_member(request["discord_user_id"])
             if not author:
-                await interaction.response.send_message("❌ User nicht gefunden.", ephemeral=True)
+                try:
+                    author = await interaction.guild.fetch_member(request["discord_user_id"])
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    author = None
+            if not author:
+                await interaction.followup.send("❌ User nicht gefunden.", ephemeral=True)
                 return
 
-            # Create thread for coach and user
+            # Create thread first — if this fails, nothing has been committed yet.
             thread_name = f"Coaching: {author.display_name}"
-
             try:
-                # Create private thread
                 thread = await interaction.channel.create_thread(
                     name=thread_name,
                     type=discord.ChannelType.private_thread,
                     invitable=False,
                 )
-
-                # Add both parties
                 await thread.add_user(author)
                 await thread.add_user(interaction.user)
-
-                # Store session
-                session_id = str(uuid.uuid4())
-                expires_at = request["role_expires_at"] or (
-                    int(time.time()) + (settings.coaching_role_expiry_hours * 60 * 60)
+            except Exception as exc:
+                log.error("Error creating coaching thread for request %s: %s", self.request_id, exc)
+                await interaction.followup.send(
+                    f"❌ Fehler beim Erstellen des Threads: {exc}",
+                    ephemeral=True,
                 )
+                return
 
-                db.execute(
-                    """INSERT INTO coaching_sessions (id, request_id, coach_id, discord_user_id,
-                       discord_username, discord_channel_id, discord_thread_id, status,
-                       role_assigned_at, role_expires_at, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)""",
-                    (
-                        session_id,
-                        request["id"],
-                        interaction.user.id,
-                        author.id,
-                        author.display_name,
-                        interaction.channel.id,
-                        thread.id,
-                        int(time.time()),
-                        expires_at,
-                        int(time.time()),
-                    ),
-                )
+            now = int(time.time())
+            expires_at = request["role_expires_at"] or (
+                now + (settings.coaching_role_expiry_hours * 60 * 60)
+            )
+            session_id = str(uuid.uuid4())
 
-                # Update request status
-                db.execute(
-                    "UPDATE coaching_requests SET status='matched', updated_at=? WHERE id=?",
-                    (int(time.time()), self.request_id),
-                )
+            db.execute(
+                """INSERT INTO coaching_sessions (id, request_id, coach_id, discord_user_id,
+                   discord_username, discord_channel_id, discord_thread_id, status,
+                   role_assigned_at, role_expires_at, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)""",
+                (
+                    session_id, request["id"], interaction.user.id, author.id,
+                    author.display_name, interaction.channel.id, thread.id,
+                    now, expires_at, now,
+                ),
+            )
+            db.execute(
+                "UPDATE coaching_requests SET status='matched', updated_at=? WHERE id=?",
+                (now, self.request_id),
+            )
 
-                # Make sure the active coaching role is present once a coach claimed the request.
-                coaching_role = interaction.guild.get_role(settings.coaching_active_role_id)
-                if coaching_role and coaching_role not in author.roles:
+            coaching_role = interaction.guild.get_role(settings.coaching_active_role_id)
+            if coaching_role and coaching_role not in author.roles:
+                try:
                     await author.add_roles(coaching_role, reason="Coaching Session gestartet")
+                except (discord.Forbidden, discord.HTTPException) as exc:
+                    log.warning("Could not add coaching active role to %s: %s", author.id, exc)
 
-                # Send messages
+            try:
                 await thread.send(
                     f"🎮 **Coaching Session gestartet!**\n\n"
                     f"**Coach:** {interaction.user.mention}\n"
                     f"**User:** {author.mention}\n\n"
                     f"Bitte besprecht eure Ziele und plant die Session!"
                 )
+            except Exception as exc:
+                log.warning("Could not post intro message in thread %s: %s", thread.id, exc)
 
+            dm_ok = True
+            try:
                 await author.send(
                     f"🎉 Ein Coach hat sich für deine Anfrage gemeldet!\n\n"
                     f"**Coach:** {interaction.user.display_name}\n"
@@ -199,20 +196,35 @@ class CoachClaimButton(discord.ui.Button):
                     f"Ihr könnt euch dort direkt abstimmen und das Coaching innerhalb der nächsten "
                     f"**{settings.coaching_role_expiry_hours} Stunden** durchführen."
                 )
+            except discord.Forbidden:
+                dm_ok = False
+                log.info("User %s has DMs closed; skipping DM notification", author.id)
+            except discord.HTTPException as exc:
+                dm_ok = False
+                log.warning("Failed to DM user %s after coach claim: %s", author.id, exc)
 
-                # Disable the button
-                self.disabled = True
-                await interaction.response.edit_message(view=None)
+            # Disable the claim button on the original request message (interaction.response
+            # is already consumed by defer(), so edit the message directly).
+            try:
+                if interaction.message is not None:
+                    await interaction.message.edit(view=None)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+                log.warning("Could not disable claim button on message: %s", exc)
 
+            dm_note = "" if dm_ok else " (DM an User fehlgeschlagen – bitte im Thread anpingen.)"
+            await interaction.followup.send(
+                f"✅ Session mit {author.display_name} gestartet!{dm_note}",
+                ephemeral=True,
+            )
+        except Exception as exc:
+            log.exception("Unexpected error during coach claim for request %s", self.request_id)
+            try:
                 await interaction.followup.send(
-                    f"✅ Session mit {author.display_name} gestartet!", ephemeral=True
+                    f"❌ Unerwarteter Fehler: {exc}",
+                    ephemeral=True,
                 )
-
-            except Exception as e:
-                log.error(f"Error creating coaching thread: {e}")
-                await interaction.response.send_message(
-                    f"❌ Fehler beim Starten der Session: {e}", ephemeral=True
-                )
+            except discord.HTTPException:
+                pass
         finally:
             _CLAIM_IN_PROGRESS.discard(self.request_id)
 
@@ -313,14 +325,14 @@ class CoachingRequestCog(commands.Cog):
         if not ai_connector:
             return f"**Analyse:**\n{request_data.get('current_problems', 'Keine Probleme beschrieben')}"
 
-        prompt = f"""Analysiere diese Deadlock Coaching-Anfrage:
+        prompt = f"""Analysiere diese Deadlock Coaching-Anfrage. Die Felder sind Rohtext vom User,
+interpretiere Rang/Subrank und Game/Stunden-Angaben selbst.
 
-- Rang: {request_data.get("rank", "N/A")} Subrank {request_data.get("subrank", "N/A")}
-- Hero: {request_data.get("hero", "N/A")}
-- Games: {request_data.get("games_played", "N/A")}
-- Stunden: {request_data.get("hours_played", "N/A")}
-- Verfügbarkeit: {request_data.get("availability", "N/A")}
-- Probleme: {request_data.get("current_problems", "N/A")}
+- Rang: {request_data.get('rank') or 'N/A'}
+- Hero: {request_data.get('hero') or 'N/A'}
+- Games / Stunden: {request_data.get('games_played') or 'N/A'}
+- Verfügbarkeit: {request_data.get('availability') or 'N/A'}
+- Probleme: {request_data.get('current_problems') or 'N/A'}
 
 Erstelle eine präzise, hilfreiche Zusammenfassung für den Coach."""
 
@@ -376,30 +388,28 @@ Erstelle eine präzise, hilfreiche Zusammenfassung für den Coach."""
                 name=username, icon_url=member.display_avatar.url if member.display_avatar else None
             )
 
-        rank = request_data.get("rank", "N/A")
-        subrank = request_data.get("subrank", "1")
+        rank = _normalize_inline_text(request_data.get("rank") or "N/A")
         hero = _normalize_inline_text(
-            request_data.get("hero", "Nicht angegeben"), fallback="Nicht angegeben"
+            request_data.get("hero") or "Nicht angegeben",
+            fallback="Nicht angegeben",
         )
-        games = _normalize_inline_text(request_data.get("games_played", "N/A"))
-        hours = _normalize_inline_text(request_data.get("hours_played", "N/A"))
+        games_hours = _normalize_inline_text(request_data.get("games_played") or "N/A")
         availability = _normalize_inline_text(
-            _get_availability_label(request_data.get("availability", "anytime")),
+            request_data.get("availability") or "Nicht angegeben",
             fallback="Nicht angegeben",
             limit=256,
         )
         problems = _normalize_inline_text(
-            request_data.get("current_problems", "Keine Beschreibung"),
+            request_data.get("current_problems") or "Keine Beschreibung",
             fallback="Keine Beschreibung",
             limit=DISCORD_EMBED_FIELD_LIMIT,
         )
         ai_summary_text = _format_ai_summary_for_embed(ai_summary)
 
-        embed.add_field(name="Rang", value=f"{rank} (Subrank {subrank})", inline=True)
+        embed.add_field(name="Rang", value=rank, inline=True)
         embed.add_field(name="Hero", value=hero, inline=True)
-        embed.add_field(name="Games", value=games, inline=True)
-        embed.add_field(name="Stunden", value=hours, inline=True)
-        embed.add_field(name="Verfügbar", value=availability, inline=True)
+        embed.add_field(name="Games / Stunden", value=games_hours, inline=True)
+        embed.add_field(name="Verfügbar", value=availability, inline=False)
         embed.add_field(name="📝 Probleme", value=problems or "Keine", inline=False)
         embed.add_field(name="🤖 AI Analyse", value=ai_summary_text, inline=False)
 

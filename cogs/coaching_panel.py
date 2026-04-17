@@ -40,30 +40,6 @@ async def _store_panel_msg_id(message_id: int) -> None:
     )
 
 
-def _split_rank_input(raw: str) -> tuple[str, str]:
-    text = " ".join(raw.strip().split())
-    if not text:
-        return "Unbekannt", "I"
-    parts = text.rsplit(" ", 1)
-    if len(parts) == 2 and parts[1].upper() in {"I", "II", "III", "IV", "V", "VI"}:
-        return parts[0], parts[1].upper()
-    return text, "I"
-
-
-def _split_games_hours(raw: str) -> tuple[str, str]:
-    text = " ".join(raw.strip().split())
-    if not text:
-        return "N/A", "N/A"
-    separators = (" / ", "/", ",", ";", "|")
-    for separator in separators:
-        if separator in text:
-            left, right = text.split(separator, 1)
-            games = left.strip() or "N/A"
-            hours = right.strip() or "N/A"
-            return games, hours
-    return text, "N/A"
-
-
 class CoachingRequestModal(discord.ui.Modal, title="Deadlock Coaching"):
     def __init__(self, cog: "CoachingPanelCog"):
         super().__init__(custom_id="coaching_request_modal")
@@ -71,12 +47,12 @@ class CoachingRequestModal(discord.ui.Modal, title="Deadlock Coaching"):
 
         self.rank_input = discord.ui.TextInput(
             label="Rang + Subrank",
-            placeholder="z.B. Legend IV",
-            max_length=50,
+            placeholder="z.B. Archon 3, Ascendant VI, Emissary II",
+            max_length=60,
         )
         self.hero_input = discord.ui.TextInput(
             label="Main-Hero",
-            placeholder="z.B. Haze",
+            placeholder="z.B. Haze, Seven, Vindicta",
             max_length=50,
         )
         self.availability_input = discord.ui.TextInput(
@@ -106,10 +82,10 @@ class CoachingRequestModal(discord.ui.Modal, title="Deadlock Coaching"):
         try:
             await self.cog._submit_coaching_request(
                 interaction,
-                rank_and_subrank=self.rank_input.value,
+                rank_input=self.rank_input.value,
                 hero=self.hero_input.value,
                 availability=self.availability_input.value,
-                games_and_hours=self.games_hours_input.value,
+                games_hours=self.games_hours_input.value,
                 problems=self.problems_input.value,
             )
         except Exception:
@@ -277,10 +253,10 @@ class CoachingPanelCog(commands.Cog):
         self,
         interaction: discord.Interaction,
         *,
-        rank_and_subrank: str,
+        rank_input: str,
         hero: str,
         availability: str,
-        games_and_hours: str,
+        games_hours: str,
         problems: str,
     ) -> None:
         await self._db_connect()
@@ -293,9 +269,12 @@ class CoachingPanelCog(commands.Cog):
             )
             return
 
-        rank, subrank = _split_rank_input(rank_and_subrank)
-        games_played, hours_played = _split_games_hours(games_and_hours)
         now = int(time.time())
+        rank_raw = " ".join(rank_input.split()) or "Nicht angegeben"
+        hero_raw = hero.strip() or "Nicht angegeben"
+        availability_raw = availability.strip() or "Nicht angegeben"
+        games_hours_raw = " ".join(games_hours.split()) or "Nicht angegeben"
+        problems_raw = problems.strip()
 
         db.execute(
             """INSERT INTO coaching_requests (
@@ -306,13 +285,13 @@ class CoachingPanelCog(commands.Cog):
             (
                 interaction.user.id,
                 interaction.user.display_name,
-                rank,
-                subrank,
-                hero.strip() or "Nicht angegeben",
-                availability.strip() or "Nicht angegeben",
-                games_played,
-                hours_played,
-                problems.strip(),
+                rank_raw,
+                "",
+                hero_raw,
+                availability_raw,
+                games_hours_raw,
+                "",
+                problems_raw,
                 now,
                 now,
             ),

@@ -18,6 +18,10 @@ from service import db as central_db
 logger = logging.getLogger(__name__)
 
 
+def _format_leaderboard_number(value: int) -> str:
+    return f"{int(value):,}".replace(",", ".")
+
+
 # ========= Zentrale Einzel-DB Pfad (nur zur Anzeige/Diagnose) =========
 def central_db_path() -> str:
     # reine Anzeige – tatsächlicher Zugriff läuft über shared.db
@@ -1093,6 +1097,28 @@ class VoiceActivityTrackerCog(commands.Cog):
 
         return name
 
+    def _voice_leaderboard_footer(self, user_id: int) -> str:
+        row = central_db.query_one(
+            "SELECT total_points, total_seconds FROM voice_stats WHERE user_id = ?",
+            (user_id,),
+        )
+        if not row:
+            return "Noch keine Punkte"
+
+        total_points = int(row[0] or 0)
+        total_seconds = int(row[1] or 0)
+        rank_row = central_db.query_one(
+            """
+            SELECT COUNT(*) + 1
+            FROM voice_stats
+            WHERE total_points > ?
+               OR (total_points = ? AND total_seconds > ?)
+            """,
+            (total_points, total_points, total_seconds),
+        )
+        rank = int(rank_row[0] or 1) if rank_row else 1
+        return f"Du bist auf Platz {rank} · {_format_leaderboard_number(total_points)} Punkte"
+
     async def start_voice_session(self, member: discord.Member, channel: discord.VoiceChannel):
         key = f"{member.id}:{channel.guild.id}"
         if key not in self.voice_sessions:
@@ -1465,24 +1491,25 @@ class VoiceActivityTrackerCog(commands.Cog):
                 """,
                 (limit,),
             )
-            if not rows:
-                await ctx.send("📊 Noch keine Voice-Aktivität aufgezeichnet.")
-                return
-
             embed = discord.Embed(
                 title=f"🏆 Voice-Leaderboard - {ctx.guild.name}",
                 color=discord.Color.gold(),
             )
 
-            desc = ""
-            for i, (uid, secs, pts) in enumerate(rows, 1):
-                name = await self._resolve_display_name(ctx.guild, uid)
-                hours = (secs or 0) // 3600
-                minutes = ((secs or 0) % 3600) // 60
-                medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-                points_display = int(pts or 0)
-                desc += f"{medal} **{name}** — {hours}h {minutes}m · {points_display} Punkte\n"
-            embed.description = desc
+            if rows:
+                desc = ""
+                for i, (uid, secs, pts) in enumerate(rows, 1):
+                    name = await self._resolve_display_name(ctx.guild, uid)
+                    hours = (secs or 0) // 3600
+                    minutes = ((secs or 0) % 3600) // 60
+                    medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+                    points_display = _format_leaderboard_number(pts or 0)
+                    desc += f"{medal} **{name}** — {hours}h {minutes}m · {points_display} Punkte\n"
+                embed.description = desc
+            else:
+                embed.description = "📊 Noch keine Voice-Aktivität aufgezeichnet."
+
+            embed.set_footer(text=self._voice_leaderboard_footer(ctx.author.id))
             await ctx.send(embed=embed)
 
         except Exception as e:

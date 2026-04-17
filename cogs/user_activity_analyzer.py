@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -26,12 +27,17 @@ from cogs import privacy_core as privacy
 from service import db as central_db
 
 logger = logging.getLogger(__name__)
+TEXT_SESSION_WINDOW_SECONDS = 600
 
 
 def _safe_log_value(value: Any) -> str:
     """Sanitize values before logging to prevent log injection attacks."""
     text = "" if value is None else str(value)
     return text.replace("\r", "\\r").replace("\n", "\\n")
+
+
+def _format_leaderboard_number(value: int) -> str:
+    return f"{int(value):,}".replace(",", ".")
 
 
 class UserActivityAnalyzer(commands.Cog):
@@ -54,6 +60,7 @@ class UserActivityAnalyzer(commands.Cog):
         self._join_source_locks: dict[int, asyncio.Lock] = {}
         self._invite_warmup_task: asyncio.Task | None = None
         self._twitch_invite_table_available: bool | None = None
+        self._open_text_sessions: dict[tuple[int, int], dict[str, Any]] = {}
 
         logger.info("User Activity Analyzer initializing")
 
@@ -63,6 +70,7 @@ class UserActivityAnalyzer(commands.Cog):
         self.analyze_user_activity.start()
         self.track_co_players_realtime.start()
         self.cleanup_old_pings.start()
+        self.flush_text_sessions.start()
 
         logger.info("User Activity Analyzer loaded - Background tasks started")
 
@@ -87,6 +95,7 @@ class UserActivityAnalyzer(commands.Cog):
             self.analyze_user_activity,
             self.track_co_players_realtime,
             self.cleanup_old_pings,
+            self.flush_text_sessions,
         ]
         for task in tasks_to_cancel:
             if task.is_running():
@@ -100,6 +109,8 @@ class UserActivityAnalyzer(commands.Cog):
             ],
             return_exceptions=True,
         )
+
+        await self._flush_all_text_sessions()
 
         logger.info("User Activity Analyzer unloaded")
 
@@ -612,6 +623,105 @@ class UserActivityAnalyzer(commands.Cog):
         except Exception as exc:
             logger.debug("Failed to load invite snapshot from DB (guild=%s): %s", guild_id, exc)
             return None
+
+    @staticmethod
+    def _text_session_ts(dt: datetime) -> str:
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    def _text_leaderboard_footer(self, user_id: int) -> str:
+        row = central_db.query_one(
+            "SELECT total_points, total_messages FROM text_stats WHERE user_id = ?",
+            (user_id,),
+        )
+        if not row:
+            return "Noch keine Punkte"
+
+        total_points = int(row[0] or 0)
+        total_messages = int(row[1] or 0)
+        rank_row = central_db.query_one(
+            """
+            SELECT COUNT(*) + 1
+            FROM text_stats
+            WHERE total_points > ?
+               OR (total_points = ? AND total_messages > ?)
+            """,
+            (total_points, total_points, total_messages),
+        )
+        rank = int(rank_row[0] or 1) if rank_row else 1
+        return f"Du bist auf Platz {rank} · {_format_leaderboard_number(total_points)} Punkte"
+
+    async def _flush_expired_text_sessions(self, now: datetime | None = None) -> None:
+        now = now or datetime.utcnow()
+        expired_sessions = [
+            (key, session)
+            for key, session in list(self._open_text_sessions.items())
+            if (now - session["last_message_at"]).total_seconds() >= TEXT_SESSION_WINDOW_SECONDS
+        ]
+        for key, session in expired_sessions:
+            await self._flush_text_session(key, session)
+
+    async def _flush_all_text_sessions(self) -> None:
+        for key, session in list(self._open_text_sessions.items()):
+            await self._flush_text_session(key, session)
+
+    async def _flush_text_session(self, key: tuple[int, int], session: dict[str, Any]) -> None:
+        if self._open_text_sessions.get(key) is not session:
+            return
+
+        message_count = int(session.get("message_count") or 0)
+        if message_count <= 0:
+            self._open_text_sessions.pop(key, None)
+            return
+
+        points_accum = float(session.get("points_accum") or 0.0)
+        had_interaction = bool(session.get("had_interaction"))
+        final_points = round(points_accum * 1.5) if had_interaction else round(points_accum)
+        co_participants = sorted(int(user_id) for user_id in session.get("co_participants", set()))
+        co_participant_ids = ",".join(str(user_id) for user_id in co_participants) or None
+
+        try:
+            central_db.execute(
+                """
+                INSERT INTO text_conversation_log(
+                    user_id, guild_id, channel_id, started_at, ended_at,
+                    message_count, points, co_participant_ids, had_interaction
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    key[0],
+                    session.get("guild_id"),
+                    key[1],
+                    self._text_session_ts(session["started_at"]),
+                    self._text_session_ts(session["last_message_at"]),
+                    message_count,
+                    final_points,
+                    co_participant_ids,
+                    1 if had_interaction else 0,
+                ),
+            )
+            central_db.execute(
+                """
+                INSERT INTO text_stats(user_id, total_messages, total_points, last_update)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    total_messages = text_stats.total_messages + excluded.total_messages,
+                    total_points = text_stats.total_points + excluded.total_points,
+                    last_update = CURRENT_TIMESTAMP
+                """,
+                (key[0], message_count, final_points),
+            )
+        except Exception as exc:
+            logger.error(
+                "Error flushing text session for user %s in channel %s: %s",
+                key[0],
+                key[1],
+                exc,
+                exc_info=True,
+            )
+            return
+
+        self._open_text_sessions.pop(key, None)
 
     @staticmethod
     def _to_int(value: Any, default: int | None = None) -> int | None:
@@ -1363,10 +1473,62 @@ class UserActivityAnalyzer(commands.Cog):
                 (message.author.id, message.guild.id, message.channel.id),
             )
 
+            now = datetime.utcnow()
+            await self._flush_expired_text_sessions(now)
+
+            session_key = (message.author.id, message.channel.id)
+            session = self._open_text_sessions.get(session_key)
+            if session is None:
+                session = {
+                    "started_at": now,
+                    "last_message_at": now,
+                    "guild_id": message.guild.id,
+                    "message_count": 0,
+                    "points_accum": 0.0,
+                    "co_participants": set(),
+                    "had_interaction": False,
+                    "last_reply_credited": False,
+                }
+                self._open_text_sessions[session_key] = session
+
+            other_sessions = [
+                ((user_id, channel_id), other_session)
+                for (user_id, channel_id), other_session in self._open_text_sessions.items()
+                if channel_id == message.channel.id and user_id != message.author.id
+            ]
+            if other_sessions:
+                session["had_interaction"] = True
+                for (other_user_id, _channel_id), other_session in other_sessions:
+                    session["co_participants"].add(other_user_id)
+                    other_session["had_interaction"] = True
+                    other_session["co_participants"].add(message.author.id)
+
+            msg_index = int(session["message_count"]) + 1
+            raw_points = 2 * math.sqrt(msg_index)
+            if message.reference and not session["last_reply_credited"]:
+                raw_points += 1
+                session["last_reply_credited"] = True
+
+            session["message_count"] = msg_index
+            session["points_accum"] = float(session["points_accum"]) + raw_points
+            session["last_message_at"] = now
+            session["guild_id"] = message.guild.id
+
             # Kein Log hier (zu viel Spam bei vielen Messages)
 
         except Exception as e:
             logger.error(f"Error tracking message activity: {e}", exc_info=True)
+
+    @tasks.loop(seconds=60)
+    async def flush_text_sessions(self):
+        try:
+            await self._flush_expired_text_sessions()
+        except Exception as exc:
+            logger.error("Error while flushing expired text sessions: %s", exc, exc_info=True)
+
+    @flush_text_sessions.before_loop
+    async def before_text_session_flush(self):
+        await self.bot.wait_until_ready()
 
     async def _send_leave_analysis(self, member: discord.Member):
         """
@@ -1951,6 +2113,45 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
         except Exception as e:
             logger.error(f"Error in member_events command: {e}", exc_info=True)
             await ctx.send(f"❌ Fehler beim Abrufen der Events: {e}")
+
+    @commands.command(name="tleaderboard", aliases=["tlb", "texttop"])
+    @commands.cooldown(1, 15, commands.BucketType.guild)
+    async def text_leaderboard_command(self, ctx):
+        try:
+            rows = central_db.query_all(
+                """
+                SELECT user_id, total_messages, total_points
+                FROM text_stats
+                ORDER BY total_points DESC, total_messages DESC
+                LIMIT 10
+                """
+            )
+
+            embed = discord.Embed(
+                title=f"🏆 Text-Leaderboard - {ctx.guild.name}",
+                color=discord.Color.gold(),
+            )
+
+            if rows:
+                desc_lines = []
+                for i, (user_id, total_messages, total_points) in enumerate(rows, 1):
+                    member = ctx.guild.get_member(int(user_id))
+                    name = member.display_name if member else "Unbekannt"
+                    medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+                    desc_lines.append(
+                        f"{medal} **{name}** — {_format_leaderboard_number(total_messages or 0)} Msgs · "
+                        f"{_format_leaderboard_number(total_points or 0)} Punkte"
+                    )
+                embed.description = "\n".join(desc_lines)
+            else:
+                embed.description = "📊 Noch keine Text-Aktivität aufgezeichnet."
+
+            embed.set_footer(text=self._text_leaderboard_footer(ctx.author.id))
+            await ctx.send(embed=embed)
+
+        except Exception as e:
+            logger.error(f"Error in tleaderboard: {e}", exc_info=True)
+            await ctx.send(f"❌ Fehler beim Abrufen des Leaderboards: {e}")
 
     @commands.command(name="messagestats", aliases=["msgstats"])
     async def message_stats_command(self, ctx, user: discord.Member | None = None):

@@ -925,6 +925,26 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
               PRIMARY KEY(user_id, guild_id)
             );
 
+            CREATE TABLE IF NOT EXISTS text_stats(
+              user_id INTEGER PRIMARY KEY,
+              total_messages INTEGER NOT NULL DEFAULT 0,
+              total_points INTEGER NOT NULL DEFAULT 0,
+              last_update DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS text_conversation_log(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_id INTEGER NOT NULL,
+              guild_id INTEGER,
+              channel_id INTEGER,
+              started_at DATETIME NOT NULL,
+              ended_at DATETIME NOT NULL,
+              message_count INTEGER NOT NULL DEFAULT 0,
+              points INTEGER NOT NULL DEFAULT 0,
+              co_participant_ids TEXT,
+              had_interaction INTEGER NOT NULL DEFAULT 0
+            );
+
             -- Datenschutz-/Opt-out-Status je User
             CREATE TABLE IF NOT EXISTS user_privacy(
               user_id    INTEGER PRIMARY KEY,
@@ -1287,6 +1307,15 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
             )
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_message_activity_guild ON message_activity(guild_id, message_count DESC)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_text_stats_leaderboard ON text_stats(total_points DESC, total_messages DESC)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_text_log_user ON text_conversation_log(user_id)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_text_log_started ON text_conversation_log(started_at, user_id)"
             )
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_user_privacy_opted ON user_privacy(opted_out)"
