@@ -141,6 +141,13 @@ class CoachingSurveyCog(commands.Cog):
         self._survey_check_task: asyncio.Task | None = None
 
     async def cog_load(self):
+        sessions = db.query_all(
+            "SELECT id FROM coaching_sessions WHERE status='waiting_survey'"
+        )
+        for s in sessions:
+            self.bot.add_view(SurveyView(s["id"]))
+        if sessions:
+            log.info("Re-registered %d persistent SurveyView(s) after restart", len(sessions))
         if self._survey_check_task is None or self._survey_check_task.done():
             self._survey_check_task = asyncio.create_task(self._run_survey_checks())
 

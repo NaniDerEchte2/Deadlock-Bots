@@ -130,24 +130,6 @@ class CoachClaimButton(discord.ui.Button):
                 await interaction.followup.send("❌ User nicht gefunden.", ephemeral=True)
                 return
 
-            # Create thread first — if this fails, nothing has been committed yet.
-            thread_name = f"Coaching: {author.display_name}"
-            try:
-                thread = await interaction.channel.create_thread(
-                    name=thread_name,
-                    type=discord.ChannelType.private_thread,
-                    invitable=False,
-                )
-                await thread.add_user(author)
-                await thread.add_user(interaction.user)
-            except Exception as exc:
-                log.error("Error creating coaching thread for request %s: %s", self.request_id, exc)
-                await interaction.followup.send(
-                    f"❌ Fehler beim Erstellen des Threads: {exc}",
-                    ephemeral=True,
-                )
-                return
-
             now = int(time.time())
             expires_at = request["role_expires_at"] or (
                 now + (settings.coaching_role_expiry_hours * 60 * 60)
@@ -156,12 +138,12 @@ class CoachClaimButton(discord.ui.Button):
 
             db.execute(
                 """INSERT INTO coaching_sessions (id, request_id, coach_id, discord_user_id,
-                   discord_username, discord_channel_id, discord_thread_id, status,
+                   discord_username, discord_channel_id, status,
                    role_assigned_at, role_expires_at, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)""",
                 (
                     session_id, request["id"], interaction.user.id, author.id,
-                    author.display_name, interaction.channel.id, thread.id,
+                    author.display_name, interaction.channel.id,
                     now, expires_at, now,
                 ),
             )
@@ -177,24 +159,13 @@ class CoachClaimButton(discord.ui.Button):
                 except (discord.Forbidden, discord.HTTPException) as exc:
                     log.warning("Could not add coaching active role to %s: %s", author.id, exc)
 
-            try:
-                await thread.send(
-                    f"🎮 **Coaching Session gestartet!**\n\n"
-                    f"**Coach:** {interaction.user.mention}\n"
-                    f"**User:** {author.mention}\n\n"
-                    f"Bitte besprecht eure Ziele und plant die Session!"
-                )
-            except Exception as exc:
-                log.warning("Could not post intro message in thread %s: %s", thread.id, exc)
-
             dm_ok = True
             try:
                 await author.send(
                     f"🎉 Ein Coach hat sich für deine Anfrage gemeldet!\n\n"
-                    f"**Coach:** {interaction.user.display_name}\n"
-                    f"**Thread:** {thread.mention}\n\n"
-                    f"Ihr könnt euch dort direkt abstimmen und das Coaching innerhalb der nächsten "
-                    f"**{settings.coaching_role_expiry_hours} Stunden** durchführen."
+                    f"**Coach:** {interaction.user.display_name}\n\n"
+                    f"Schau in den Coaching-Channel um euch abzustimmen und das Coaching innerhalb "
+                    f"der nächsten **{settings.coaching_role_expiry_hours} Stunden** durchzuführen."
                 )
             except discord.Forbidden:
                 dm_ok = False
@@ -202,6 +173,14 @@ class CoachClaimButton(discord.ui.Button):
             except discord.HTTPException as exc:
                 dm_ok = False
                 log.warning("Failed to DM user %s after coach claim: %s", author.id, exc)
+
+            try:
+                await interaction.channel.send(
+                    f"✅ {author.mention} – **{interaction.user.display_name}** ist jetzt dein Coach! "
+                    f"Stimmt euch hier ab."
+                )
+            except Exception as exc:
+                log.warning("Could not post claim confirmation to channel: %s", exc)
 
             # Disable the claim button on the original request message (interaction.response
             # is already consumed by defer(), so edit the message directly).
@@ -211,7 +190,7 @@ class CoachClaimButton(discord.ui.Button):
             except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
                 log.warning("Could not disable claim button on message: %s", exc)
 
-            dm_note = "" if dm_ok else " (DM an User fehlgeschlagen – bitte im Thread anpingen.)"
+            dm_note = "" if dm_ok else " (DM an User fehlgeschlagen – bitte im Channel anpingen.)"
             await interaction.followup.send(
                 f"✅ Session mit {author.display_name} gestartet!{dm_note}",
                 ephemeral=True,
@@ -243,6 +222,17 @@ class CoachingRequestCog(commands.Cog):
         self._analyze_loop: asyncio.Task | None = None
 
     async def cog_load(self):
+        rows = db.query_all(
+            "SELECT id, discord_user_id, message_id FROM coaching_requests "
+            "WHERE status='analyzed' AND message_id IS NOT NULL"
+        )
+        for row in rows:
+            self.bot.add_view(
+                CoachClaimView(row["id"], row["discord_user_id"]),
+                message_id=row["message_id"],
+            )
+        if rows:
+            log.info("Re-registered %d persistent CoachClaimView(s) after restart", len(rows))
         if self._analyze_loop is None or self._analyze_loop.done():
             self._analyze_loop = asyncio.create_task(self._analyze_pending_requests())
 
