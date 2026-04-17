@@ -386,6 +386,14 @@ class DashboardServer:
                         "/internal/twitch/v1/discord/session",
                         self._handle_twitch_discord_session,
                     ),
+                    web.post(
+                        "/internal/twitch/v1/discord/validate-session",
+                        self._handle_twitch_discord_validate_session,
+                    ),
+                    web.post(
+                        "/internal/twitch/v1/discord/import-session",
+                        self._handle_twitch_discord_import_session,
+                    ),
                     web.get("/api/auth/me", self._handle_auth_me),
                     web.get("/api/status", self._handle_status),
                     web.post("/api/bot/restart", self._handle_bot_restart),
@@ -2651,6 +2659,59 @@ class DashboardServer:
                 "discord_roles": discord_roles,
             }
         )
+
+    async def _handle_twitch_discord_validate_session(self, request: web.Request) -> web.Response:
+        self._require_twitch_internal_api_access(request)
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid_json"}, status=400)
+        session_id = str(payload.get("session_id") or "").strip()
+        if not session_id:
+            return web.json_response({"error": "missing_session_id"}, status=400)
+        session = self._discord_sessions.get(session_id)
+        if not session:
+            return web.json_response({"valid": False})
+        now = time.time()
+        if float(session.get("expires_at", 0.0)) <= now:
+            self._discord_sessions.pop(session_id, None)
+            return web.json_response({"valid": False})
+        return web.json_response(
+            {
+                "valid": True,
+                "user_id": str(session.get("user_id") or ""),
+                "username": str(session.get("username") or ""),
+                "display_name": str(session.get("display_name") or ""),
+                "expires_at": float(session.get("expires_at", now + 3600)),
+            }
+        )
+
+    async def _handle_twitch_discord_import_session(self, request: web.Request) -> web.Response:
+        self._require_twitch_internal_api_access(request)
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid_json"}, status=400)
+        session_id = str(payload.get("session_id") or "").strip()
+        user_id = self._coerce_int(payload.get("user_id"), None)
+        username = str(payload.get("username") or "").strip()
+        display_name = str(payload.get("display_name") or username).strip()
+        if not session_id or not user_id:
+            return web.json_response({"error": "missing_session_id_or_user_id"}, status=400)
+        now = time.time()
+        expires_at = float(payload.get("expires_at") or (now + self._discord_session_ttl))
+        self._discord_sessions[session_id] = {
+            "user_id": user_id,
+            "username": username,
+            "display_name": display_name,
+            "reason": "twitch_dashboard_import",
+            "access_level": "full",
+            "csrf_token": secrets.token_urlsafe(32),
+            "created_at": now,
+            "last_seen_at": now,
+            "expires_at": expires_at,
+        }
+        return web.json_response({"ok": True})
 
     async def _handle_logout(self, request: web.Request) -> web.StreamResponse:
         session_id = (request.cookies.get(self._discord_session_cookie) or "").strip()
