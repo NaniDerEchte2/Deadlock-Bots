@@ -4,7 +4,7 @@ Shows aggregated, anonymous statistics about when ranks are active,
 which lanes they prefer, and heuristics for rank estimation.
 
 Public leaderboards expose Discord display names; personal dashboard data
-is only available via signed Discord OAuth session cookie.
+is only available via Discord OAuth session cookie (delegated via central dashboard).
 """
 
 from __future__ import annotations
@@ -31,11 +31,10 @@ log = logging.getLogger(__name__)
 
 PUBLIC_STATS_PORT = int(os.getenv("PUBLIC_STATS_PORT", "8768"))
 PUBLIC_STATS_HOST = os.getenv("PUBLIC_STATS_HOST", "0.0.0.0")
-DISCORD_API_BASE_URL = "https://discord.com/api/v10"
 PUBLIC_STATS_SESSION_COOKIE = "dl_session"
-PUBLIC_STATS_OAUTH_STATE_COOKIE = "oauth_state"
+PUBLIC_STATS_PRE_AUTH_COOKIE = "dl_pre_auth"
 PUBLIC_STATS_SESSION_TTL = 14 * 24 * 60 * 60
-PUBLIC_STATS_OAUTH_STATE_TTL = 10 * 60
+PUBLIC_STATS_PRE_AUTH_TTL = 10 * 60
 PUBLIC_STATS_DEFAULT_REDIRECT = "/aktivitaet/"
 PUBLIC_STATS_DEFAULT_CORS_ORIGINS = (
     "http://localhost:5173",
@@ -45,14 +44,25 @@ PUBLIC_STATS_DEFAULT_CORS_ORIGINS = (
     "http://127.0.0.1:5174",
     "http://127.0.0.1:5175",
 )
+# Callback-URL nach Discord-OAuth (muss auf deutsche-deadlock-community.de zeigen)
+PUBLIC_STATS_CALLBACK_URL = os.getenv(
+    "PUBLIC_STATS_CALLBACK_URL",
+    "https://deutsche-deadlock-community.de/aktivitaet/auth/complete",
+)
+DASHBOARD_INTERNAL_API_BASE = os.getenv("DASHBOARD_INTERNAL_API_BASE", "http://127.0.0.1:8766")
+_DASHBOARD_INTERNAL_TOKEN_ENV_NAMES = (
+    "TURNIER_INTERNAL_API_TOKEN",
+    "MAIN_BOT_INTERNAL_TOKEN",
+)
 # ENV:
-# - DISCORD_OAUTH_CLIENT_ID / DISCORD_OAUTH_CLIENT_SECRET: Discord OAuth identify flow
-# - DISCORD_OAUTH_REDIRECT_URI: optional callback override
-# - PUBLIC_STATS_SESSION_SECRET: required for signed OAuth state + dl_session cookie
-#   (falls back to SESSIONS_ENCRYPTION_KEY if unset)
-# - PUBLIC_STATS_INSECURE_COOKIE=1: disable Secure flag for local HTTP tests
-# - PUBLIC_STATS_COOKIE_SECURE=0|1: explicit Secure override when not using insecure mode
-# - PUBLIC_STATS_CORS_ORIGINS: CSV allowlist for /api/public/* and /auth/* origins
+# - PUBLIC_STATS_SESSION_SECRET: für dl_session-Cookie-Signierung
+#   (fällt auf SESSIONS_ENCRYPTION_KEY zurück)
+# - PUBLIC_STATS_CALLBACK_URL: öffentliche URL für /aktivitaet/auth/complete
+# - DASHBOARD_INTERNAL_API_BASE: interne URL des Dashboards (Standard: http://127.0.0.1:8766)
+# - TURNIER_INTERNAL_API_TOKEN / MAIN_BOT_INTERNAL_TOKEN: X-Internal-Token fürs Dashboard
+# - PUBLIC_STATS_INSECURE_COOKIE=1: Secure-Flag für lokale HTTP-Tests deaktivieren
+# - PUBLIC_STATS_COOKIE_SECURE=0|1: expliziter Secure-Override
+# - PUBLIC_STATS_CORS_ORIGINS: CSV-Allowlist für /api/public/* und /auth/*
 
 _HTML_PATH = Path(__file__).resolve().parent / "static" / "activity_stats.html"
 
@@ -188,24 +198,37 @@ def _session_secret() -> str:
     )
 
 
-def _discord_oauth_redirect_uri() -> str:
-    return os.getenv(
-        "DISCORD_OAUTH_REDIRECT_URI",
-        f"http://127.0.0.1:{PUBLIC_STATS_PORT}/auth/discord/callback",
-    ).strip()
+def _dashboard_internal_token() -> str:
+    for name in _DASHBOARD_INTERNAL_TOKEN_ENV_NAMES:
+        val = os.getenv(name, "").strip()
+        if val:
+            return val
+    return ""
 
 
-def _discord_oauth_config_error() -> str | None:
-    missing: list[str] = []
-    if not _session_secret():
-        missing.append("PUBLIC_STATS_SESSION_SECRET")
-    if not os.getenv("DISCORD_OAUTH_CLIENT_ID", "").strip():
-        missing.append("DISCORD_OAUTH_CLIENT_ID")
-    if not os.getenv("DISCORD_OAUTH_CLIENT_SECRET", "").strip():
-        missing.append("DISCORD_OAUTH_CLIENT_SECRET")
-    if missing:
-        return f"missing_env:{','.join(missing)}"
-    return None
+async def _call_dashboard_api(path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    token = _dashboard_internal_token()
+    if not token:
+        log.warning("Kein Dashboard-Internal-Token konfiguriert (public_stats).")
+        return None
+    timeout = ClientTimeout(total=20)
+    url = f"{DASHBOARD_INTERNAL_API_BASE.rstrip('/')}{path}"
+    headers = {"X-Internal-Token": token, "Content-Type": "application/json"}
+    try:
+        async with ClientSession(timeout=timeout) as client:
+            async with client.post(url, json=payload, headers=headers) as response:
+                if response.status != 200:
+                    body = await response.text()
+                    log.warning(
+                        "Dashboard-API Fehler (path=%s status=%s body=%s)",
+                        path, response.status, body[:200],
+                    )
+                    return None
+                data = await response.json()
+        return data if isinstance(data, dict) else None
+    except Exception:
+        log.exception("Dashboard-API Aufruf fehlgeschlagen (path=%s)", path)
+        return None
 
 
 def _b64_encode(value: str) -> str:
@@ -251,36 +274,6 @@ def _verify(cookie: str) -> dict[str, Any] | None:
     if exp <= int(time.time()):
         return None
     return payload
-
-
-def _build_oauth_state(redirect_path: str) -> str:
-    nonce = f"{int(time.time())}-{secrets.token_urlsafe(18)}"
-    redirect_blob = _b64_encode(redirect_path)
-    signature = _sign_hmac(f"{nonce}:{redirect_path}")
-    return f"{nonce}.{redirect_blob}.{signature}"
-
-
-def _verify_oauth_state(state: str) -> str | None:
-    if not state or not _session_secret():
-        return None
-    parts = state.split(".", 2)
-    if len(parts) != 3:
-        return None
-    nonce, redirect_blob, signature = parts
-    try:
-        issued_at = int(nonce.split("-", 1)[0])
-    except (TypeError, ValueError):
-        return None
-    if int(time.time()) - issued_at > PUBLIC_STATS_OAUTH_STATE_TTL:
-        return None
-    try:
-        redirect_path = _b64_decode(redirect_blob)
-    except Exception:
-        return None
-    expected = _sign_hmac(f"{nonce}:{redirect_path}")
-    if not expected or not hmac.compare_digest(signature, expected):
-        return None
-    return _sanitize_redirect_path(redirect_path)
 
 
 def _require_session(request: web.Request) -> dict[str, Any]:
@@ -1632,27 +1625,32 @@ async def _handle_public_me_co_players(request: web.Request) -> web.Response:
 
 
 async def _handle_discord_login(request: web.Request) -> web.Response:
-    config_error = _discord_oauth_config_error()
-    if config_error:
-        return web.json_response({"error": config_error}, status=503)
-
     redirect_path = _sanitize_redirect_path(request.query.get("redirect"))
-    state = _build_oauth_state(redirect_path)
-    query = urlencode(
+    data = await _call_dashboard_api(
+        "/internal/v1/discord/initiate",
         {
-            "response_type": "code",
-            "client_id": os.getenv("DISCORD_OAUTH_CLIENT_ID", "").strip(),
             "scope": "identify",
-            "prompt": "none",
-            "redirect_uri": _discord_oauth_redirect_uri(),
-            "state": state,
-        }
+            "redirect_after": PUBLIC_STATS_CALLBACK_URL,
+            "requesting_service": "activity",
+        },
     )
-    response = web.HTTPFound(f"{DISCORD_API_BASE_URL}/oauth2/authorize?{query}")
+    if not data:
+        return web.Response(text="Auth-Service nicht erreichbar.", status=503, content_type="text/plain")
+    authorize_url = str(data.get("authorize_url") or "").strip()
+    state_id = str(data.get("state_id") or "").strip()
+    if not authorize_url or not state_id:
+        return web.Response(text="Auth-Service Antwort ungültig.", status=503, content_type="text/plain")
+
+    pre_auth = _sign({
+        "state_id": state_id,
+        "redirect": redirect_path,
+        "exp": int(time.time()) + PUBLIC_STATS_PRE_AUTH_TTL,
+    })
+    response = web.HTTPFound(authorize_url)
     response.set_cookie(
-        PUBLIC_STATS_OAUTH_STATE_COOKIE,
-        state,
-        max_age=PUBLIC_STATS_OAUTH_STATE_TTL,
+        PUBLIC_STATS_PRE_AUTH_COOKIE,
+        pre_auth,
+        max_age=PUBLIC_STATS_PRE_AUTH_TTL,
         httponly=True,
         secure=_cookie_secure(),
         samesite="Lax",
@@ -1661,71 +1659,36 @@ async def _handle_discord_login(request: web.Request) -> web.Response:
     return response
 
 
-async def _handle_discord_callback(request: web.Request) -> web.Response:
-    config_error = _discord_oauth_config_error()
-    if config_error:
-        return web.json_response({"error": config_error}, status=503)
+async def _handle_discord_complete(request: web.Request) -> web.Response:
+    state_id = (request.query.get("state_id") or "").strip()
+    pre_auth_cookie = request.cookies.get(PUBLIC_STATS_PRE_AUTH_COOKIE, "")
 
-    code = (request.query.get("code") or "").strip()
-    state = (request.query.get("state") or "").strip()
-    cookie_state = request.cookies.get(PUBLIC_STATS_OAUTH_STATE_COOKIE, "")
-    if not code:
-        return web.json_response({"error": "missing_code"}, status=400)
-    if not state or not cookie_state or state != cookie_state:
-        return web.json_response({"error": "invalid_state"}, status=400)
-    redirect_path = _verify_oauth_state(state)
-    if not redirect_path:
-        return web.json_response({"error": "invalid_state"}, status=400)
+    redirect_path = PUBLIC_STATS_DEFAULT_REDIRECT
+    if pre_auth_cookie:
+        pre_auth = _verify(pre_auth_cookie)
+        if pre_auth:
+            redirect_path = _sanitize_redirect_path(pre_auth.get("redirect"))
 
-    token_payload = {
-        "client_id": os.getenv("DISCORD_OAUTH_CLIENT_ID", "").strip(),
-        "client_secret": os.getenv("DISCORD_OAUTH_CLIENT_SECRET", "").strip(),
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": _discord_oauth_redirect_uri(),
-    }
-    timeout = ClientTimeout(total=20)
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    async with ClientSession(timeout=timeout) as client:
-        async with client.post(
-            f"{DISCORD_API_BASE_URL}/oauth2/token",
-            data=token_payload,
-            headers=headers,
-        ) as token_response:
-            if token_response.status != 200:
-                body = await token_response.text()
-                log.warning("Discord OAuth Token-Exchange fehlgeschlagen (status=%s, body=%s)", token_response.status, body[:200])
-                return web.json_response({"error": "token_exchange_failed"}, status=502)
-            token_data = await token_response.json()
+    response = web.HTTPFound(redirect_path)
+    response.del_cookie(PUBLIC_STATS_PRE_AUTH_COOKIE, path="/")
 
-        access_token = token_data.get("access_token") if isinstance(token_data, dict) else None
-        if not access_token:
-            return web.json_response({"error": "token_exchange_failed"}, status=502)
+    if not state_id:
+        return response
 
-        async with client.get(
-            f"{DISCORD_API_BASE_URL}/users/@me",
-            headers={"Authorization": f"Bearer {access_token}"},
-        ) as user_response:
-            if user_response.status != 200:
-                body = await user_response.text()
-                log.warning("Discord OAuth /users/@me fehlgeschlagen (status=%s, body=%s)", user_response.status, body[:200])
-                return web.json_response({"error": "user_lookup_failed"}, status=502)
-            user_data = await user_response.json()
+    data = await _call_dashboard_api(
+        "/internal/v1/discord/consume-result",
+        {"state_id": state_id},
+    )
+    if not data or not data.get("discord_id"):
+        return response
 
-    if not isinstance(user_data, dict):
-        return web.json_response({"error": "user_lookup_failed"}, status=502)
-
-    user_id = str(user_data.get("id") or "").strip()
-    if not user_id:
-        return web.json_response({"error": "user_lookup_failed"}, status=502)
     session_payload = {
-        "user_id": user_id,
-        "name": (user_data.get("global_name") or user_data.get("username") or "").strip(),
-        "avatar": (user_data.get("avatar") or "").strip() or None,
+        "user_id": str(data["discord_id"]),
+        "name": str(data.get("discord_name") or ""),
+        "avatar": data.get("discord_avatar") or None,
         "iat": int(time.time()),
         "exp": int(time.time()) + PUBLIC_STATS_SESSION_TTL,
     }
-    response = web.HTTPFound(redirect_path)
     response.set_cookie(
         PUBLIC_STATS_SESSION_COOKIE,
         _sign(session_payload),
@@ -1735,14 +1698,12 @@ async def _handle_discord_callback(request: web.Request) -> web.Response:
         samesite="Lax",
         path="/",
     )
-    response.del_cookie(PUBLIC_STATS_OAUTH_STATE_COOKIE, path="/")
     return response
 
 
 async def _handle_discord_logout(request: web.Request) -> web.Response:
     response = web.Response(status=204)
     response.del_cookie(PUBLIC_STATS_SESSION_COOKIE, path="/")
-    response.del_cookie(PUBLIC_STATS_OAUTH_STATE_COOKIE, path="/")
     return response
 
 
@@ -1861,7 +1822,7 @@ class PublicStatsServer:
         self.app.router.add_get("/api/public/me/heatmap", _handle_public_me_heatmap)
         self.app.router.add_get("/api/public/me/co-players", _handle_public_me_co_players)
         self.app.router.add_get("/auth/discord/login", _handle_discord_login)
-        self.app.router.add_get("/auth/discord/callback", _handle_discord_callback)
+        self.app.router.add_get("/auth/discord/complete", _handle_discord_complete)
         self.app.router.add_post("/auth/discord/logout", _handle_discord_logout)
         self.app.router.add_route("OPTIONS", "/api/public/{tail:.*}", _handle_cors_preflight)
         self.app.router.add_route("OPTIONS", "/auth/{tail:.*}", _handle_cors_preflight)
