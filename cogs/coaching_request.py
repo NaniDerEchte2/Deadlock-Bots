@@ -1,11 +1,11 @@
 """
 Coaching Request - AI Analyse und Channel Posting
 """
+
 import asyncio
 import logging
 import time
 import uuid
-from typing import Any
 
 import discord
 from discord import app_commands
@@ -63,7 +63,9 @@ def _format_ai_summary_for_embed(value: str, *, limit: int = DISCORD_EMBED_FIELD
         return cleaned_text
 
     truncated = cleaned_text[: limit - 1].rstrip()
-    split_at = max(truncated.rfind("\n"), truncated.rfind(". "), truncated.rfind("; "), truncated.rfind(", "))
+    split_at = max(
+        truncated.rfind("\n"), truncated.rfind(". "), truncated.rfind("; "), truncated.rfind(", ")
+    )
     if split_at >= max(120, limit // 2):
         truncated = truncated[:split_at].rstrip()
     return truncated + "…"
@@ -107,18 +109,16 @@ class CoachClaimButton(discord.ui.Button):
             coach_role = interaction.guild.get_role(settings.coach_role_id)
             if not coach_role or coach_role not in interaction.user.roles:
                 await interaction.response.send_message(
-                    "❌ Nur Coaches können sich für Sessions melden!",
-                    ephemeral=True
+                    "❌ Nur Coaches können sich für Sessions melden!", ephemeral=True
                 )
                 return
 
             # Get request
-            request = db.query_one(
-                "SELECT * FROM coaching_requests WHERE id=?",
-                (self.request_id,)
-            )
+            request = db.query_one("SELECT * FROM coaching_requests WHERE id=?", (self.request_id,))
             if not request:
-                await interaction.response.send_message("❌ Request nicht gefunden.", ephemeral=True)
+                await interaction.response.send_message(
+                    "❌ Request nicht gefunden.", ephemeral=True
+                )
                 return
             if request["status"] == "matched":
                 await interaction.response.send_message(
@@ -160,16 +160,23 @@ class CoachClaimButton(discord.ui.Button):
                        role_assigned_at, role_expires_at, created_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)""",
                     (
-                        session_id, request["id"], interaction.user.id, author.id,
-                        author.display_name, interaction.channel.id, thread.id,
-                        int(time.time()), expires_at, int(time.time())
-                    )
+                        session_id,
+                        request["id"],
+                        interaction.user.id,
+                        author.id,
+                        author.display_name,
+                        interaction.channel.id,
+                        thread.id,
+                        int(time.time()),
+                        expires_at,
+                        int(time.time()),
+                    ),
                 )
 
                 # Update request status
                 db.execute(
                     "UPDATE coaching_requests SET status='matched', updated_at=? WHERE id=?",
-                    (int(time.time()), self.request_id)
+                    (int(time.time()), self.request_id),
                 )
 
                 # Make sure the active coaching role is present once a coach claimed the request.
@@ -198,15 +205,13 @@ class CoachClaimButton(discord.ui.Button):
                 await interaction.response.edit_message(view=None)
 
                 await interaction.followup.send(
-                    f"✅ Session mit {author.display_name} gestartet!",
-                    ephemeral=True
+                    f"✅ Session mit {author.display_name} gestartet!", ephemeral=True
                 )
 
             except Exception as e:
                 log.error(f"Error creating coaching thread: {e}")
                 await interaction.response.send_message(
-                    f"❌ Fehler beim Starten der Session: {e}",
-                    ephemeral=True
+                    f"❌ Fehler beim Starten der Session: {e}", ephemeral=True
                 )
         finally:
             _CLAIM_IN_PROGRESS.discard(self.request_id)
@@ -266,7 +271,10 @@ class CoachingRequestCog(commands.Cog):
 
         member = await self._get_member(guild, request_data["discord_user_id"])
         if not member:
-            log.warning("Could not resolve member %s for coaching role assignment", request_data["discord_user_id"])
+            log.warning(
+                "Could not resolve member %s for coaching role assignment",
+                request_data["discord_user_id"],
+            )
             return
 
         now = int(time.time())
@@ -282,13 +290,22 @@ class CoachingRequestCog(commands.Cog):
 
         role = guild.get_role(settings.coaching_active_role_id)
         if not role:
-            log.warning("Coaching active role %s not found in guild %s", settings.coaching_active_role_id, guild.id)
+            log.warning(
+                "Coaching active role %s not found in guild %s",
+                settings.coaching_active_role_id,
+                guild.id,
+            )
             return
         if role in member.roles:
             return
 
         await member.add_roles(role, reason="Coaching-Anfrage analysiert")
-        log.info("Assigned coaching role %s to user %s for request %s", role.id, member.id, request_data["id"])
+        log.info(
+            "Assigned coaching role %s to user %s for request %s",
+            role.id,
+            member.id,
+            request_data["id"],
+        )
 
     async def _analyze_with_ai(self, request_data: dict) -> str:
         """Use MiniMax to analyze the coaching request"""
@@ -298,12 +315,12 @@ class CoachingRequestCog(commands.Cog):
 
         prompt = f"""Analysiere diese Deadlock Coaching-Anfrage:
 
-- Rang: {request_data.get('rank', 'N/A')} Subrank {request_data.get('subrank', 'N/A')}
-- Hero: {request_data.get('hero', 'N/A')}
-- Games: {request_data.get('games_played', 'N/A')}
-- Stunden: {request_data.get('hours_played', 'N/A')}
-- Verfügbarkeit: {request_data.get('availability', 'N/A')}
-- Probleme: {request_data.get('current_problems', 'N/A')}
+- Rang: {request_data.get("rank", "N/A")} Subrank {request_data.get("subrank", "N/A")}
+- Hero: {request_data.get("hero", "N/A")}
+- Games: {request_data.get("games_played", "N/A")}
+- Stunden: {request_data.get("hours_played", "N/A")}
+- Verfügbarkeit: {request_data.get("availability", "N/A")}
+- Probleme: {request_data.get("current_problems", "N/A")}
 
 Erstelle eine präzise, hilfreiche Zusammenfassung für den Coach."""
 
@@ -355,11 +372,15 @@ Erstelle eine präzise, hilfreiche Zusammenfassung für den Coach."""
 
         username = request_data.get("discord_username", "Unknown")
         if member:
-            embed.set_author(name=username, icon_url=member.display_avatar.url if member.display_avatar else None)
+            embed.set_author(
+                name=username, icon_url=member.display_avatar.url if member.display_avatar else None
+            )
 
         rank = request_data.get("rank", "N/A")
         subrank = request_data.get("subrank", "1")
-        hero = _normalize_inline_text(request_data.get("hero", "Nicht angegeben"), fallback="Nicht angegeben")
+        hero = _normalize_inline_text(
+            request_data.get("hero", "Nicht angegeben"), fallback="Nicht angegeben"
+        )
         games = _normalize_inline_text(request_data.get("games_played", "N/A"))
         hours = _normalize_inline_text(request_data.get("hours_played", "N/A"))
         availability = _normalize_inline_text(
@@ -392,7 +413,7 @@ Erstelle eine präzise, hilfreiche Zusammenfassung für den Coach."""
             # Update request with message info
             db.execute(
                 "UPDATE coaching_requests SET message_id=?, channel_id=?, ai_summary=?, status='analyzed', updated_at=? WHERE id=?",
-                (message.id, channel.id, ai_summary, int(time.time()), request_data["id"])
+                (message.id, channel.id, ai_summary, int(time.time()), request_data["id"]),
             )
             request_data["channel_id"] = channel.id
             request_data["message_id"] = message.id
@@ -426,7 +447,10 @@ Erstelle eine präzise, hilfreiche Zusammenfassung für den Coach."""
             if message_id:
                 await self._assign_request_role(request_data)
             else:
-                log.warning("Coaching request %s could not be posted to the coaching channel", request_data["id"])
+                log.warning(
+                    "Coaching request %s could not be posted to the coaching channel",
+                    request_data["id"],
+                )
         except Exception:
             log.exception("Immediate coaching analysis failed for user %s", user_id)
 
@@ -452,7 +476,7 @@ Erstelle eine präzise, hilfreiche Zusammenfassung für den Coach."""
                     # Update with AI summary
                     db.execute(
                         "UPDATE coaching_requests SET ai_summary=?, updated_at=? WHERE id=?",
-                        (ai_summary, int(time.time()), request_data["id"])
+                        (ai_summary, int(time.time()), request_data["id"]),
                     )
 
                     # Post to channel
@@ -468,7 +492,9 @@ Erstelle eine präzise, hilfreiche Zusammenfassung für den Coach."""
 
             await asyncio.sleep(30)  # Check every 30 seconds
 
-    @app_commands.command(name="coaching-analysieren", description="Analysiere Request manuell (Admin)")
+    @app_commands.command(
+        name="coaching-analysieren", description="Analysiere Request manuell (Admin)"
+    )
     @app_commands.describe(request_id="Request ID")
     async def analyze_request(self, interaction: discord.Interaction, request_id: str):
         """Admin command to manually analyze a request"""
@@ -493,7 +519,7 @@ Erstelle eine präzise, hilfreiche Zusammenfassung für den Coach."""
 
         db.execute(
             "UPDATE coaching_requests SET ai_summary=?, updated_at=? WHERE id=?",
-            (ai_summary, int(time.time()), request_data["id"])
+            (ai_summary, int(time.time()), request_data["id"]),
         )
 
         message_id = await self._post_request_to_channel(request_data, ai_summary)
@@ -503,12 +529,12 @@ Erstelle eine präzise, hilfreiche Zusammenfassung für den Coach."""
         if message_id:
             await interaction.followup.send(
                 f"✅ Request analysiert und gepostet!\n\n**AI Summary:**\n{ai_summary[:500]}...",
-                ephemeral=True
+                ephemeral=True,
             )
         else:
             await interaction.followup.send(
                 f"❌ Konnte nicht posten. Channel ID prüfen.\n\n**AI Summary:**\n{ai_summary[:500]}...",
-                ephemeral=True
+                ephemeral=True,
             )
 
 

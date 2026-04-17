@@ -189,9 +189,7 @@ class AIConnector(commands.Cog):
                         json=payload,
                     )
                 if resp.status_code != 200:
-                    log.warning(
-                        "MiniMax API Fehler: %s - %s", resp.status_code, resp.text
-                    )
+                    log.warning("MiniMax API Fehler: %s - %s", resp.status_code, resp.text)
                     return None
                 data = resp.json()
 

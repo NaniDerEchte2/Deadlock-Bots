@@ -1,6 +1,7 @@
 """
 Coaching Survey - Post-Coaching Feedback via DM
 """
+
 import asyncio
 import logging
 import time
@@ -65,44 +66,50 @@ class SurveyModal(discord.ui.Modal, title="Coaching Session Feedback"):
             rating = 5
 
         feedback = self.children[1].value
-        improved = self.children[2].value if len(self.children) > 2 and self.children[2].value else None
-        unresolved = self.children[3].value if len(self.children) > 3 and self.children[3].value else None
+        improved = (
+            self.children[2].value if len(self.children) > 2 and self.children[2].value else None
+        )
+        unresolved = (
+            self.children[3].value if len(self.children) > 3 and self.children[3].value else None
+        )
 
         # Store survey
         survey_id = str(uuid.uuid4())
         db.execute(
             """INSERT INTO coaching_surveys (id, session_id, rating, feedback_text, improved_areas, unresolved_items, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (survey_id, self.session_id, rating, feedback, improved, unresolved, int(time.time()))
+            (survey_id, self.session_id, rating, feedback, improved, unresolved, int(time.time())),
         )
 
         # Update session
         db.execute(
             "UPDATE coaching_sessions SET status='survey_completed', completed_at=? WHERE id=?",
-            (int(time.time()), self.session_id)
+            (int(time.time()), self.session_id),
         )
 
         # Update coach stats
-        session = db.query_one("SELECT coach_id FROM coaching_sessions WHERE id=?", (self.session_id,))
+        session = db.query_one(
+            "SELECT coach_id FROM coaching_sessions WHERE id=?", (self.session_id,)
+        )
         if session and session["coach_id"]:
             coach_id = session["coach_id"]
             stats = db.query_one(
                 """SELECT AVG(rating) as avg, COUNT(*) as cnt
                    FROM coaching_surveys
                    WHERE session_id IN (SELECT id FROM coaching_sessions WHERE coach_id=?)""",
-                (coach_id,)
+                (coach_id,),
             )
             if stats and stats["avg"]:
                 db.execute(
                     """UPDATE coaches SET avg_rating=?, total_reviews=?, total_sessions=total_sessions+1, updated_at=?
                        WHERE id=?""",
-                    (stats["avg"], stats["cnt"], int(time.time()), coach_id)
+                    (stats["avg"], stats["cnt"], int(time.time()), coach_id),
                 )
 
         await interaction.response.send_message(
             f"✅ Danke für dein Feedback!\n\nDu hast mit **{rating}/10** bewertet.\n"
             f"Dein Feedback hilft uns die Coaching-Qualität zu verbessern!",
-            ephemeral=True
+            ephemeral=True,
         )
 
 
@@ -145,7 +152,9 @@ class CoachingSurveyCog(commands.Cog):
     def _get_primary_guild(self) -> discord.Guild | None:
         return self.bot.guilds[0] if self.bot.guilds else None
 
-    def _get_coaching_voice_channel(self, member: discord.Member | None) -> discord.VoiceChannel | None:
+    def _get_coaching_voice_channel(
+        self, member: discord.Member | None
+    ) -> discord.VoiceChannel | None:
         if not member or not member.voice or not member.voice.channel:
             return None
         channel = member.voice.channel
@@ -262,13 +271,13 @@ class CoachingSurveyCog(commands.Cog):
             embed.add_field(
                 name="Wie war's?",
                 value="Bitte nimm dir 2 Minuten Zeit für unser Feedback-Formular. "
-                      "Dein Feedback hilft uns die Coaching-Qualität zu verbessern!",
-                inline=False
+                "Dein Feedback hilft uns die Coaching-Qualität zu verbessern!",
+                inline=False,
             )
             embed.add_field(
                 name="⏰ Bitte innerhalb von 24h ausfüllen",
                 value="Dein Feedback ist wichtig damit wir unsere Coaches verbessern können.",
-                inline=False
+                inline=False,
             )
 
             view = SurveyView(session_id)
@@ -295,8 +304,12 @@ class CoachingSurveyCog(commands.Cog):
             await self._process_session_voice_state(guild, session)
 
     @app_commands.command(name="coaching-survey-senden", description="Survey DM senden (Admin)")
-    @app_commands.describe(user_id="Discord User ID", session_id="Session ID", coach_name="Coach Name")
-    async def send_survey(self, interaction: discord.Interaction, user_id: str, session_id: str, coach_name: str):
+    @app_commands.describe(
+        user_id="Discord User ID", session_id="Session ID", coach_name="Coach Name"
+    )
+    async def send_survey(
+        self, interaction: discord.Interaction, user_id: str, session_id: str, coach_name: str
+    ):
         """Admin command to send survey DM"""
         if not interaction.guild:
             await interaction.response.send_message("❌ Nur im Server.", ephemeral=True)
@@ -308,11 +321,13 @@ class CoachingSurveyCog(commands.Cog):
 
         success = await self.send_survey_dm(int(user_id), session_id, coach_name)
         if success:
-            await interaction.response.send_message(f"✅ Survey DM gesendet!", ephemeral=True)
+            await interaction.response.send_message("✅ Survey DM gesendet!", ephemeral=True)
         else:
-            await interaction.response.send_message(f"❌ Konnte DM nicht senden.", ephemeral=True)
+            await interaction.response.send_message("❌ Konnte DM nicht senden.", ephemeral=True)
 
-    @app_commands.command(name="coaching-session-beenden", description="Session beenden und Survey senden (Admin)")
+    @app_commands.command(
+        name="coaching-session-beenden", description="Session beenden und Survey senden (Admin)"
+    )
     @app_commands.describe(session_id="Session ID")
     async def end_session(self, interaction: discord.Interaction, session_id: str):
         """Admin command to end session and trigger survey"""
@@ -341,7 +356,7 @@ class CoachingSurveyCog(commands.Cog):
         # Update session
         db.execute(
             "UPDATE coaching_sessions SET status='waiting_survey', completed_at=?, survey_sent_at=? WHERE id=?",
-            (int(time.time()), int(time.time()), session_id)
+            (int(time.time()), int(time.time()), session_id),
         )
 
         # Remove user's coaching role
@@ -353,13 +368,11 @@ class CoachingSurveyCog(commands.Cog):
 
         if success:
             await interaction.response.send_message(
-                f"✅ Session beendet, Survey DM gesendet an User!",
-                ephemeral=True
+                "✅ Session beendet, Survey DM gesendet an User!", ephemeral=True
             )
         else:
             await interaction.response.send_message(
-                f"⚠️ Session beendet aber Survey DM konnte nicht gesendet werden.",
-                ephemeral=True
+                "⚠️ Session beendet aber Survey DM konnte nicht gesendet werden.", ephemeral=True
             )
 
 

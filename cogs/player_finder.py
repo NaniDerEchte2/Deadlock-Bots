@@ -138,19 +138,28 @@ class PlayerFinder(commands.Cog):
         if not text:
             return False
 
-        rank_tokens = (
-            tuple(RANK_NAME_TO_VALUE.keys())
-            + tuple(MESSAGE_RANK_ALIASES.keys())
-        )
+        rank_tokens = tuple(RANK_NAME_TO_VALUE.keys()) + tuple(MESSAGE_RANK_ALIASES.keys())
 
         # Rang-Kontext + Spielwunsch
-        if any(token in text for token in rank_tokens) and (
-            "bock" in text or "lust" in text
-        ) and any(
-            token in text
-            for token in (
-                "runde", "runden", "ründchen", "rundchen", "game", "games",
-                "match", "matches", "spielen", "zocken", "grinden", "gamen",
+        if (
+            any(token in text for token in rank_tokens)
+            and ("bock" in text or "lust" in text)
+            and any(
+                token in text
+                for token in (
+                    "runde",
+                    "runden",
+                    "ründchen",
+                    "rundchen",
+                    "game",
+                    "games",
+                    "match",
+                    "matches",
+                    "spielen",
+                    "zocken",
+                    "grinden",
+                    "gamen",
+                )
             )
         ):
             return True
@@ -169,17 +178,32 @@ class PlayerFinder(commands.Cog):
 
         # "bock" Patterns
         if "bock" in text and any(
-            w in text for w in (
-                "jemand", "jmd", "wer", "iwer", "irgendwer", "noch",
-                "hat", "hätte", "hättest",
+            w in text
+            for w in (
+                "jemand",
+                "jmd",
+                "wer",
+                "iwer",
+                "irgendwer",
+                "noch",
+                "hat",
+                "hätte",
+                "hättest",
             )
         ):
             return True
 
         # "lust" Patterns
         if "lust" in text and any(
-            w in text for w in (
-                "jemand", "jmd", "wer", "iwer", "irgendwer", "hat", "noch",
+            w in text
+            for w in (
+                "jemand",
+                "jmd",
+                "wer",
+                "iwer",
+                "irgendwer",
+                "hat",
+                "noch",
             )
         ):
             return True
@@ -188,10 +212,24 @@ class PlayerFinder(commands.Cog):
         if "suche" in text or "suchen" in text or "gesucht" in text:
             if PLUS_PLAYER_RE.search(text):
                 return True
-            if any(w in text for w in (
-                "leute", "spieler", "mitspieler", "team", "gruppe", "party",
-                "wen", "anschluss", "jemand", "noch", "nach", "mates", "mate",
-            )):
+            if any(
+                w in text
+                for w in (
+                    "leute",
+                    "spieler",
+                    "mitspieler",
+                    "team",
+                    "gruppe",
+                    "party",
+                    "wen",
+                    "anschluss",
+                    "jemand",
+                    "noch",
+                    "nach",
+                    "mates",
+                    "mate",
+                )
+            ):
                 return True
 
         # "sucht noch jemand"
@@ -200,8 +238,12 @@ class PlayerFinder(commands.Cog):
 
         # Spielen/Zocken + Frage-Kontext
         if ("spielen" in text or "zocken" in text or "grinden" in text or "gamen" in text) and (
-            "wer" in text or "jemand" in text or "bock" in text or "jmd" in text
-            or "iwer" in text or "irgendwer" in text
+            "wer" in text
+            or "jemand" in text
+            or "bock" in text
+            or "jmd" in text
+            or "iwer" in text
+            or "irgendwer" in text
         ):
             return True
 
@@ -210,9 +252,7 @@ class PlayerFinder(commands.Cog):
             return True
 
         # "jemand down" / "wer down"
-        if "down" in text and any(
-            w in text for w in ("jemand", "wer", "iwer", "irgendwer")
-        ):
+        if "down" in text and any(w in text for w in ("jemand", "wer", "iwer", "irgendwer")):
             return True
 
         # "mag wer"
@@ -224,16 +264,41 @@ class PlayerFinder(commands.Cog):
             return True
 
         # "Interesse" Patterns
-        if "interesse" in text and any(
-            w in text for w in (
-                "jemand", "wer", "jmd", "iwer", "irgendwer", "anderer", "andere",
-                "noch", "hat", "hätte",
+        if (
+            "interesse" in text
+            and any(
+                w in text
+                for w in (
+                    "jemand",
+                    "wer",
+                    "jmd",
+                    "iwer",
+                    "irgendwer",
+                    "anderer",
+                    "andere",
+                    "noch",
+                    "hat",
+                    "hätte",
+                )
             )
-        ) and any(
-            w in text for w in (
-                "spielen", "zocken", "grinden", "gamen", "runde", "runden",
-                "game", "games", "match", "matches", "anfänger", "anfanger",
-                "neuling", "neu",
+            and any(
+                w in text
+                for w in (
+                    "spielen",
+                    "zocken",
+                    "grinden",
+                    "gamen",
+                    "runde",
+                    "runden",
+                    "game",
+                    "games",
+                    "match",
+                    "matches",
+                    "anfänger",
+                    "anfanger",
+                    "neuling",
+                    "neu",
+                )
             )
         ):
             return True
@@ -387,10 +452,7 @@ class PlayerFinder(commands.Cog):
         """Prüft ob typical_hours die aktuelle Stunde enthält (±2h oder wrap)."""
         if not typical_hours:
             return True  # Keine Daten = keine Einschränkung
-        return any(
-            abs(current_hour - h) <= 2 or abs(current_hour - h) >= 22
-            for h in typical_hours
-        )
+        return any(abs(current_hour - h) <= 2 or abs(current_hour - h) >= 22 for h in typical_hours)
 
     def _passes_day_filter(self, typical_days: list[int], current_day: int) -> bool:
         """Prüft ob typical_days den aktuellen Wochentag enthält."""
@@ -512,7 +574,7 @@ class PlayerFinder(commands.Cog):
             if steam:
                 stage, minutes = steam
                 if stage == "lobby":
-                    status = f"🟢 In der Deadlock-Lobby"
+                    status = "🟢 In der Deadlock-Lobby"
                 elif stage == "match":
                     suffix = f" (~{minutes}min)" if minutes else ""
                     status = f"🎮 Im Match{suffix}"
@@ -623,9 +685,7 @@ class PlayerFinder(commands.Cog):
             inline=False,
         )
 
-        embed.set_footer(
-            text="Basierend auf Aktivität und Steam-Status"
-        )
+        embed.set_footer(text="Basierend auf Aktivität und Steam-Status")
 
         return embed
 
@@ -681,10 +741,16 @@ class PlayerFinder(commands.Cog):
 
             lane_label = self._get_lane_label(cat_id)
             candidates = await self._get_candidates_for_lane(
-                guild, members, cat_id, steam_presence, self._steam_friend_cache,
+                guild,
+                members,
+                cat_id,
+                steam_presence,
+                self._steam_friend_cache,
             )
 
-            embed = self._build_embed(guild, target_channel.name, lane_label, members, candidates, target_channel.id)
+            embed = self._build_embed(
+                guild, target_channel.name, lane_label, members, candidates, target_channel.id
+            )
             await output_channel.send(embed=embed)
             return
 

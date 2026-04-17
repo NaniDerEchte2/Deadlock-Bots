@@ -1,6 +1,7 @@
 """
 Coaching Panel - Ein großes Formular fuer Coaching-Anfragen.
 """
+
 import asyncio
 import logging
 import time
@@ -228,9 +229,13 @@ class CoachingPanelCog(commands.Cog):
                 self._panel_message_id = message.id
                 return
             except discord.NotFound:
-                log.info("Stored coaching panel message %s not found, recreating", stored_message_id)
+                log.info(
+                    "Stored coaching panel message %s not found, recreating", stored_message_id
+                )
             except discord.Forbidden:
-                log.warning("Missing permission to fetch/edit coaching panel message %s", stored_message_id)
+                log.warning(
+                    "Missing permission to fetch/edit coaching panel message %s", stored_message_id
+                )
                 return
 
         message = await channel.send(embed=panel_embed, view=panel_view)
@@ -330,7 +335,10 @@ class CoachingPanelCog(commands.Cog):
         if cog and row:
             asyncio.create_task(cog._trigger_analysis_for_user(interaction.user.id))
         else:
-            log.error("CoachingRequestCog is not loaded; request %s cannot be analyzed automatically", row["id"] if row else "unknown")
+            log.error(
+                "CoachingRequestCog is not loaded; request %s cannot be analyzed automatically",
+                row["id"] if row else "unknown",
+            )
 
     @app_commands.command(name="coaching-anfrage", description="Stelle eine Coaching-Anfrage")
     async def coaching_anfrage(self, interaction: discord.Interaction) -> None:
