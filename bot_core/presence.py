@@ -68,6 +68,13 @@ class PresenceMixin:
         handler_info = []
         for cog_name, cog in self.cogs.items():
             if hasattr(cog, "on_voice_state_update"):
+                listener_pairs = getattr(type(cog), "__cog_listeners__", [])
+                if any(
+                    event_name == "on_voice_state_update"
+                    and method_name == "on_voice_state_update"
+                    for event_name, method_name in listener_pairs
+                ):
+                    continue
                 handler = cog.on_voice_state_update
                 if callable(handler):
                     handler_info.append((cog_name, handler))
