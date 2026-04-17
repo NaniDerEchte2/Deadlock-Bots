@@ -869,32 +869,6 @@ class DeadlockVoiceStatus(commands.Cog):
 
         effective_cooldown = RENAME_COOLDOWN_SECONDS
         if stage_label == "match" and minutes_value is not None:
-            if minutes_value >= 45:
-                # Update current state but don't rename if already frozen over 45
-                state.update(
-                    {
-                        "base": base_clean,
-                        "stage": stage_label,
-                        "bucket": bucket_label,
-                        "suffix": desired_suffix,
-                        "players": player_count,
-                        "voice_slots": voice_slots,
-                        "server_id": server_identifier,
-                        "previous_member_count": player_count,  # Store current member count
-                    }
-                )
-                rename_info.update(
-                    {
-                        "should_rename": False,
-                        "elapsed_since_last": elapsed,
-                        "cooldown_remaining": None,
-                        "effective_cooldown": None,
-                        "result": "frozen_over_45",
-                    }
-                )
-                trace_data["rename"] = rename_info
-                self._store_trace(channel.id, trace_data)
-                return
             if minutes_value >= 25:
                 effective_cooldown = max(RENAME_COOLDOWN_SECONDS, 600)
 
