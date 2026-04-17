@@ -156,7 +156,9 @@ def plan_managed_lanes(
         if snapshot.member_count >= EXPAND_THRESHOLD:
             highest_full_index = max(highest_full_index, desired_index)
 
-    desired_total = max(1, highest_occupied_index, highest_full_index + 1 if highest_full_index else 1)
+    desired_total = max(
+        1, highest_occupied_index, highest_full_index + 1 if highest_full_index else 1
+    )
     extras_to_keep = max(0, desired_total - 1)
 
     kept_existing = occupied + empty[: max(0, extras_to_keep - len(occupied))]
@@ -164,7 +166,9 @@ def plan_managed_lanes(
         (snapshot.channel_id, desired_index)
         for desired_index, snapshot in enumerate(kept_existing, start=2)
     )
-    delete_ids = tuple(snapshot.channel_id for snapshot in empty[max(0, extras_to_keep - len(occupied)) :])
+    delete_ids = tuple(
+        snapshot.channel_id for snapshot in empty[max(0, extras_to_keep - len(occupied)) :]
+    )
     create_indices = tuple(range(len(kept_existing) + 2, desired_total + 1))
 
     return ManagedLanePlan(
@@ -219,7 +223,10 @@ class NewPlayerAdaptiveLanes(commands.Cog):
         for channel in category.voice_channels:
             if len(channel.members) >= EXPAND_THRESHOLD:
                 continue
-            if channel.id == ANCHOR_CHANNEL_ID or parse_lane_index(channel.id, channel.name) is not None:
+            if (
+                channel.id == ANCHOR_CHANNEL_ID
+                or parse_lane_index(channel.id, channel.name) is not None
+            ):
                 candidates.append(channel)
 
         if not candidates:
@@ -354,7 +361,9 @@ class NewPlayerAdaptiveLanes(commands.Cog):
 
         anchor = guild.get_channel(ANCHOR_CHANNEL_ID)
         if not isinstance(anchor, discord.VoiceChannel):
-            log.warning("new player lane anchor %s not found in guild %s", ANCHOR_CHANNEL_ID, guild.id)
+            log.warning(
+                "new player lane anchor %s not found in guild %s", ANCHOR_CHANNEL_ID, guild.id
+            )
             return
         if anchor.category_id != TARGET_CATEGORY_ID:
             log.warning(
@@ -373,7 +382,9 @@ class NewPlayerAdaptiveLanes(commands.Cog):
         async with lock:
             if anchor.name != LANE_BASE_NAME:
                 try:
-                    await anchor.edit(name=LANE_BASE_NAME, reason="Neue Spieler Lane: Basisname korrigieren")
+                    await anchor.edit(
+                        name=LANE_BASE_NAME, reason="Neue Spieler Lane: Basisname korrigieren"
+                    )
                 except discord.HTTPException as exc:
                     log.debug("anchor rename failed for %s: %r", anchor.id, exc)
 
@@ -509,7 +520,9 @@ class NewPlayerAdaptiveLanes(commands.Cog):
             and (time.time() - self._routed_at[int(member.id)]) > RETURN_TO_STAGING_WINDOW_SECONDS
         ):
             self._routed_at.pop(int(member.id), None)
-        if self._is_relevant_voice_channel(before_channel) or self._is_relevant_voice_channel(after_channel):
+        if self._is_relevant_voice_channel(before_channel) or self._is_relevant_voice_channel(
+            after_channel
+        ):
             self.schedule_sync(member.guild.id)
 
     @commands.Cog.listener()

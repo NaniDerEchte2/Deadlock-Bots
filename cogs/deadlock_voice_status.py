@@ -16,12 +16,12 @@ from discord.ext import commands
 
 from service import db
 from service.config import settings
-from service.guild_config import get_guild_config
 from service.deadlock_voice_cohort import (
     evaluate_deadlock_presence_row,
     select_best_deadlock_presence,
     select_deadlock_channel_cohort,
 )
+from service.guild_config import get_guild_config
 
 log = logging.getLogger("DeadlockVoiceStatus")
 trace_log = logging.getLogger("DeadlockVoiceStatus.trace")
@@ -49,6 +49,7 @@ _SUFFIX_REGEX = re.compile(
     r"\s*-\s*(?:in der Lobby(?:\s*\(\d+/\d+\))?|im Match Min (?:\d+|\d+\+)\s*\(\d+/\d+\))$",
     re.IGNORECASE,
 )
+
 
 class DeadlockVoiceStatus(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
@@ -622,7 +623,9 @@ class DeadlockVoiceStatus(commands.Cog):
         candidate_stage = str(candidate["stage"]) if candidate else None
         candidate_minutes = list(candidate["minute_values"]) if candidate else []
         candidate_count = int(candidate["member_count"]) if candidate else 0
-        chosen_server_id = str(candidate["server_id"]) if candidate and candidate["server_id"] else None
+        chosen_server_id = (
+            str(candidate["server_id"]) if candidate and candidate["server_id"] else None
+        )
 
         if not candidate_stage or candidate_count < MIN_ACTIVE_PLAYERS:
             trace_payload["decision"] = {
@@ -773,7 +776,7 @@ class DeadlockVoiceStatus(commands.Cog):
             localized = self._safe_row_value(row, "deadlock_localized")
             if not localized:
                 continue
-            m = re.search(r'\((\d+)/(\d+)\)', str(localized))
+            m = re.search(r"\((\d+)/(\d+)\)", str(localized))
             if m:
                 total = int(m.group(2))
                 if max_total is None or total > max_total:

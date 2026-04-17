@@ -3,6 +3,7 @@ Coaching Role Manager - Automatische Rollen-Verwaltung
 - Entfernt die Coaching-Rolle nach Ablauf der Request-Frist.
 - Reminder sind bewusst deaktiviert.
 """
+
 import asyncio
 import logging
 import time
@@ -51,7 +52,7 @@ class CoachingRoleManagerCog(commands.Cog):
                WHERE role_removed_at IS NULL
                AND role_expires_at IS NOT NULL
                AND role_expires_at < ?""",
-            (now,)
+            (now,),
         )
 
         for request in rows:

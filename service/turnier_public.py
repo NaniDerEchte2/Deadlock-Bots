@@ -35,7 +35,9 @@ TURNIER_PUBLIC_PORT = int(os.getenv("TURNIER_PUBLIC_PORT", "8767"))
 TURNIER_PUBLIC_HOST = os.getenv("TURNIER_PUBLIC_HOST", "127.0.0.1")
 TURNIER_PUBLIC_GUILD_ID = int(os.getenv("TURNIER_PUBLIC_GUILD_ID", "0"))
 
-STEAM_LINK_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or "https://deutsche-deadlock-community.de/link").rstrip("/")
+STEAM_LINK_BASE_URL = (
+    os.getenv("PUBLIC_BASE_URL") or "https://deutsche-deadlock-community.de/link"
+).rstrip("/")
 
 SESSION_COOKIE = "turnier_pub_session"
 SESSION_TTL = 6 * 3600  # 6 hours

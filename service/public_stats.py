@@ -12,10 +12,8 @@ import asyncio
 import json
 import logging
 import os
-import re
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
 
 from aiohttp import web
 
@@ -220,7 +218,9 @@ async def handle_activity_heatmap(request: web.Request) -> web.Response:
                 count = len(heatmap[rank][day][hour])
                 result[rank].append({"day": day, "hour": hour, "count": count})
 
-    return web.json_response({"heatmap": result, "rank_order": RANK_ORDER, "generated_at": now.isoformat()})
+    return web.json_response(
+        {"heatmap": result, "rank_order": RANK_ORDER, "generated_at": now.isoformat()}
+    )
 
 
 async def handle_rank_distribution(request: web.Request) -> web.Response:
@@ -270,12 +270,14 @@ async def handle_rank_distribution(request: web.Request) -> web.Response:
 
     weekly.reverse()  # oldest first
 
-    return web.json_response({
-        "distribution": rank_counts,
-        "rank_order": RANK_ORDER,
-        "weekly_trend": weekly,
-        "generated_at": now.isoformat(),
-    })
+    return web.json_response(
+        {
+            "distribution": rank_counts,
+            "rank_order": RANK_ORDER,
+            "weekly_trend": weekly,
+            "generated_at": now.isoformat(),
+        }
+    )
 
 
 async def handle_lane_preferences(request: web.Request) -> web.Response:
@@ -285,7 +287,14 @@ async def handle_lane_preferences(request: web.Request) -> web.Response:
 
     lane_rank_data: dict[str, dict[str, int]] = {}
     for rank in RANK_ORDER:
-        lane_rank_data[rank] = {"mid": 0, "off": 0, "safe": 0, "jungle": 0, "new_player": 0, "unknown": 0}
+        lane_rank_data[rank] = {
+            "mid": 0,
+            "off": 0,
+            "safe": 0,
+            "jungle": 0,
+            "new_player": 0,
+            "unknown": 0,
+        }
 
     rows = db.query_all(
         """
@@ -297,7 +306,12 @@ async def handle_lane_preferences(request: web.Request) -> web.Response:
     )
 
     seen_users_per_lane: dict[str, set[int]] = {
-        "mid": set(), "off": set(), "safe": set(), "jungle": set(), "new_player": set(), "unknown": set()
+        "mid": set(),
+        "off": set(),
+        "safe": set(),
+        "jungle": set(),
+        "new_player": set(),
+        "unknown": set(),
     }
 
     for row in rows:
@@ -313,7 +327,9 @@ async def handle_lane_preferences(request: web.Request) -> web.Response:
             # heuristic
             try:
                 co_ids = json.loads(row["co_player_ids"] or "[]")
-                rank = _estimate_rank_from_co_players(user_id, co_ids if isinstance(co_ids, list) else [])
+                rank = _estimate_rank_from_co_players(
+                    user_id, co_ids if isinstance(co_ids, list) else []
+                )
             except Exception:
                 rank = None
 
@@ -321,12 +337,14 @@ async def handle_lane_preferences(request: web.Request) -> web.Response:
             lane_rank_data[rank][lane] += 1
             seen_users_per_lane[lane].add(user_id)
 
-    return web.json_response({
-        "preferences": lane_rank_data,
-        "rank_order": RANK_ORDER,
-        "lanes": ["mid", "off", "safe", "jungle", "new_player", "unknown"],
-        "generated_at": now.isoformat(),
-    })
+    return web.json_response(
+        {
+            "preferences": lane_rank_data,
+            "rank_order": RANK_ORDER,
+            "lanes": ["mid", "off", "safe", "jungle", "new_player", "unknown"],
+            "generated_at": now.isoformat(),
+        }
+    )
 
 
 async def handle_new_player_windows(request: web.Request) -> web.Response:
@@ -336,7 +354,9 @@ async def handle_new_player_windows(request: web.Request) -> web.Response:
 
     # New player lanes detection (channel names with "new", "neue", "🆕")
     hour_new_player_count: dict[int, list[int]] = {h: [] for h in range(24)}
-    day_hour_counts: dict[int, dict[int, list[int]]] = {d: {h: [] for h in range(24)} for d in range(7)}
+    day_hour_counts: dict[int, dict[int, list[int]]] = {
+        d: {h: [] for h in range(24)} for d in range(7)
+    }
 
     rows = db.query_all(
         """
@@ -370,12 +390,16 @@ async def handle_new_player_windows(request: web.Request) -> web.Response:
         peak_days.append({"day": day, "count": total})
     peak_days.sort(key=lambda x: x["count"], reverse=True)
 
-    return web.json_response({
-        "peak_hours": peak_hours,
-        "peak_days": peak_days[:3],
-        "day_hour_matrix": {str(d): {str(h): len(day_hour_counts[d][h]) for h in range(24)} for d in range(7)},
-        "generated_at": now.isoformat(),
-    })
+    return web.json_response(
+        {
+            "peak_hours": peak_hours,
+            "peak_days": peak_days[:3],
+            "day_hour_matrix": {
+                str(d): {str(h): len(day_hour_counts[d][h]) for h in range(24)} for d in range(7)
+            },
+            "generated_at": now.isoformat(),
+        }
+    )
 
 
 async def handle_timeline(request: web.Request) -> web.Response:
@@ -411,7 +435,9 @@ async def handle_timeline(request: web.Request) -> web.Response:
         if not rank:
             try:
                 co_ids = json.loads(row["co_player_ids"] or "[]")
-                rank = _estimate_rank_from_co_players(row["user_id"], co_ids if isinstance(co_ids, list) else [])
+                rank = _estimate_rank_from_co_players(
+                    row["user_id"], co_ids if isinstance(co_ids, list) else []
+                )
             except Exception:
                 rank = None
         if rank and rank in hourly[hour]:
@@ -433,18 +459,30 @@ async def handle_timeline(request: web.Request) -> web.Response:
     peak_times = {}
     for rank in RANK_ORDER:
         if metric == "hours":
-            peaks = sorted(enumerate(hourly_hours[h][rank] for h in range(24)), key=lambda x: x[1], reverse=True)
+            peaks = sorted(
+                enumerate(hourly_hours[h][rank] for h in range(24)),
+                key=lambda x: x[1],
+                reverse=True,
+            )
         else:
-            peaks = sorted(enumerate(hourly[h][rank] for h in range(24)), key=lambda x: x[1], reverse=True)
-        peak_times[rank] = [{"hour": h, "count": round(c, 2) if metric == "hours" else c} for h, c in peaks[:3] if c > 0]
+            peaks = sorted(
+                enumerate(hourly[h][rank] for h in range(24)), key=lambda x: x[1], reverse=True
+            )
+        peak_times[rank] = [
+            {"hour": h, "count": round(c, 2) if metric == "hours" else c}
+            for h, c in peaks[:3]
+            if c > 0
+        ]
 
-    return web.json_response({
-        "timeline": timeline,
-        "peak_times": peak_times,
-        "rank_order": RANK_ORDER,
-        "metric": metric,
-        "generated_at": now.isoformat(),
-    })
+    return web.json_response(
+        {
+            "timeline": timeline,
+            "peak_times": peak_times,
+            "rank_order": RANK_ORDER,
+            "metric": metric,
+            "generated_at": now.isoformat(),
+        }
+    )
 
 
 async def handle_voice_history(request: web.Request) -> web.Response:
@@ -497,7 +535,11 @@ async def handle_voice_history(request: web.Request) -> web.Response:
             """,
             (cutoff,),
         )
-        summary = summary_rows[0] if summary_rows else {"total_sessions": 0, "total_seconds": 0, "total_users": 0}
+        summary = (
+            summary_rows[0]
+            if summary_rows
+            else {"total_sessions": 0, "total_seconds": 0, "total_users": 0}
+        )
 
         # Hourly/weekly breakdown
         hourly_rows = db.query_all(
@@ -535,42 +577,50 @@ async def handle_voice_history(request: web.Request) -> web.Response:
     for row in hourly_rows:
         total_s = int(row["total_seconds"] or 0)
         sessions = int(row["sessions"] or 0)
-        hourly_data.append({
-            "bucket": row["bucket"],
-            "total_seconds": total_s,
-            "sessions": sessions,
-            "avg_session_minutes": round(total_s / sessions / 60, 1) if sessions > 0 else 0,
-        })
+        hourly_data.append(
+            {
+                "bucket": row["bucket"],
+                "total_seconds": total_s,
+                "sessions": sessions,
+                "avg_session_minutes": round(total_s / sessions / 60, 1) if sessions > 0 else 0,
+            }
+        )
 
     # Format daily data
     daily_data = []
     for row in daily_rows:
         total_s = int(row["total_seconds"] or 0)
         sessions = int(row["sessions"] or 0)
-        daily_data.append({
-            "day": row["day"],
-            "total_seconds": total_s,
-            "sessions": sessions,
-            "unique_users": int(row["unique_users"] or 0),
-        })
+        daily_data.append(
+            {
+                "day": row["day"],
+                "total_seconds": total_s,
+                "sessions": sessions,
+                "unique_users": int(row["unique_users"] or 0),
+            }
+        )
 
     total_s = int(summary["total_seconds"] or 0)
     total_sessions = int(summary["total_sessions"] or 0)
     total_users = int(summary["total_users"] or 0)
 
-    return web.json_response({
-        "summary": {
-            "total_sessions": total_sessions,
-            "total_seconds": total_s,
-            "total_users": total_users,
-            "avg_session_minutes": round(total_s / total_sessions / 60, 1) if total_sessions > 0 else 0,
-            "days": days,
-        },
-        "daily": daily_data,
-        "hourly": hourly_data,
-        "mode": mode,
-        "generated_at": now.isoformat(),
-    })
+    return web.json_response(
+        {
+            "summary": {
+                "total_sessions": total_sessions,
+                "total_seconds": total_s,
+                "total_users": total_users,
+                "avg_session_minutes": round(total_s / total_sessions / 60, 1)
+                if total_sessions > 0
+                else 0,
+                "days": days,
+            },
+            "daily": daily_data,
+            "hourly": hourly_data,
+            "mode": mode,
+            "generated_at": now.isoformat(),
+        }
+    )
 
 
 async def handle_health(request: web.Request) -> web.Response:
@@ -608,7 +658,9 @@ async def handle_best_times(request: web.Request) -> web.Response:
 
     # Build hourly counts for this rank
     hourly_counts: dict[int, int] = {h: 0 for h in range(24)}
-    day_hour_counts: dict[int, dict[int, list[int]]] = {d: {h: [] for h in range(24)} for d in range(7)}
+    day_hour_counts: dict[int, dict[int, list[int]]] = {
+        d: {h: [] for h in range(24)} for d in range(7)
+    }
 
     for row in rows:
         try:
@@ -622,7 +674,9 @@ async def handle_best_times(request: web.Request) -> web.Response:
         if not user_rank:
             try:
                 co_ids = json.loads(row["co_player_ids"] or "[]")
-                user_rank = _estimate_rank_from_co_players(row["user_id"], co_ids if isinstance(co_ids, list) else [])
+                user_rank = _estimate_rank_from_co_players(
+                    row["user_id"], co_ids if isinstance(co_ids, list) else []
+                )
             except Exception:
                 user_rank = None
 
@@ -640,12 +694,14 @@ async def handle_best_times(request: web.Request) -> web.Response:
         total = sum(len(day_hour_counts[d][h]) for h in range(24))
         day_distribution.append({"day": d, "count": total})
 
-    return web.json_response({
-        "rank": rank,
-        "peak_hours": peak_hours,
-        "day_distribution": day_distribution,
-        "generated_at": now.isoformat(),
-    })
+    return web.json_response(
+        {
+            "rank": rank,
+            "peak_hours": peak_hours,
+            "day_distribution": day_distribution,
+            "generated_at": now.isoformat(),
+        }
+    )
 
 
 # ── Server class ──────────────────────────────────────────────────────────────
@@ -671,6 +727,7 @@ class PublicStatsServer:
 
         # Serve rank icons
         from pathlib import Path
+
         icons_path = Path(__file__).resolve().parent / "static" / "rank_icons"
         if icons_path.is_dir():
             self.app.router.add_static("/rank_icons/", icons_path)
@@ -683,7 +740,9 @@ class PublicStatsServer:
             resp = ex
         except Exception:
             log.exception("Unhandled error in public stats server")
-            resp = web.Response(text='{"error":"internal"}', content_type="application/json", status=500)
+            resp = web.Response(
+                text='{"error":"internal"}', content_type="application/json", status=500
+            )
 
         if isinstance(resp, web.Response):
             resp.headers["Cache-Control"] = "public, max-age=60"
@@ -704,6 +763,7 @@ class PublicStatsServer:
                 return
             except OSError as e:
                 import errno
+
                 is_in_use = e.errno == errno.EADDRINUSE
                 if is_in_use and attempt < max_retries - 1:
                     await asyncio.sleep(retry_delay)

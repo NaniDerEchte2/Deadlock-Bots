@@ -63,7 +63,7 @@ class CogLoaderMixin:
                 "Ignoring TWITCH_SPLIT_RUNTIME_ROLE=%s because TWITCH_SPLIT_RUNTIME_ENFORCE is not enabled.",
                 runtime_role,
             )
-            setattr(self, "_split_runtime_role_ignored_warned", True)
+            self._split_runtime_role_ignored_warned = True
         return ""
 
     def _excluded_namespaces_from_env(self) -> set[str]:

@@ -72,8 +72,7 @@ def _resolve_repo_path() -> Path:
             return candidate
     searched = ", ".join(str(path) for path in _candidate_repo_paths()) or "<none>"
     raise TwitchPartnerIntegrationUnavailable(
-        "Deadlock-Twitch-Bot wurde nicht gefunden. "
-        f"Gepruefte Pfade: {searched}"
+        f"Deadlock-Twitch-Bot wurde nicht gefunden. Gepruefte Pfade: {searched}"
     )
 
 
@@ -216,4 +215,3 @@ __all__ = [
     "generate_discord_auth_url",
     "get_auth_state",
 ]
-

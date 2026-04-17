@@ -153,11 +153,14 @@ async def _create_session(
 ) -> None:
     expires_at = datetime.utcnow() + timedelta(hours=SESSION_TIMEOUT_HOURS)
     async with service_db.transaction() as tx:
-        tx.execute("""
+        tx.execute(
+            """
             INSERT OR REPLACE INTO faq_chat_sessions
             (session_id, user_id, user_name, channel_id, guild_id, expires_at, status)
             VALUES (?, ?, ?, ?, ?, ?, 'active')
-        """, (session_id, user_id, user_name, channel_id, guild_id, expires_at.isoformat()))
+        """,
+            (session_id, user_id, user_name, channel_id, guild_id, expires_at.isoformat()),
+        )
 
 
 async def _add_message(session_id: str, role: str, content: str) -> None:
@@ -409,7 +412,9 @@ class FAQChat(commands.Cog):
         guild = interaction.guild
 
         if not guild:
-            await interaction.followup.send("❌ Das funktioniert nur auf dem Server.", ephemeral=True)
+            await interaction.followup.send(
+                "❌ Das funktioniert nur auf dem Server.", ephemeral=True
+            )
             return
 
         # Check auf bestehenden Chat
@@ -432,7 +437,9 @@ class FAQChat(commands.Cog):
             session_id, channel = await self._create_faq_channel(guild, user)
         except Exception as exc:
             log.exception("FAQ: channel creation failed: %s", exc)
-            await interaction.followup.send(f"❌ Konnte keinen Chat erstellen: {exc}", ephemeral=True)
+            await interaction.followup.send(
+                f"❌ Konnte keinen Chat erstellen: {exc}", ephemeral=True
+            )
             return
 
         view = FAQChatView(self, session_id)
@@ -555,6 +562,7 @@ class FAQChat(commands.Cog):
         patchnote_context = ""
         try:
             from service import changelogs
+
             patchnote_context = changelogs.get_context_for_question(new_question)
         except Exception:
             pass
@@ -566,7 +574,8 @@ class FAQChat(commands.Cog):
             context_parts.append(f"Bisherige Konversation:\n{conversation_context}")
 
         full_prompt = (
-            "Dokumentation:\n" + "\n\n---\n\n".join(context_parts)
+            "Dokumentation:\n"
+            + "\n\n---\n\n".join(context_parts)
             + f"\n\nNeue Frage:\n{new_question.strip()}"
         )
 

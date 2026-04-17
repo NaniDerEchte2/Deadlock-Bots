@@ -18,9 +18,8 @@ class PresenceMixin:
     """Presence, Ready-Tasks und Voice-Routing."""
 
     _steam_bridge_internal_self_heal_enabled: bool = (
-        (os.getenv("STEAM_BRIDGE_INTERNAL_SELF_HEAL") or "").strip().lower()
-        in {"1", "true", "yes", "y", "on"}
-    )
+        os.getenv("STEAM_BRIDGE_INTERNAL_SELF_HEAL") or ""
+    ).strip().lower() in {"1", "true", "yes", "y", "on"}
 
     def active_cogs(self) -> list[str]:
         """Aktuell geladene Extensions (runtime), nur 'cogs.'-Namespace."""
@@ -368,7 +367,9 @@ class PresenceMixin:
             await self.standalone_manager.restart("steam")
             logging.info("Steam Bridge Neustart durch Self-Heal ausgelöst: %s", reason)
             if channel:
-                await channel.send("🔄 Steam Bridge Neustart wurde gestartet. Login und Session werden komplett neu aufgebaut.")
+                await channel.send(
+                    "🔄 Steam Bridge Neustart wurde gestartet. Login und Session werden komplett neu aufgebaut."
+                )
         except Exception as exc:
             logging.error("Steam Bridge Neustart fehlgeschlagen: %s", exc)
             if channel:

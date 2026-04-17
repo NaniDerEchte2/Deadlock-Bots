@@ -58,9 +58,9 @@ WEIGHT_PRESENCE = 30  # stärkstes Signal: echter Online-Status
 WEIGHT_ACTIVITY = 15
 
 # Lane Routing Toleranzen
-LANE_RANK_TOLERANCE_RANKED = 2.0    # Ranked: ±2 Ränge
-LANE_RANK_TOLERANCE_CASUAL = 3.0    # Casual: ±3 Ränge (war 4.0 - verhindert Initiate→Phantom)
-COPLAYER_IN_LANE_BONUS = 40.0       # Score-Bonus wenn Co-Player in Lane
+LANE_RANK_TOLERANCE_RANKED = 2.0  # Ranked: ±2 Ränge
+LANE_RANK_TOLERANCE_CASUAL = 3.0  # Casual: ±3 Ränge (war 4.0 - verhindert Initiate→Phantom)
+COPLAYER_IN_LANE_BONUS = 40.0  # Score-Bonus wenn Co-Player in Lane
 COPLAYER_IN_LANE_SESSIONS_THRESHOLD = 2
 ACTIVITY_UPCOMING_WINDOW_HOURS = 2
 ACTIVITY_UPCOMING_MIN_SCORE = 4
@@ -156,6 +156,7 @@ MESSAGE_RANK_ALIASES = {
 @dataclass
 class LaneInfo:
     """Gescannte Lane mit allen relevanten Daten."""
+
     channel: discord.VoiceChannel
     category_id: int
     label: str  # "Casual" / "Ranked" / "Street Brawl" / "New Player"
@@ -174,6 +175,7 @@ class LaneInfo:
 @dataclass
 class LaneRoutingResult:
     """Routing-Entscheidung mit vollständigem Decision Log."""
+
     best_join_lane: LaneInfo | None = None
     co_player_lanes: list[LaneInfo] = field(default_factory=list)
     suggested_category_id: int = 0
@@ -185,11 +187,14 @@ class LaneRoutingResult:
 @dataclass
 class UserActivityProfile:
     """Aktivitätsprofil eines Users."""
+
     typical_hours: list[int] = field(default_factory=list)
     typical_days: list[int] = field(default_factory=list)
     sessions_count_2w: int = 0
     activity_score: int = 0
-    top_co_players: list[tuple[int, int, int]] = field(default_factory=list)  # (co_id, sessions, minutes)
+    top_co_players: list[tuple[int, int, int]] = field(
+        default_factory=list
+    )  # (co_id, sessions, minutes)
     is_likely_active_now: bool = False
     is_likely_active_soon: bool = False
 
@@ -383,9 +388,7 @@ class SmartLFGAgent(commands.Cog):
 
     # --- Routing Engine (Phase 3) ---
 
-    def _detect_intent(
-        self, content_lower: str, rank_value: int
-    ) -> tuple[bool, bool]:
+    def _detect_intent(self, content_lower: str, rank_value: int) -> tuple[bool, bool]:
         """Erkennt Intent aus Keywords. Returns (ranked_intent, street_brawl_intent)."""
         ranked_keywords = ("ranked", "grind", "comp", "competitive", "tryhard")
         sb_keywords = ("street brawl", "streetbrawl", "brawl")
@@ -424,9 +427,7 @@ class SmartLFGAgent(commands.Cog):
             intent_label = "Ranked"
         else:
             intent_label = "Casual"
-        log_lines.append(
-            f"Intent: {intent_label} (Rang: {rank_name}{sub_str}, Val: {rank_value})"
-        )
+        log_lines.append(f"Intent: {intent_label} (Rang: {rank_name}{sub_str}, Val: {rank_value})")
 
         # Schritt 2: Scan Summary
         active_lanes = [lane for lane in lanes if lane.member_count > 0]
@@ -445,30 +446,38 @@ class SmartLFGAgent(commands.Cog):
             eligible = [lane for lane in lanes if lane.label == "Street Brawl" and lane.has_space]
         elif ranked_intent:
             eligible = [
-                lane for lane in lanes
-                if lane.label == "Ranked" and lane.has_space
+                lane
+                for lane in lanes
+                if lane.label == "Ranked"
+                and lane.has_space
                 and self._rank_fits_lane(rank_value, rank_sub, lane)
             ]
         else:
             # Neue Spieler (Initiate-Arcanist): primär New Player Lanes
             if rank_value > 0 and rank_value <= NEW_PLAYER_MAX_RANK:
                 eligible = [
-                    lane for lane in lanes
-                    if lane.label == "New Player" and lane.has_space
+                    lane
+                    for lane in lanes
+                    if lane.label == "New Player"
+                    and lane.has_space
                     and self._rank_fits_lane(rank_value, rank_sub, lane)
                 ]
                 # Fallback auf Casual nur wenn keine New Player Lane verfügbar
                 if not eligible:
                     eligible = [
-                        lane for lane in lanes
-                        if lane.label in ("Casual", "New Player") and lane.has_space
+                        lane
+                        for lane in lanes
+                        if lane.label in ("Casual", "New Player")
+                        and lane.has_space
                         and self._rank_fits_lane(rank_value, rank_sub, lane)
                     ]
             else:
                 # Casual + New Player (wenn Low Elo)
                 eligible = [
-                    lane for lane in lanes
-                    if lane.label in ("Casual", "New Player") and lane.has_space
+                    lane
+                    for lane in lanes
+                    if lane.label in ("Casual", "New Player")
+                    and lane.has_space
                     and self._rank_fits_lane(rank_value, rank_sub, lane)
                 ]
         log_lines.append(f"Rank-Filter: {len(eligible)} Lanes passen")
@@ -481,9 +490,7 @@ class SmartLFGAgent(commands.Cog):
                 for co_id in cl.co_player_ids_present:
                     m = guild.get_member(co_id)
                     co_names.append(m.display_name if m else str(co_id))
-                log_lines.append(
-                    f"Co-Player: {', '.join(co_names)} in '{cl.channel.name}'"
-                )
+                log_lines.append(f"Co-Player: {', '.join(co_names)} in '{cl.channel.name}'")
             result.co_player_lanes = co_player_lanes
 
         # Schritt 5: Entscheidung — Beste Lane auswählen
@@ -512,9 +519,7 @@ class SmartLFGAgent(commands.Cog):
             else:
                 best = eligible[0]
                 result.mode = "create_new"
-                log_lines.append(
-                    f"Entscheidung: create_new → {best.channel.name} (leer)"
-                )
+                log_lines.append(f"Entscheidung: create_new → {best.channel.name} (leer)")
         else:
             result.mode = "create_new"
             # Fallback: empfehle passende Kategorie
@@ -556,23 +561,25 @@ class SmartLFGAgent(commands.Cog):
         )
 
         # Rang-Kontext + Spielwunsch, auch bei lockerer Schreibweise wie "hääte bock auf ründchen".
-        if any(token in text for token in rank_tokens) and (
-            "bock" in text or "lust" in text
-        ) and any(
-            token in text
-            for token in (
-                "runde",
-                "runden",
-                "ründchen",
-                "rundchen",
-                "game",
-                "games",
-                "match",
-                "matches",
-                "spielen",
-                "zocken",
-                "grinden",
-                "gamen",
+        if (
+            any(token in text for token in rank_tokens)
+            and ("bock" in text or "lust" in text)
+            and any(
+                token in text
+                for token in (
+                    "runde",
+                    "runden",
+                    "ründchen",
+                    "rundchen",
+                    "game",
+                    "games",
+                    "match",
+                    "matches",
+                    "spielen",
+                    "zocken",
+                    "grinden",
+                    "gamen",
+                )
             )
         ):
             return True
@@ -594,9 +601,17 @@ class SmartLFGAgent(commands.Cog):
         # "jemand bock", "jmd bock", "wer bock", "hat wer bock", "iwer bock",
         # "irgendwer bock", "noch bock", "hätte bock"
         if "bock" in text and any(
-            w in text for w in (
-                "jemand", "jmd", "wer", "iwer", "irgendwer", "noch",
-                "hat", "hätte", "hättest",
+            w in text
+            for w in (
+                "jemand",
+                "jmd",
+                "wer",
+                "iwer",
+                "irgendwer",
+                "noch",
+                "hat",
+                "hätte",
+                "hättest",
             )
         ):
             return True
@@ -604,8 +619,15 @@ class SmartLFGAgent(commands.Cog):
         # --- "lust" Patterns (10+ Treffer) ---
         # "jemand lust", "jmd lust", "wer lust", "iwer lust", "irgendwer lust"
         if "lust" in text and any(
-            w in text for w in (
-                "jemand", "jmd", "wer", "iwer", "irgendwer", "hat", "noch",
+            w in text
+            for w in (
+                "jemand",
+                "jmd",
+                "wer",
+                "iwer",
+                "irgendwer",
+                "hat",
+                "noch",
             )
         ):
             return True
@@ -617,10 +639,24 @@ class SmartLFGAgent(commands.Cog):
             # Kurzform mit Slot-Angabe wie "suchen +3"
             if PLUS_PLAYER_RE.search(text):
                 return True
-            if any(w in text for w in (
-                "leute", "spieler", "mitspieler", "team", "gruppe", "party",
-                "wen", "anschluss", "jemand", "noch", "nach", "mates", "mate",
-            )):
+            if any(
+                w in text
+                for w in (
+                    "leute",
+                    "spieler",
+                    "mitspieler",
+                    "team",
+                    "gruppe",
+                    "party",
+                    "wen",
+                    "anschluss",
+                    "jemand",
+                    "noch",
+                    "nach",
+                    "mates",
+                    "mate",
+                )
+            ):
                 return True
 
         # "sucht noch jemand"
@@ -629,8 +665,12 @@ class SmartLFGAgent(commands.Cog):
 
         # --- Spielen/Zocken + Frage-Kontext ---
         if ("spielen" in text or "zocken" in text or "grinden" in text or "gamen" in text) and (
-            "wer" in text or "jemand" in text or "bock" in text or "jmd" in text
-            or "iwer" in text or "irgendwer" in text
+            "wer" in text
+            or "jemand" in text
+            or "bock" in text
+            or "jmd" in text
+            or "iwer" in text
+            or "irgendwer" in text
         ):
             return True
 
@@ -639,9 +679,7 @@ class SmartLFGAgent(commands.Cog):
             return True
 
         # --- "jemand down" / "wer down" (English Slang) ---
-        if "down" in text and any(
-            w in text for w in ("jemand", "wer", "iwer", "irgendwer")
-        ):
+        if "down" in text and any(w in text for w in ("jemand", "wer", "iwer", "irgendwer")):
             return True
 
         # --- "mag wer" (3 Treffer) ---
@@ -654,16 +692,41 @@ class SmartLFGAgent(commands.Cog):
 
         # --- "Interesse" mit Such- und Spielkontext ---
         # Beispiele: "hat noch wer interesse?", "hat ein anderer anfänger interesse?"
-        if "interesse" in text and any(
-            w in text for w in (
-                "jemand", "wer", "jmd", "iwer", "irgendwer", "anderer", "andere",
-                "noch", "hat", "hätte",
+        if (
+            "interesse" in text
+            and any(
+                w in text
+                for w in (
+                    "jemand",
+                    "wer",
+                    "jmd",
+                    "iwer",
+                    "irgendwer",
+                    "anderer",
+                    "andere",
+                    "noch",
+                    "hat",
+                    "hätte",
+                )
             )
-        ) and any(
-            w in text for w in (
-                "spielen", "zocken", "grinden", "gamen", "runde", "runden",
-                "game", "games", "match", "matches", "anfänger", "anfanger",
-                "neuling", "neu",
+            and any(
+                w in text
+                for w in (
+                    "spielen",
+                    "zocken",
+                    "grinden",
+                    "gamen",
+                    "runde",
+                    "runden",
+                    "game",
+                    "games",
+                    "match",
+                    "matches",
+                    "anfänger",
+                    "anfanger",
+                    "neuling",
+                    "neu",
+                )
             )
         ):
             return True
@@ -1002,9 +1065,7 @@ class SmartLFGAgent(commands.Cog):
             """,
             (user_id,),
         )
-        profile.top_co_players = [
-            (int(r[0]), int(r[1] or 0), int(r[2] or 0)) for r in co_rows
-        ]
+        profile.top_co_players = [(int(r[0]), int(r[1] or 0), int(r[2] or 0)) for r in co_rows]
 
         # Active now? Check if current hour matches typical hours
         current_hour = now.hour
@@ -1015,7 +1076,9 @@ class SmartLFGAgent(commands.Cog):
             )
         # Active soon? Check upcoming window
         if profile.typical_hours and profile.activity_score >= ACTIVITY_UPCOMING_MIN_SCORE:
-            upcoming = [(current_hour + i) % 24 for i in range(1, ACTIVITY_UPCOMING_WINDOW_HOURS + 1)]
+            upcoming = [
+                (current_hour + i) % 24 for i in range(1, ACTIVITY_UPCOMING_WINDOW_HOURS + 1)
+            ]
             profile.is_likely_active_soon = any(h in profile.typical_hours for h in upcoming)
 
         return profile
@@ -1045,7 +1108,9 @@ class SmartLFGAgent(commands.Cog):
         if not profile.top_co_players:
             return []
 
-        co_ids = [cp[0] for cp in profile.top_co_players if cp[1] >= COPLAYER_IN_LANE_SESSIONS_THRESHOLD]
+        co_ids = [
+            cp[0] for cp in profile.top_co_players if cp[1] >= COPLAYER_IN_LANE_SESSIONS_THRESHOLD
+        ]
         if not co_ids:
             return []
 
@@ -1323,7 +1388,9 @@ class SmartLFGAgent(commands.Cog):
                 # Auf Discord aktiv → nur namentlich erwähnen, kein Ping
                 rank_name = str(cand.get("rank_name", ""))
                 friend_badge = " 🤝" if cand.get("is_steam_friend") else ""
-                label = f"{member.display_name}{friend_badge}" + (f" ({rank_name})" if rank_name else "")
+                label = f"{member.display_name}{friend_badge}" + (
+                    f" ({rank_name})" if rank_name else ""
+                )
                 discord_active_names.append(label)
             elif stage == "lobby":
                 ping_in_lobby.append(member.mention)
@@ -1500,7 +1567,11 @@ class SmartLFGAgent(commands.Cog):
         if has_active_lobbys and routing.best_join_lane:
             return routing.best_join_lane.label
         if routing.suggested_category_label:
-            if routing.suggested_category_label == "Casual" and has_explicit_rank and rank_value >= 6:
+            if (
+                routing.suggested_category_label == "Casual"
+                and has_explicit_rank
+                and rank_value >= 6
+            ):
                 return "Ranked"
             return routing.suggested_category_label
         if has_explicit_rank and rank_value >= 6:
@@ -1530,9 +1601,7 @@ class SmartLFGAgent(commands.Cog):
         if routing.suggested_category_id and lane.category_id == routing.suggested_category_id:
             score += 80.0
         if rank_value > 0 and lane.avg_rank_value > 0:
-            rank_diff = abs(
-                lane.avg_rank_value - (rank_value + (rank_sub or 5) / 10.0)
-            )
+            rank_diff = abs(lane.avg_rank_value - (rank_value + (rank_sub or 5) / 10.0))
             # Starke Strafe für extreme Rang-Unterschiede (>3 Ränge)
             if rank_diff > 3.0:
                 score -= 500.0
@@ -1577,7 +1646,9 @@ class SmartLFGAgent(commands.Cog):
                 continue
 
             if lane.label == "Street Brawl":
-                wants_brawl = routing.best_join_lane and routing.best_join_lane.label == "Street Brawl"
+                wants_brawl = (
+                    routing.best_join_lane and routing.best_join_lane.label == "Street Brawl"
+                )
                 if wants_brawl and self._rank_fits_lane(rank_value, rank_sub, lane):
                     candidates.append(lane)
                 continue
@@ -1645,18 +1716,22 @@ class SmartLFGAgent(commands.Cog):
 
         result = []
         for lane in ordered[:2]:
-            result.append((
-                f"➕ {lane.channel.name}",
-                f"{lane.label} · Einfach joinen und loslegen — sobald du drin bist, sehen andere dass hier was geht.\n{lane.link}",
-            ))
+            result.append(
+                (
+                    f"➕ {lane.channel.name}",
+                    f"{lane.label} · Einfach joinen und loslegen — sobald du drin bist, sehen andere dass hier was geht.\n{lane.link}",
+                )
+            )
 
         if not result:
             empty = [lane for lane in lanes if lane.member_count == 0 and not lane.is_staging]
             for lane in empty[:1]:
-                result.append((
-                    f"➕ {lane.channel.name}",
-                    f"{lane.label} · Einfach joinen und loslegen — sobald du drin bist, sehen andere dass hier was geht.\n{lane.link}",
-                ))
+                result.append(
+                    (
+                        f"➕ {lane.channel.name}",
+                        f"{lane.label} · Einfach joinen und loslegen — sobald du drin bist, sehen andere dass hier was geht.\n{lane.link}",
+                    )
+                )
 
         return result
 
@@ -1764,7 +1839,9 @@ class SmartLFGAgent(commands.Cog):
 
         # Rang aus Nachricht extrahieren wenn keine Rolle
         if rank_val == 0:
-            msg_rank_name, msg_rank_val, msg_rank_sub = self._parse_rank_from_message(message.content)
+            msg_rank_name, msg_rank_val, msg_rank_sub = self._parse_rank_from_message(
+                message.content
+            )
             if msg_rank_val > 0:
                 rank_name = msg_rank_name
                 rank_val = msg_rank_val
@@ -1776,7 +1853,8 @@ class SmartLFGAgent(commands.Cog):
         # 2. Co-Player Stats laden
         co_player_stats = await self._fetch_co_player_stats(message.author.id)
         co_player_ids = {
-            co_id for co_id, (sessions, _) in co_player_stats.items()
+            co_id
+            for co_id, (sessions, _) in co_player_stats.items()
             if sessions >= COPLAYER_IN_LANE_SESSIONS_THRESHOLD
         }
 
@@ -1796,8 +1874,14 @@ class SmartLFGAgent(commands.Cog):
         # 3. Lane Routing
         lanes = self._scan_all_lanes(guild, co_player_ids)
         routing = self._route_to_lane(
-            guild, message.author, content_lower,
-            routing_rank_val, routing_rank_sub, routing_rank_name, lanes, co_player_ids,
+            guild,
+            message.author,
+            content_lower,
+            routing_rank_val,
+            routing_rank_sub,
+            routing_rank_name,
+            lanes,
+            co_player_ids,
         )
 
         # 5. Bis zu drei sortierte Lobby-Vorschläge
@@ -1818,8 +1902,11 @@ class SmartLFGAgent(commands.Cog):
         matching_players: list[dict] = []
         if ENABLE_PLAYER_SUGGESTIONS:
             matching_players = await self._find_matching_players(
-                message.author, message.content,
-                rank_val, rank_sub, routing_result=routing,
+                message.author,
+                message.content,
+                rank_val,
+                rank_sub,
+                routing_result=routing,
             )
             if not ENABLE_PLAYER_PINGS:
                 for candidate in matching_players:
@@ -1862,7 +1949,9 @@ class SmartLFGAgent(commands.Cog):
             )
         else:
             staging_suggestions = self._build_staging_suggestions(
-                guild, lanes, preferred_label,
+                guild,
+                lanes,
+                preferred_label,
             )
             for name, value in staging_suggestions:
                 embed.add_field(name=name, value=value, inline=False)
@@ -1919,7 +2008,9 @@ class SmartLFGAgent(commands.Cog):
                 log_text_lines.append(f"{prefix_icon}{line}")
 
             if matching_players:
-                online_cnt = sum(1 for c in matching_players if c.get("stage") in ("lobby", "match"))
+                online_cnt = sum(
+                    1 for c in matching_players if c.get("stage") in ("lobby", "match")
+                )
                 active_cnt = len(matching_players) - online_cnt
                 log_text_lines.append(
                     f"\U0001f3d3 Matching: {len(matching_players)} Spieler "
@@ -1973,8 +2064,7 @@ class SmartLFGAgent(commands.Cog):
             occ = f"{lane.member_count}/{lane.user_limit}"
             status = "Platz frei" if lane.has_space else "VOLL"
             lines.append(
-                f"- **{lane.label}**: {lane.channel.name} "
-                f"({occ}, {lane.avg_rank_label}, {status})"
+                f"- **{lane.label}**: {lane.channel.name} ({occ}, {lane.avg_rank_label}, {status})"
             )
 
         if not lines:
@@ -1998,7 +2088,8 @@ class SmartLFGAgent(commands.Cog):
 
         co_stats = await self._fetch_co_player_stats(target.id)
         co_ids = {
-            co_id for co_id, (sessions, _) in co_stats.items()
+            co_id
+            for co_id, (sessions, _) in co_stats.items()
             if sessions >= COPLAYER_IN_LANE_SESSIONS_THRESHOLD
         }
 
@@ -2006,7 +2097,14 @@ class SmartLFGAgent(commands.Cog):
         profile = await self._build_user_activity_profile(target.id, now)
         lanes = self._scan_all_lanes(guild, co_ids)
         routing = self._route_to_lane(
-            guild, target, "", rank_val, rank_sub, rank_name, lanes, co_ids,
+            guild,
+            target,
+            "",
+            rank_val,
+            rank_sub,
+            rank_name,
+            lanes,
+            co_ids,
         )
 
         co_coming = await self._find_co_players_likely_coming_online(guild, profile, now)
@@ -2024,7 +2122,9 @@ class SmartLFGAgent(commands.Cog):
         )
 
         # Profil
-        hours_str = ", ".join(str(h) for h in profile.typical_hours[:6]) if profile.typical_hours else "-"
+        hours_str = (
+            ", ".join(str(h) for h in profile.typical_hours[:6]) if profile.typical_hours else "-"
+        )
         days_str = ", ".join(str(d) for d in profile.typical_days) if profile.typical_days else "-"
         embed.add_field(
             name="Activity Profile",

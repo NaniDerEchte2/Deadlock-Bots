@@ -9,8 +9,9 @@ import logging
 import os
 import secrets
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any
 from urllib.parse import urlsplit
 
 import discord
@@ -381,7 +382,10 @@ class MasterBroker:
     def _authorize(self, request: web.Request) -> web.Response | None:
         peer = self._peer_host(request)
         if not self._is_loopback_host(peer):
-            logger.warning("Master broker rejected non-loopback request from %s", _safe_log_value(peer) or "<unknown>")
+            logger.warning(
+                "Master broker rejected non-loopback request from %s",
+                _safe_log_value(peer) or "<unknown>",
+            )
             return self._error_response(
                 request=request,
                 status=403,
@@ -391,7 +395,10 @@ class MasterBroker:
 
         token = (request.headers.get(_INTERNAL_TOKEN_HEADER) or "").strip()
         if not token or not secrets.compare_digest(token, self.token):
-            logger.warning("Master broker rejected unauthorized request from %s", _safe_log_value(peer) or "<unknown>")
+            logger.warning(
+                "Master broker rejected unauthorized request from %s",
+                _safe_log_value(peer) or "<unknown>",
+            )
             return self._error_response(
                 request=request,
                 status=401,
@@ -609,9 +616,7 @@ class MasterBroker:
             self._idempotency_records.pop(key, None)
 
         stale_in_flight = [
-            key
-            for key, state in self._idempotency_inflight.items()
-            if state.future.done()
+            key for key, state in self._idempotency_inflight.items() if state.future.done()
         ]
         for key in stale_in_flight:
             self._idempotency_inflight.pop(key, None)
@@ -1373,7 +1378,9 @@ class MasterBroker:
             try:
                 await channel.delete()
             except Exception as exc:
-                logger.error("Master broker delete_channel failed (channel=%s): %s", channel_id, exc)
+                logger.error(
+                    "Master broker delete_channel failed (channel=%s): %s", channel_id, exc
+                )
                 return self._error_response(
                     request=request,
                     status=502,

@@ -53,9 +53,7 @@ DB_NAME = "deadlock.sqlite3"
 STEAM_TASKS_MAX_ROWS = int(os.environ.get("STEAM_TASKS_MAX_ROWS", "1000"))
 STEAM_TASKS_KV_NS = "steam_tasks"
 STEAM_TASKS_KV_MAX_ROWS_KEY = "max_rows"
-DEFAULT_OAUTH_STATE_TTL_SECONDS = int(
-    os.environ.get("DEADLOCK_OAUTH_STATE_TTL_SECONDS", "21600")
-)
+DEFAULT_OAUTH_STATE_TTL_SECONDS = int(os.environ.get("DEADLOCK_OAUTH_STATE_TTL_SECONDS", "21600"))
 
 # ---- Modulweiter Zustand ----
 _CONN: sqlite3.Connection | None = None
@@ -1321,16 +1319,36 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
                 "CREATE INDEX IF NOT EXISTS idx_deadlock_hero_builds_sync_status ON deadlock_hero_builds(sync_status, last_alerted_at)"
             )
             # Coaching Indizes
-            c.execute("CREATE INDEX IF NOT EXISTS idx_coaching_requests_status ON coaching_requests(status, created_at)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_coaching_requests_user ON coaching_requests(discord_user_id)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_coaching_requests_expires ON coaching_requests(role_expires_at)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_coaching_sessions_coach ON coaching_sessions(coach_id)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_coaching_sessions_user ON coaching_sessions(discord_user_id)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_coaching_sessions_status ON coaching_sessions(status)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_coaching_sessions_expires ON coaching_sessions(role_expires_at)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_coaching_sessions_voice ON coaching_sessions(voice_channel_id, survey_sent_at)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_coaching_surveys_session ON coaching_surveys(session_id)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_coach_applications_status ON coach_applications(status)")
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_coaching_requests_status ON coaching_requests(status, created_at)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_coaching_requests_user ON coaching_requests(discord_user_id)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_coaching_requests_expires ON coaching_requests(role_expires_at)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_coaching_sessions_coach ON coaching_sessions(coach_id)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_coaching_sessions_user ON coaching_sessions(discord_user_id)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_coaching_sessions_status ON coaching_sessions(status)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_coaching_sessions_expires ON coaching_sessions(role_expires_at)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_coaching_sessions_voice ON coaching_sessions(voice_channel_id, survey_sent_at)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_coaching_surveys_session ON coaching_surveys(session_id)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_coach_applications_status ON coach_applications(status)"
+            )
             c.execute("CREATE INDEX IF NOT EXISTS idx_coaches_discord ON coaches(discord_user_id)")
             # Performance Indexes (2026-02-20)
             c.execute(

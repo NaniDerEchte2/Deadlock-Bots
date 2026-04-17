@@ -1210,7 +1210,9 @@ class KickSelectView(discord.ui.View):
                 target_id,
                 self.lane.id,
             )
-            await itx.response.send_message("Konnte deine Berechtigung nicht mehr prüfen.", ephemeral=True)
+            await itx.response.send_message(
+                "Konnte deine Berechtigung nicht mehr prüfen.", ephemeral=True
+            )
             return
         owner_id = itx.client.get_cog("TempVoiceCore").lane_owner.get(self.lane.id, actor_member.id)  # type: ignore
         perms = self.lane.permissions_for(actor_member)
@@ -1239,7 +1241,9 @@ class KickSelectView(discord.ui.View):
 
 class BanSelect(discord.ui.Select):
     def __init__(self, options):
-        super().__init__(min_values=1, max_values=1, options=options, placeholder="Mitglied bannen …")
+        super().__init__(
+            min_values=1, max_values=1, options=options, placeholder="Mitglied bannen …"
+        )
 
     async def callback(self, itx: discord.Interaction):
         view: BanSelectView = self.view  # type: ignore
@@ -1263,7 +1267,9 @@ class BanSelectView(discord.ui.View):
 
 class UnbanSelect(discord.ui.Select):
     def __init__(self, options):
-        super().__init__(min_values=1, max_values=1, options=options, placeholder="User entbannen …")
+        super().__init__(
+            min_values=1, max_values=1, options=options, placeholder="User entbannen …"
+        )
 
     async def callback(self, itx: discord.Interaction):
         view: UnbanSelectView = self.view  # type: ignore

@@ -71,7 +71,7 @@ class _FakeDmUser:
 
 
 class _FakeCategory:
-    def __init__(self, channel_id: int, guild: "_FakeGuild") -> None:
+    def __init__(self, channel_id: int, guild: _FakeGuild) -> None:
         self.id = channel_id
         self.guild = guild
 
@@ -81,7 +81,9 @@ class _FakeGuild:
         self.id = guild_id
         self.created_channels: list[dict[str, Any]] = []
 
-    async def create_text_channel(self, *, name: str, category: _FakeCategory, topic: str | None = None) -> _FakeChannel:
+    async def create_text_channel(
+        self, *, name: str, category: _FakeCategory, topic: str | None = None
+    ) -> _FakeChannel:
         channel = _FakeChannel(7000 + len(self.created_channels) + 1)
         self.created_channels.append(
             {
