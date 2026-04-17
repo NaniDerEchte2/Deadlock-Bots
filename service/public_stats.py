@@ -49,6 +49,7 @@ PUBLIC_STATS_DEFAULT_CORS_ORIGINS = (
 # - DISCORD_OAUTH_CLIENT_ID / DISCORD_OAUTH_CLIENT_SECRET: Discord OAuth identify flow
 # - DISCORD_OAUTH_REDIRECT_URI: optional callback override
 # - PUBLIC_STATS_SESSION_SECRET: required for signed OAuth state + dl_session cookie
+#   (falls back to SESSIONS_ENCRYPTION_KEY if unset)
 # - PUBLIC_STATS_INSECURE_COOKIE=1: disable Secure flag for local HTTP tests
 # - PUBLIC_STATS_COOKIE_SECURE=0|1: explicit Secure override when not using insecure mode
 # - PUBLIC_STATS_CORS_ORIGINS: CSV allowlist for /api/public/* and /auth/* origins
@@ -181,7 +182,10 @@ def _cookie_secure() -> bool:
 
 
 def _session_secret() -> str:
-    return os.getenv("PUBLIC_STATS_SESSION_SECRET", "").strip()
+    return (
+        os.getenv("PUBLIC_STATS_SESSION_SECRET", "").strip()
+        or os.getenv("SESSIONS_ENCRYPTION_KEY", "").strip()
+    )
 
 
 def _discord_oauth_redirect_uri() -> str:

@@ -20,9 +20,13 @@ Server-Grinding fair machen: Text wird konversations-qualität-gescored (nicht S
 - GPT-Worker B: Smoke-Verifikation lokal sauber: `python3 -m py_compile service/public_stats.py`, `python3 -c "from service import public_stats"`, `grep -n "def _handle_" service/public_stats.py`.
 
 ## Offen
-- Infisical-Secrets für Discord-OAuth (`DISCORD_OAUTH_CLIENT_ID`, `DISCORD_OAUTH_CLIENT_SECRET`, Session-Secret) — erst prüfen, sonst nach User fragen
-- E2E-Verifikation Bot↔API↔Frontend
-- Commit + Push (noch nicht)
+- Discord Developer Portal: Redirect-URI `http://127.0.0.1:8768/auth/discord/callback` (bzw. Prod-URL) als OAuth-Redirect eintragen
+- Live E2E im Bot-Prozess (Bot-Neustart erforderlich, bewusst verschoben)
+
+## Entscheidungen
+- Session-Signing-Secret: `SESSIONS_ENCRYPTION_KEY` wird wiederverwendet (Fallback im Code eingebaut, `PUBLIC_STATS_SESSION_SECRET` bleibt optional).
+- `DISCORD_OAUTH_CLIENT_ID` + `DISCORD_OAUTH_CLIENT_SECRET` existieren bereits in Infisical.
+- Redirect-URI: Default `http://127.0.0.1:8768/auth/discord/callback` genügt lokal; Prod-URL via `DISCORD_OAUTH_REDIRECT_URI` setzbar.
 
 ---
 
