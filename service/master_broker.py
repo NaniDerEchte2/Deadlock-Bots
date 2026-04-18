@@ -223,6 +223,14 @@ class MasterBroker:
                         "/internal/master/v1/discord/member/add-role",
                         self._handle_add_role,
                     ),
+                    web.post(
+                        "/internal/master/v1/discord/member/move-voice",
+                        self._handle_move_voice,
+                    ),
+                    web.post(
+                        "/internal/master/v1/discord/voice-channel/members",
+                        self._handle_get_voice_members,
+                    ),
                 ]
             )
 
@@ -669,7 +677,7 @@ class MasterBroker:
         self,
         *,
         request: web.Request,
-        idempotency_key: str,
+        idempotency_key: str | None = None,
         scope: str,
         value: int,
         enabled: bool,
@@ -1804,6 +1812,230 @@ class MasterBroker:
             idempotency_key=idempotency_key,
             payload_hash=payload_hash,
             operation=_operation,
+        )
+
+    async def _handle_move_voice(self, request: web.Request) -> web.Response:
+        rejected = self._authorize(request)
+        if rejected is not None:
+            return rejected
+
+        try:
+            payload = await self._read_json_object(request)
+            idempotency_key = self._extract_idempotency_key(request, payload)
+            guild_id = self._parse_positive_payload_int(payload, "guild_id")
+            user_id = self._parse_positive_payload_int(payload, "user_id")
+            channel_id_raw = payload.get("channel_id")
+            channel_id = (
+                self._parse_positive_payload_int(payload, "channel_id")
+                if channel_id_raw is not None
+                else None
+            )
+        except ValueError as exc:
+            return self._error_response(
+                request=request,
+                status=400,
+                code="bad_request",
+                message=str(exc),
+            )
+        except Exception:
+            return self._error_response(
+                request=request,
+                status=400,
+                code="bad_request",
+                message="invalid JSON payload",
+            )
+
+        operation_payload = {
+            "guild_id": guild_id,
+            "user_id": user_id,
+            "channel_id": channel_id,
+        }
+        guild_allowlist_rejected = self._allowlist_check(
+            request=request,
+            idempotency_key=idempotency_key,
+            scope="guild",
+            value=guild_id,
+            enabled=self._guild_allowlist_enabled,
+            allowed_ids=self._allowed_guild_ids,
+        )
+        if guild_allowlist_rejected is not None:
+            return guild_allowlist_rejected
+
+        if channel_id is not None:
+            channel_allowlist_rejected = self._allowlist_check(
+                request=request,
+                idempotency_key=idempotency_key,
+                scope="channel",
+                value=channel_id,
+                enabled=self._channel_allowlist_enabled,
+                allowed_ids=self._allowed_channel_ids,
+            )
+            if channel_allowlist_rejected is not None:
+                return channel_allowlist_rejected
+
+        payload_hash = self._payload_hash(operation_payload)
+
+        async def _operation() -> web.Response:
+            guild = None
+            try:
+                guild = self.bot.get_guild(guild_id)
+            except Exception:
+                guild = None
+
+            if guild is None:
+                fetch_guild = getattr(self.bot, "fetch_guild", None)
+                if callable(fetch_guild):
+                    try:
+                        guild = await fetch_guild(guild_id)
+                    except Exception:
+                        guild = None
+
+            if guild is None:
+                return self._error_response(
+                    request=request,
+                    status=404,
+                    code="not_found",
+                    message=f"guild {guild_id} not found",
+                    idempotency_key=idempotency_key,
+                )
+
+            try:
+                member = guild.get_member(user_id)
+            except Exception:
+                member = None
+            if member is None and hasattr(guild, "fetch_member"):
+                try:
+                    member = await guild.fetch_member(user_id)
+                except Exception:
+                    member = None
+            if member is None:
+                return self._error_response(
+                    request=request,
+                    status=404,
+                    code="not_found",
+                    message=f"member {user_id} not found",
+                    idempotency_key=idempotency_key,
+                )
+
+            channel = None
+            if channel_id is not None:
+                try:
+                    channel = guild.get_channel(channel_id)
+                except Exception:
+                    channel = None
+                if channel is None:
+                    channel = await self._resolve_channel(channel_id)
+                    channel_guild = getattr(channel, "guild", None)
+                    if channel is None or getattr(channel_guild, "id", None) != guild_id:
+                        channel = None
+                if channel is None:
+                    return self._error_response(
+                        request=request,
+                        status=404,
+                        code="not_found",
+                        message=f"channel {channel_id} not found",
+                        idempotency_key=idempotency_key,
+                    )
+
+            try:
+                await member.move_to(channel)
+            except Exception as exc:
+                logger.error(
+                    "Master broker move_voice failed (guild=%s user=%s channel=%s): %s",
+                    guild_id,
+                    user_id,
+                    channel_id,
+                    exc,
+                )
+                return self._error_response(
+                    request=request,
+                    status=502,
+                    code="discord_error",
+                    message="failed to move member",
+                    idempotency_key=idempotency_key,
+                )
+
+            return self._success_response(
+                request=request,
+                idempotency_key=idempotency_key,
+                result={
+                    "guild_id": guild_id,
+                    "user_id": user_id,
+                    "channel_id": channel_id,
+                },
+            )
+
+        return await self._run_idempotent_action(
+            request=request,
+            action="discord.move_voice",
+            idempotency_key=idempotency_key,
+            payload_hash=payload_hash,
+            operation=_operation,
+        )
+
+    async def _handle_get_voice_members(self, request: web.Request) -> web.Response:
+        rejected = self._authorize(request)
+        if rejected is not None:
+            return rejected
+
+        try:
+            payload = await self._read_json_object(request)
+            channel_id = self._parse_positive_payload_int(payload, "channel_id")
+        except ValueError as exc:
+            return self._error_response(
+                request=request,
+                status=400,
+                code="bad_request",
+                message=str(exc),
+            )
+        except Exception:
+            return self._error_response(
+                request=request,
+                status=400,
+                code="bad_request",
+                message="invalid JSON payload",
+            )
+
+        channel_allowlist_rejected = self._allowlist_check(
+            request=request,
+            scope="channel",
+            value=channel_id,
+            enabled=self._channel_allowlist_enabled,
+            allowed_ids=self._allowed_channel_ids,
+        )
+        if channel_allowlist_rejected is not None:
+            return channel_allowlist_rejected
+
+        channel = await self._resolve_channel(channel_id)
+        if channel is None:
+            return self._error_response(
+                request=request,
+                status=404,
+                code="not_found",
+                message=f"channel {channel_id} not found",
+            )
+
+        members = getattr(channel, "members", None)
+        if not isinstance(members, list):
+            return self._error_response(
+                request=request,
+                status=400,
+                code="bad_request",
+                message=f"channel {channel_id} does not expose voice members",
+            )
+
+        return self._success_response(
+            request=request,
+            result={
+                "channel_id": channel_id,
+                "members": [
+                    {
+                        "user_id": member.id,
+                        "display_name": member.display_name,
+                    }
+                    for member in members
+                ],
+            },
         )
 
 
