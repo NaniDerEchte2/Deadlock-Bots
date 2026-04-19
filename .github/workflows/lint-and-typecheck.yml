@@ -48,4 +48,28 @@ jobs:
         run: |
           # We run mypy on the core directories. 
           # Some legacy files might have many errors, so we start with core logic.
-          mypy service cogs --ignore-missing-imports --follow-imports=skip --install-types --non-interactive
+          mypy service cogs bot_core --ignore-missing-imports --follow-imports=skip --install-types --non-interactive
+
+  pytest:
+    name: "✅ Pytest"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.13'
+
+      - name: Install test dependencies
+        run: pip install pytest pytest-cov
+
+      - name: Run tests with coverage
+        run: |
+          pytest -q \
+            --cov=bot_core \
+            --cov=cogs \
+            --cov=service \
+            --cov-branch \
+            --cov-report=term-missing:skip-covered \
+            --cov-fail-under=40
