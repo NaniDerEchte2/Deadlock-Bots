@@ -27,7 +27,12 @@ Gib zurück:
 3. Priorität: low/medium/high
 4. Kurze Einschätzung was der Spieler verbessern sollte
 
-Sei spezifisch für Deadlock Gameplay."""
+Sei spezifisch für Deadlock Gameplay.
+
+WICHTIG: Wenn die Anfrage offensichtlich nicht ernst gemeint ist (z. B. Nonsens-Text,
+absichtlich falsche Angaben wie unmögliche Ränge, Beleidigungen, Spam oder kompletter
+Blödsinn), antworte AUSSCHLIESSLICH mit dem Wort: INVALID_REQUEST
+Keine Erklärung, kein weiterer Text."""
 
 DISCORD_EMBED_FIELD_LIMIT = 1024
 
@@ -53,9 +58,20 @@ def _format_ai_summary_for_embed(value: str, *, limit: int = DISCORD_EMBED_FIELD
             if cleaned_lines and cleaned_lines[-1] != "":
                 cleaned_lines.append("")
             continue
+        if set(line) <= {"|", "-", ":", " "}:
+            continue
         while line.startswith("#"):
             line = line[1:].strip()
         line = line.replace("**", "").strip()
+        if "|" in line:
+            cells = [cell.strip() for cell in line.strip("|").split("|")]
+            cells = [cell for cell in cells if cell]
+            if not cells:
+                continue
+            if len(cells) == 1:
+                line = cells[0]
+            else:
+                line = " • ".join(cells)
         cleaned_lines.append(line)
 
     cleaned_text = "\n".join(cleaned_lines).strip() or "Keine AI-Analyse verfügbar."
@@ -336,6 +352,12 @@ Erstelle eine präzise, hilfreiche Zusammenfassung für den Coach."""
                 temperature=0.7,
             )
             if text:
+                if text.strip() == "INVALID_REQUEST":
+                    log.info(
+                        "AI marked coaching request %s as invalid/non-serious, aborting post",
+                        request_data.get("id"),
+                    )
+                    return ""
                 return text
         except Exception as e:
             log.error(f"AI analysis failed: {e}")
@@ -438,11 +460,24 @@ Erstelle eine präzise, hilfreiche Zusammenfassung für den Coach."""
                 return
 
             request_data = dict(row)
+            affected = db.execute(
+                "UPDATE coaching_requests SET status='analyzing', updated_at=? WHERE id=? AND status='pending'",
+                (int(time.time()), request_data["id"]),
+            ).rowcount
+            if not affected:
+                log.info(
+                    "Request %s already being processed, skipping immediate trigger",
+                    request_data["id"],
+                )
+                return
             ai_summary = await self._analyze_with_ai(request_data)
-            db.execute(
-                "UPDATE coaching_requests SET ai_summary=?, updated_at=? WHERE id=?",
-                (ai_summary, int(time.time()), request_data["id"]),
-            )
+            if not ai_summary:
+                log.info("Coaching request %s aborted (invalid/non-serious)", request_data["id"])
+                db.execute(
+                    "UPDATE coaching_requests SET status='invalid', updated_at=? WHERE id=?",
+                    (int(time.time()), request_data["id"]),
+                )
+                return
             message_id = await self._post_request_to_channel(request_data, ai_summary)
             if message_id:
                 await self._assign_request_role(request_data)
@@ -471,13 +506,24 @@ Erstelle eine präzise, hilfreiche Zusammenfassung für den Coach."""
 
                 for row in rows:
                     request_data = dict(row)
+                    affected = db.execute(
+                        "UPDATE coaching_requests SET status='analyzing', updated_at=? WHERE id=? AND status='pending'",
+                        (int(time.time()), request_data["id"]),
+                    ).rowcount
+                    if not affected:
+                        log.info(
+                            "Request %s already claimed by another path, skipping loop",
+                            request_data["id"],
+                        )
+                        continue
                     ai_summary = await self._analyze_with_ai(request_data)
-
-                    # Update with AI summary
-                    db.execute(
-                        "UPDATE coaching_requests SET ai_summary=?, updated_at=? WHERE id=?",
-                        (ai_summary, int(time.time()), request_data["id"]),
-                    )
+                    if not ai_summary:
+                        log.info("Coaching request %s aborted (invalid/non-serious)", request_data["id"])
+                        db.execute(
+                            "UPDATE coaching_requests SET status='invalid', updated_at=? WHERE id=?",
+                            (int(time.time()), request_data["id"]),
+                        )
+                        continue
 
                     # Post to channel
                     message_id = await self._post_request_to_channel(request_data, ai_summary)
