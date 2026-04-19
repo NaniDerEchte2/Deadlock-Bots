@@ -95,18 +95,18 @@ RANK_SHORT = {
     "eternus": "Ete",
 }
 
-RANK_COLORS = {
-    "initiate": "#cb643b",
-    "seeker": "#96c86f",
-    "alchemist": "#0e5d8b",
-    "arcanist": "#3c591e",
-    "ritualist": "#b15926",
-    "emissary": "#b73f3c",
-    "archon": "#705691",
-    "oracle": "#a74905",
-    "phantom": "#8d7b69",
-    "ascendant": "#c59951",
-    "eternus": "#1eb6a7",
+RANK_COLORS: dict[str, str] = {
+    "initiate":  "#C8956C",
+    "seeker":    "#72C04A",
+    "alchemist": "#4A8FCC",
+    "arcanist":  "#3D8A6E",
+    "ritualist": "#D4602A",
+    "emissary":  "#CC3344",
+    "archon":    "#8855CC",
+    "oracle":    "#D49610",
+    "phantom":   "#8899AA",
+    "ascendant": "#D4AA40",
+    "eternus":   "#1ECCC0",
 }
 
 
@@ -826,7 +826,7 @@ async def handle_timeline(request: web.Request) -> web.Response:
                 rank = None
         if rank and rank in hourly[hour]:
             hourly[hour][rank] += 1
-            duration = row.get("duration_seconds") or 0
+            duration = row["duration_seconds"] or 0
             hourly_hours[hour][rank] += float(duration) / 3600  # convert to hours
 
     timeline = []
@@ -1670,17 +1670,22 @@ async def _handle_discord_complete(request: web.Request) -> web.Response:
         if pre_auth:
             redirect_path = _sanitize_redirect_path(pre_auth.get("redirect"))
 
+    log.info("discord_complete: state_id=%s pre_auth_found=%s redirect=%s", bool(state_id), bool(pre_auth_cookie), redirect_path)
+
     response = web.HTTPFound(redirect_path)
     response.del_cookie(PUBLIC_STATS_PRE_AUTH_COOKIE, path="/")
 
     if not state_id:
+        log.warning("discord_complete: kein state_id → kein Login")
         return response
 
     data = await _call_dashboard_api(
         "/internal/v1/discord/consume-result",
         {"state_id": state_id},
     )
+    log.info("discord_complete: consume-result data=%s", {k: v for k, v in (data or {}).items() if k != "discord_avatar"} if data else None)
     if not data or not data.get("discord_id"):
+        log.warning("discord_complete: kein discord_id in consume-result → kein Login")
         return response
 
     session_payload = {
