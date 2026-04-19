@@ -47,7 +47,7 @@ PUBLIC_STATS_DEFAULT_CORS_ORIGINS = (
 # Callback-URL nach Discord-OAuth (muss auf deutsche-deadlock-community.de zeigen)
 PUBLIC_STATS_CALLBACK_URL = os.getenv(
     "PUBLIC_STATS_CALLBACK_URL",
-    "https://deutsche-deadlock-community.de/aktivitaet/auth/complete",
+    "https://deutsche-deadlock-community.de/aktivitaet/auth/discord/complete",
 )
 DASHBOARD_INTERNAL_API_BASE = os.getenv("DASHBOARD_INTERNAL_API_BASE", "http://127.0.0.1:8766")
 _DASHBOARD_INTERNAL_TOKEN_ENV_NAMES = (
