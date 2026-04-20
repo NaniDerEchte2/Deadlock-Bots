@@ -141,9 +141,7 @@ class CoachingSurveyCog(commands.Cog):
         self._survey_check_task: asyncio.Task | None = None
 
     async def cog_load(self):
-        sessions = db.query_all(
-            "SELECT id FROM coaching_sessions WHERE status='waiting_survey'"
-        )
+        sessions = db.query_all("SELECT id FROM coaching_sessions WHERE status='waiting_survey'")
         for s in sessions:
             self.bot.add_view(SurveyView(s["id"]))
         if sessions:
