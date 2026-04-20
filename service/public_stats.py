@@ -96,17 +96,17 @@ RANK_SHORT = {
 }
 
 RANK_COLORS: dict[str, str] = {
-    "initiate":  "#C8956C",
-    "seeker":    "#72C04A",
-    "alchemist": "#4A8FCC",
-    "arcanist":  "#3D8A6E",
-    "ritualist": "#D4602A",
-    "emissary":  "#CC3344",
-    "archon":    "#8855CC",
-    "oracle":    "#D49610",
-    "phantom":   "#8899AA",
-    "ascendant": "#D4AA40",
-    "eternus":   "#1ECCC0",
+    "initiate":  "#8fa4b4",
+    "seeker":    "#72aa5a",
+    "alchemist": "#3dbb44",
+    "arcanist":  "#18bba8",
+    "ritualist": "#2288ee",
+    "emissary":  "#5055ee",
+    "archon":    "#8833dd",
+    "oracle":    "#cc33bb",
+    "phantom":   "#dd3344",
+    "ascendant": "#ee9922",
+    "eternus":   "#f5cc11",
 }
 
 
@@ -611,6 +611,13 @@ async def handle_rank_distribution(request: web.Request) -> web.Response:
     """Returns current rank distribution and trend over time."""
     now = datetime.now()
     cutoff_30d = now - timedelta(days=30)
+    weeks_count = _parse_positive_int(
+        request.query.get("weeks"),
+        default=4,
+        minimum=1,
+        maximum=52,
+        field_name="weeks",
+    )
 
     # Current distribution from steam_links
     rank_counts: dict[str, int] = {r: 0 for r in RANK_ORDER}
@@ -629,7 +636,7 @@ async def handle_rank_distribution(request: web.Request) -> web.Response:
 
     # Activity by rank over last 30 days (weekly buckets)
     weekly = []
-    for week in range(4):
+    for week in range(weeks_count):
         week_start = now - timedelta(weeks=week + 1)
         week_end = now - timedelta(weeks=week)
         week_data = {r: 0 for r in RANK_ORDER}
@@ -789,11 +796,18 @@ async def handle_new_player_windows(request: web.Request) -> web.Response:
 async def handle_timeline(request: web.Request) -> web.Response:
     """Returns streaming-style timeline of when ranks are most active.
 
-    Query param: metric - 'players' (default) or 'hours'
+    Query params: metric - 'players' (default) or 'hours'; days - 1..365
     """
     metric = request.query.get("metric", "players")
+    days = _parse_positive_int(
+        request.query.get("days"),
+        default=7,
+        minimum=1,
+        maximum=365,
+        field_name="days",
+    )
     now = datetime.now()
-    cutoff = now - timedelta(days=7)
+    cutoff = now - timedelta(days=days)
 
     rows = db.query_all(
         """
@@ -1130,7 +1144,7 @@ async def _handle_public_me_voice_history(request: web.Request) -> web.Response:
         request.query.get("range"),
         default=30,
         minimum=1,
-        maximum=90,
+        maximum=365,
         field_name="range",
     )
     recent_limit = _parse_positive_int(
@@ -1400,7 +1414,7 @@ async def _handle_public_me_text_history(request: web.Request) -> web.Response:
         request.query.get("range"),
         default=30,
         minimum=1,
-        maximum=90,
+        maximum=365,
         field_name="range",
     )
     recent_limit = _parse_positive_int(
@@ -1575,14 +1589,22 @@ async def _handle_public_me_text_history(request: web.Request) -> web.Response:
 async def _handle_public_me_heatmap(request: web.Request) -> web.Response:
     session = _require_session(request)
     user_id = _parse_user_id_from_session(session)
+    days = _parse_positive_int(
+        request.query.get("days"),
+        default=90,
+        minimum=7,
+        maximum=365,
+        field_name="days",
+    )
+    cutoff = (datetime.now() - timedelta(days=days)).isoformat()
     rows = db.query_all(
         """
         SELECT started_at, ended_at, duration_seconds
         FROM voice_session_log
-        WHERE user_id = ?
+        WHERE user_id = ? AND started_at >= ?
         ORDER BY started_at
         """,
-        (user_id,),
+        (user_id, cutoff),
     )
     matrix, total_seconds = _build_voice_matrix(rows)
     return web.json_response({"matrix": matrix, "total_seconds": total_seconds})
