@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import discord
 from discord.ext import commands
@@ -25,6 +26,18 @@ CH_COACHING = 1357421075188813897  # #ich-brauch-einen-coach
 CH_TICKET = None  # #ticket-eröffnen (Mention via Text)
 CH_BETA = 1428745737323155679  # #beta-zugang
 CH_STREAMER_INFO = 1374364800817303632  # #streamer-info (Beispiel)
+
+try:
+    from cogs.steam import steam_link_oauth as _steam_link_oauth  # type: ignore
+except Exception:
+    _steam_link_oauth = None  # type: ignore[assignment]
+    log.info("Steam link OAuth module unavailable – onboarding link buttons will be degraded.")
+
+if _steam_link_oauth is not None and not hasattr(_steam_link_oauth, "start_urls_for"):
+    log.warning(
+        "cogs.steam.steam_link_oauth is missing 'start_urls_for'; onboarding link buttons will be degraded."
+    )
+    _steam_link_oauth = None  # type: ignore[assignment]
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +228,32 @@ STEPS: list[dict] = [
 _ACCOUNT_STEP_INDEX = 7
 _STREAMER_STEP_INDEX = 2
 
+
+def _steam_link_urls_for(uid: int) -> dict[str, str]:
+    if _steam_link_oauth is None:
+        return {"discord_start": "", "steam_openid_start": ""}
+    try:
+        urls = _steam_link_oauth.start_urls_for(int(uid))
+    except Exception:
+        log.exception("Konnte Steam-Link-URLs für Onboarding nicht erzeugen (user_id=%s)", uid)
+        return {"discord_start": "", "steam_openid_start": ""}
+    if not isinstance(urls, dict):
+        return {"discord_start": "", "steam_openid_start": ""}
+    return {
+        "discord_start": str(urls.get("discord_start") or "").strip(),
+        "steam_openid_start": str(urls.get("steam_openid_start") or "").strip(),
+    }
+
+
+def _steam_friend_code_supported() -> bool:
+    if _steam_link_oauth is None:
+        return False
+    return bool(
+        getattr(_steam_link_oauth, "FRIEND_CODE_LINKING_ENABLED", False)
+        and hasattr(_steam_link_oauth, "SteamFriendCodeModal")
+    )
+
+
 # ---------------------------------------------------------------------------
 # Views
 # ---------------------------------------------------------------------------
@@ -369,23 +408,39 @@ class OnboardingAccountLinkView(discord.ui.View):
         self.cog = cog
         self.step_index = step_index
         self.user_id = user_id
+        self._steam_urls = _steam_link_urls_for(int(user_id))
 
-        # URLs für Steam-Link holen (mit Fallback auf Standard-Domain aus Config)
-        from service.config import settings
+        steam_url = self._steam_urls.get("steam_openid_start") or ""
 
-        base = settings.public_base_url.rstrip("/")
-        uid = int(user_id)
-        steam_url = f"{base}/steam/login?uid={uid}"
+        if steam_url:
+            self.add_item(
+                discord.ui.Button(
+                    label="Via Steam verknüpfen",
+                    style=discord.ButtonStyle.link,
+                    url=steam_url,
+                    emoji="🎮",
+                    row=0,
+                )
+            )
+        else:
+            self.add_item(
+                discord.ui.Button(
+                    label="Steam-Link gerade nicht verfügbar",
+                    style=discord.ButtonStyle.secondary,
+                    disabled=True,
+                    row=0,
+                )
+            )
 
-        self.add_item(
-            discord.ui.Button(
-                label="Via Steam verknüpfen",
-                style=discord.ButtonStyle.link,
-                url=steam_url,
-                emoji="🎮",
+        if _steam_friend_code_supported():
+            btn = discord.ui.Button(
+                label="Freundescode",
+                style=discord.ButtonStyle.secondary,
+                emoji="👥",
                 row=0,
             )
-        )
+            btn.callback = self.friend_code
+            self.add_item(btn)
 
         if show_next:
             btn = discord.ui.Button(label="Weiter ➜", style=discord.ButtonStyle.primary, row=1)
@@ -398,6 +453,41 @@ class OnboardingAccountLinkView(discord.ui.View):
             )
             btn.callback = self.refresh_status
             self.add_item(btn)
+
+    async def friend_code(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "Das ist nicht dein Onboarding.", ephemeral=True
+            )
+            return
+
+        oauth_mod: Any = _steam_link_oauth
+        if oauth_mod is None or not _steam_friend_code_supported():
+            await interaction.response.send_message(
+                "Der Freundescode-Flow ist aktuell nicht verfügbar. Nutze bitte den Steam-Login-Button.",
+                ephemeral=True,
+            )
+            return
+
+        link_cog = interaction.client.get_cog("SteamLink")
+        if link_cog is None:
+            await interaction.response.send_message(
+                "⚠️ Steam-Link-Cog nicht geladen.",
+                ephemeral=True,
+            )
+            return
+
+        modal_cls = getattr(oauth_mod, "SteamFriendCodeModal", None)
+        if modal_cls is None:
+            await interaction.response.send_message(
+                "Der Freundescode-Flow ist aktuell nicht verfügbar. Nutze bitte den Steam-Login-Button.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_modal(
+            modal_cls(user_id=int(interaction.user.id), link_cog=link_cog)
+        )
 
     async def refresh_status(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
