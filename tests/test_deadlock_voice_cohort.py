@@ -82,6 +82,29 @@ class DeadlockVoiceCohortTests(unittest.TestCase):
         self.assertEqual(lobby_only["server_id"], "srv-a")
         self.assertEqual(lobby_only["member_ids"], [1, 2])
 
+    def test_evaluate_deadlock_presence_row_parses_localized_string_when_minutes_null(self) -> None:
+        """deadlock_minutes=None → Fallback auf Regex aus deadlock_localized."""
+        for localized, expected_minutes in [
+            ("Deadlock: Victor (30. Min.)", 30),
+            ("Straßenkampf: Warden (9. Min.)", 9),
+            ("{deadlock:ranked} queue text (18 min.)", 18),
+        ]:
+            with self.subTest(localized=localized):
+                row = {
+                    "deadlock_updated_at": 1_000,
+                    "last_seen_ts": None,
+                    "deadlock_localized": localized,
+                    "deadlock_stage": "match",
+                    "in_match_now_strict": 1,
+                    "deadlock_minutes": None,
+                    "last_server_id": "srv-1",
+                    "deadlock_party_hint": None,
+                }
+                self.assertEqual(
+                    evaluate_deadlock_presence_row(row, 1_050, stale_seconds=180),
+                    ("match", expected_minutes, "srv-1"),
+                )
+
     def test_evaluate_deadlock_presence_row_uses_strict_match_without_minutes_string(self) -> None:
         row = {
             "deadlock_updated_at": 2_000,

@@ -6,8 +6,8 @@ from collections.abc import Sequence
 from typing import Any
 
 MATCH_STATUS_REGEX = re.compile(
-    r"\{deadlock[:}][^}]*\}.*?\((\d{1,3})[.,]?\s*min\.?\)",
-    re.IGNORECASE | re.DOTALL,
+    r"\((\d{1,3})\.?\s*min\.?\)",
+    re.IGNORECASE,
 )
 
 
