@@ -1,3 +1,40 @@
+# LFG Lobby/Lane Vorschlags-Overhaul (2026-04-22)
+
+## Ziel
+`cogs/lfg.py` Vorschlagslogik bereinigen: Flow-Trennung Lobby-Suche vs Spielersuche, Offtopic-Filter, Juice-Kammer als Eternus-Preset, Präsenz-basierte Füll-Anzeige, Voll-Hinweis, Staging-Verlinkung, Rank-Warnung.
+
+## Plan
+`/home/naniadm/.claude/plans/lfg-py-ich-bin-nicht-delegated-breeze.md`
+
+## Status
+Implementierung durch GPT-Worker abgeschlossen. Statische Verifikation (`py_compile`, `ast.parse`) erfolgreich.
+
+## Offen
+- Claude-Review.
+- Live-Tests (A-H) im Bot-Prozess.
+- Commit+Push.
+
+## Entscheidungen (aus Rückfragen)
+- **Flow-Trennung**: User im gescannten VC = Spielersuche (nur Ping, keine Lobby-Vorschläge). User nicht im VC = Lobby-Suche (nur Lobbys, keine Mitspielerliste, kein Ping).
+- **Offtopic**: Substring `"off topic voice"` (case-insensitive) im Channel-Namen filtern.
+- **Juice Kammer** (Channel-ID `1493690350580138114`): fest als Eternus (Rank 11) einstufen.
+- **Staging-IDs**: Casual `1330278323145801758`, Street Brawl `1357422958544420944`, Ranked `1412804671432818890`. New Player: Kategorie `1465839366634209361` scannen, ersten Channel mit <6 Leuten (adaptive Channels).
+- **Voll-Hinweis**: ab 6 Leuten im VC.
+- **Füll-Anzeige**: kombiniert "Deadlock-aktiv / VC-Gesamt" via Steam-Presence.
+- **Rank-Warnung**: ab >1.5 Ränge Diff Suffix `⚠️ höher als dein Rang`.
+- **Neue-Spieler-Erkennung**: bestehend ok, nicht anfassen.
+
+## Erledigt
+- Konstanten für Staging, Juice Kammer, Offtopic-Filter, Voll-Schwelle und Rank-Warnung ergänzt.
+- `LaneInfo` um `deadlock_active_count` erweitert; VC-Scan zählt jetzt Deadlock-aktive User via Steam-Presence.
+- Offtopic-Channels werden in allen relevanten Kategorie-Scans übersprungen; Juice Kammer wird fest als `Eternus (fix)` gerankt.
+- Lobby-Feldtext auf `aktiv im VC` umgestellt, inkl. Voll-Hinweis ab 6 Leuten.
+- Neue Helper für Presence-Load und Staging-Auflösung eingebaut; Staging-Hinweise verlinken jetzt mit `<#channel>`.
+- Dispatcher trennt jetzt sauber zwischen Spielersuche (nur Mitspieler-Embed + `Deine Lobby`) und Lobby-Suche (nur Lobby-Embed).
+- Decision-Log enthält jetzt den Mode `player` oder `lobby`.
+
+---
+
 # Aktivitäts-Tracking: Text-Scoring + Leaderboards + Public-API (2026-04-17)
 
 ## Ziel

@@ -79,10 +79,19 @@ NEW_PLAYER_CATEGORY_ID = 1465839366634209361
 NEW_PLAYER_LANE_ID = 1465839460485697556
 NEW_PLAYER_MAX_MEMBERS = 6
 STREET_BRAWL_LANE_ID = 1357422958544420944
+STAGING_CASUAL_ID = 1330278323145801758
+STAGING_STREET_BRAWL_ID = 1357422958544420944
+STAGING_RANKED_ID = 1412804671432818890
 # Vorgabe des Users: Casual & Ranked Kategorien
 CASUAL_CATEGORY_ID = 1289721245281292290
 RANKED_CATEGORY_ID = 1412804540994162789
 STREET_BRAWL_CATEGORY_ID = 1357422957017698478
+JUICE_KAMMER_CHANNEL_ID = 1493690350580138114
+JUICE_KAMMER_FIXED_RANK_VALUE = 11
+JUICE_KAMMER_FIXED_RANK_LABEL = "Eternus"
+OFFTOPIC_NAME_SUBSTRING = "off topic voice"
+LOBBY_MAYBE_FULL_THRESHOLD = 6
+RANK_WARNING_DIFF = 1.5
 
 # Rollen & Ranks
 UNKNOWN_ROLE_ID = 1397687886580547745
@@ -166,6 +175,7 @@ class LaneInfo:
     slots_free: int
     avg_rank_value: float
     avg_rank_label: str
+    deadlock_active_count: int = 0
     member_ids: list[int] = field(default_factory=list)
     co_player_ids_present: list[int] = field(default_factory=list)
     link: str = ""
@@ -286,11 +296,18 @@ class SmartLFGAgent(commands.Cog):
 
     # --- Lane Scanning (Phase 2) ---
 
+    def _is_offtopic(self, name: str) -> bool:
+        return OFFTOPIC_NAME_SUBSTRING in name.lower()
+
     def _scan_all_lanes(
-        self, guild: discord.Guild, requester_co_player_ids: set[int]
+        self,
+        guild: discord.Guild,
+        requester_co_player_ids: set[int],
+        steam_online_ids: set[int] | None = None,
     ) -> list[LaneInfo]:
         """Scannt alle Voice-Channels in relevanten Kategorien. Synchron (Discord-Cache)."""
         lanes: list[LaneInfo] = []
+        steam_online_ids = steam_online_ids or set()
 
         def _scan_channel(ch: discord.VoiceChannel, label: str, cat_id: int) -> LaneInfo:
             members = [m for m in ch.members if not m.bot]
@@ -301,7 +318,10 @@ class SmartLFGAgent(commands.Cog):
                 if r_val > 0:
                     ranks.append(r_val)
             avg_rank = sum(ranks) / len(ranks) if ranks else 0.0
-            if avg_rank == 0:
+            if ch.id == JUICE_KAMMER_CHANNEL_ID:
+                avg_rank = JUICE_KAMMER_FIXED_RANK_VALUE
+                avg_label = f"{JUICE_KAMMER_FIXED_RANK_LABEL} (fix)"
+            elif avg_rank == 0:
                 avg_label = "Leer"
             elif avg_rank < 5.5:
                 avg_label = f"Low (~{avg_rank:.1f})"
@@ -314,6 +334,9 @@ class SmartLFGAgent(commands.Cog):
             if label == "New Player":
                 limit = min(limit, NEW_PLAYER_MAX_MEMBERS)
             count = len(members)
+            deadlock_active_count = sum(
+                1 for mid in member_ids if steam_online_ids and mid in steam_online_ids
+            )
             co_present = [mid for mid in member_ids if mid in requester_co_player_ids]
             return LaneInfo(
                 channel=ch,
@@ -325,6 +348,7 @@ class SmartLFGAgent(commands.Cog):
                 slots_free=max(0, limit - count),
                 avg_rank_value=avg_rank,
                 avg_rank_label=avg_label,
+                deadlock_active_count=deadlock_active_count,
                 member_ids=member_ids,
                 co_player_ids_present=co_present,
                 link=f"https://discord.com/channels/{guild.id}/{ch.id}",
@@ -334,22 +358,30 @@ class SmartLFGAgent(commands.Cog):
         np_cat = guild.get_channel(NEW_PLAYER_CATEGORY_ID)
         if isinstance(np_cat, discord.CategoryChannel):
             for vc in np_cat.voice_channels:
+                if self._is_offtopic(vc.name):
+                    continue
                 lanes.append(_scan_channel(vc, "New Player", NEW_PLAYER_CATEGORY_ID))
         elif isinstance(np_ch := guild.get_channel(NEW_PLAYER_LANE_ID), discord.VoiceChannel):
-            lanes.append(_scan_channel(np_ch, "New Player", np_ch.category_id or 0))
+            if not self._is_offtopic(np_ch.name):
+                lanes.append(_scan_channel(np_ch, "New Player", np_ch.category_id or 0))
 
         # Street Brawl
         sb_cat = guild.get_channel(STREET_BRAWL_CATEGORY_ID)
         if isinstance(sb_cat, discord.CategoryChannel):
             for vc in sb_cat.voice_channels:
+                if self._is_offtopic(vc.name):
+                    continue
                 lanes.append(_scan_channel(vc, "Street Brawl", STREET_BRAWL_CATEGORY_ID))
         elif isinstance(sb_ch := guild.get_channel(STREET_BRAWL_LANE_ID), discord.VoiceChannel):
-            lanes.append(_scan_channel(sb_ch, "Street Brawl", STREET_BRAWL_CATEGORY_ID))
+            if not self._is_offtopic(sb_ch.name):
+                lanes.append(_scan_channel(sb_ch, "Street Brawl", STREET_BRAWL_CATEGORY_ID))
 
         # Casual Category
         casual_cat = guild.get_channel(CASUAL_CATEGORY_ID)
         if isinstance(casual_cat, discord.CategoryChannel):
             for vc in casual_cat.voice_channels:
+                if self._is_offtopic(vc.name):
+                    continue
                 if vc.id not in (NEW_PLAYER_LANE_ID, STREET_BRAWL_LANE_ID):
                     lanes.append(_scan_channel(vc, "Casual", CASUAL_CATEGORY_ID))
 
@@ -357,11 +389,17 @@ class SmartLFGAgent(commands.Cog):
         ranked_cat = guild.get_channel(RANKED_CATEGORY_ID)
         if isinstance(ranked_cat, discord.CategoryChannel):
             for vc in ranked_cat.voice_channels:
+                if self._is_offtopic(vc.name):
+                    continue
                 lanes.append(_scan_channel(vc, "Ranked", RANKED_CATEGORY_ID))
 
         for lane in lanes:
             ch_name = lane.channel.name.lower()
-            if lane.channel.name.startswith("➕") or "öffnen" in ch_name or "lanes" in ch_name:
+            if lane.channel.id in (
+                STAGING_CASUAL_ID,
+                STAGING_STREET_BRAWL_ID,
+                STAGING_RANKED_ID,
+            ) or lane.channel.name.startswith("➕") or "öffnen" in ch_name or "lanes" in ch_name:
                 lane.is_staging = True
 
         return lanes
@@ -690,6 +728,9 @@ class SmartLFGAgent(commands.Cog):
         if "möchte" in text and ("jemand" in text or "wer" in text):
             return True
 
+        if "neuling" in text and "platz" in text and ("jmd" in text or "jemand" in text):
+            return True
+
         # --- "Interesse" mit Such- und Spielkontext ---
         # Beispiele: "hat noch wer interesse?", "hat ein anderer anfänger interesse?"
         if (
@@ -871,6 +912,31 @@ class SmartLFGAgent(commands.Cog):
             online_map[str(row["steam_id"])] = (stage, minutes)
 
         return online_map
+
+    def _get_deadlock_active_discord_ids(
+        self,
+        steam_links: dict[int, list[str]],
+        online_users: dict[str, tuple[str, int | None]],
+    ) -> set[int]:
+        if not steam_links or not online_users:
+            return set()
+        return {
+            discord_id
+            for discord_id, steam_ids in steam_links.items()
+            if any(sid in online_users for sid in steam_ids)
+        }
+
+    async def _load_deadlock_presence(
+        self,
+    ) -> tuple[dict[int, list[str]], dict[str, tuple[str, int | None]], set[int]]:
+        steam_links = await self._get_all_steam_links()
+        if not steam_links:
+            return {}, {}, set()
+
+        all_steam_ids = {sid for sids in steam_links.values() for sid in sids}
+        online_users = await self._get_online_steam_users(all_steam_ids)
+        steam_online_ids = self._get_deadlock_active_discord_ids(steam_links, online_users)
+        return steam_links, online_users, steam_online_ids
 
     def _chunked(self, items: Iterable[int], size: int = 400) -> Iterable[list[int]]:
         chunk: list[int] = []
@@ -1187,12 +1253,15 @@ class SmartLFGAgent(commands.Cog):
         author_rank_value: int,
         author_subrank: int | None,
         routing_result: LaneRoutingResult | None = None,
+        steam_links: dict[int, list[str]] | None = None,
+        online_users: dict[str, tuple[str, int | None]] | None = None,
     ) -> list[dict[str, object]]:
         guild = author.guild
         if not guild:
             return []
 
-        steam_links = await self._get_all_steam_links()
+        if steam_links is None:
+            steam_links = await self._get_all_steam_links()
         if not steam_links:
             return []
 
@@ -1223,8 +1292,9 @@ class SmartLFGAgent(commands.Cog):
             candidate_ids, lane_channel_ids, cutoff_str
         )
 
-        all_steam_ids = {sid for sids in steam_links.values() for sid in sids}
-        online_users = await self._get_online_steam_users(all_steam_ids)
+        if online_users is None:
+            all_steam_ids = {sid for sids in steam_links.values() for sid in sids}
+            online_users = await self._get_online_steam_users(all_steam_ids)
 
         user_presence: dict[int, tuple[str, int | None]] = {}
         for discord_id, steam_ids in steam_links.items():
@@ -1687,9 +1757,28 @@ class SmartLFGAgent(commands.Cog):
         guild: discord.Guild,
         lane: LaneInfo,
     ) -> str:
-        lines = [
-            f"{lane.label} · {lane.member_count}/{lane.user_limit} Spieler · {lane.slots_free} Plätze frei · Ø {lane.avg_rank_label}",
-        ]
+        maybe_full_suffix = ""
+        if lane.member_count >= LOBBY_MAYBE_FULL_THRESHOLD:
+            maybe_full_suffix = " · ⚠️ fast voll"
+        if lane.member_count == 0:
+            headline = f"{lane.label} · noch leer, eröffne sie doch · Ø {lane.avg_rank_label}"
+        elif lane.deadlock_active_count == lane.member_count:
+            headline = (
+                f"{lane.label} · {lane.member_count} im Voice, alle spielen Deadlock · "
+                f"Ø {lane.avg_rank_label}{maybe_full_suffix}"
+            )
+        elif lane.deadlock_active_count > 0:
+            headline = (
+                f"{lane.label} · {lane.member_count} im Voice "
+                f"({lane.deadlock_active_count} spielen Deadlock) · "
+                f"Ø {lane.avg_rank_label}{maybe_full_suffix}"
+            )
+        else:
+            headline = (
+                f"{lane.label} · {lane.member_count} im Voice · "
+                f"Ø {lane.avg_rank_label}{maybe_full_suffix}"
+            )
+        lines = [headline]
         if lane.co_player_ids_present:
             co_names = []
             for co_id in lane.co_player_ids_present[:3]:
@@ -1719,7 +1808,7 @@ class SmartLFGAgent(commands.Cog):
             result.append(
                 (
                     f"➕ {lane.channel.name}",
-                    f"{lane.label} · Einfach joinen und loslegen — sobald du drin bist, sehen andere dass hier was geht.\n{lane.link}",
+                    f"{lane.label} · Einfach joinen und loslegen — sobald du drin bist, sehen andere dass hier was geht.\n<#{lane.channel.id}>",
                 )
             )
 
@@ -1729,11 +1818,56 @@ class SmartLFGAgent(commands.Cog):
                 result.append(
                     (
                         f"➕ {lane.channel.name}",
-                        f"{lane.label} · Einfach joinen und loslegen — sobald du drin bist, sehen andere dass hier was geht.\n{lane.link}",
+                        f"{lane.label} · Einfach joinen und loslegen — sobald du drin bist, sehen andere dass hier was geht.\n<#{lane.channel.id}>",
                     )
                 )
 
         return result
+
+    def _resolve_staging_channel(
+        self,
+        guild: discord.Guild,
+        preferred_label: str,
+        lanes: list[LaneInfo],
+    ) -> int | None:
+        channel_id: int | None = None
+
+        if preferred_label == "Ranked":
+            channel_id = STAGING_RANKED_ID
+        elif preferred_label == "Street Brawl":
+            channel_id = STAGING_STREET_BRAWL_ID
+            sb_cat = guild.get_channel(STREET_BRAWL_CATEGORY_ID)
+            if isinstance(sb_cat, discord.CategoryChannel):
+                for vc in sb_cat.voice_channels:
+                    if vc.id == STAGING_STREET_BRAWL_ID or self._is_offtopic(vc.name):
+                        continue
+                    member_count = len([m for m in vc.members if not m.bot])
+                    if member_count < LOBBY_MAYBE_FULL_THRESHOLD:
+                        channel_id = vc.id
+                        break
+        elif preferred_label == "New Player":
+            channel_id = NEW_PLAYER_LANE_ID
+            np_cat = guild.get_channel(NEW_PLAYER_CATEGORY_ID)
+            if isinstance(np_cat, discord.CategoryChannel):
+                for vc in np_cat.voice_channels:
+                    if self._is_offtopic(vc.name):
+                        continue
+                    member_count = len([m for m in vc.members if not m.bot])
+                    if member_count < LOBBY_MAYBE_FULL_THRESHOLD:
+                        channel_id = vc.id
+                        break
+        else:
+            channel_id = STAGING_CASUAL_ID
+
+        if channel_id and guild.get_channel(channel_id):
+            return channel_id
+
+        if preferred_label == "New Player":
+            for lane in lanes:
+                if lane.label == "New Player" and guild.get_channel(lane.channel.id):
+                    return lane.channel.id
+
+        return None
 
     def _parse_subrank_token(self, raw_token: str | None) -> int | None:
         if not raw_token:
@@ -1871,8 +2005,15 @@ class SmartLFGAgent(commands.Cog):
             routing_rank_sub = NEW_PLAYER_FALLBACK_SUBRANK
             suggestion_rank_strict = True
 
+        steam_links, online_users, steam_online_ids = await self._load_deadlock_presence()
+
         # 3. Lane Routing
-        lanes = self._scan_all_lanes(guild, co_player_ids)
+        lanes = self._scan_all_lanes(guild, co_player_ids, steam_online_ids=steam_online_ids)
+        user_in_scanned_vc = bool(
+            message.author.voice
+            and message.author.voice.channel
+            and any(lane.channel.id == message.author.voice.channel.id for lane in lanes)
+        )
         routing = self._route_to_lane(
             guild,
             message.author,
@@ -1883,82 +2024,36 @@ class SmartLFGAgent(commands.Cog):
             lanes,
             co_player_ids,
         )
+        mode = "player" if user_in_scanned_vc else "lobby"
+        routing.decision_log.insert(0, f"Mode: {mode}")
 
-        # 5. Bis zu drei sortierte Lobby-Vorschläge
-        suggested_lanes = self._select_lobby_suggestions(
-            lanes,
-            routing,
-            routing_rank_val,
-            routing_rank_sub,
-            is_new_player,
-            suggestion_rank_strict,
-        )
-        has_active = len(suggested_lanes) > 0
-        preferred_label = self._resolve_mode_label(
-            routing, is_new_player, has_active, suggestion_rank_strict, routing_rank_val
-        )
-
-        # 6. Player Matching bleibt vorhanden, ist für User aktuell deaktiviert.
         matching_players: list[dict] = []
-        if ENABLE_PLAYER_SUGGESTIONS:
+        if user_in_scanned_vc and ENABLE_PLAYER_SUGGESTIONS:
             matching_players = await self._find_matching_players(
                 message.author,
                 message.content,
                 rank_val,
                 rank_sub,
                 routing_result=routing,
+                steam_links=steam_links,
+                online_users=online_users,
             )
             if not ENABLE_PLAYER_PINGS:
                 for candidate in matching_players:
                     candidate["discord_active"] = True
 
-        # 7. Embed aufbauen
-        # Prüfe ob Neue Spieler Lane besetzt ist (für neue Spieler Intro-Text)
-        new_player_lane_occupied = any(
-            lane.label == "New Player" and lane.member_count > 0 for lane in lanes
-        )
-
-        embed = discord.Embed(
-            title="\U0001f3ae Lobby-Finder",
-            description=self._compose_intro_text(
-                message.author.mention,
-                rank_display,
-                is_new_player,
-                has_active,
-                new_player_lane_occupied=new_player_lane_occupied,
-            ),
-            color=discord.Color.orange(),
-        )
-
-        if has_active:
-            for lane in suggested_lanes[:MAX_JOIN_LOBBIES_SHOWN]:
-                slots = lane.slots_free
-                if slots <= 2:
-                    status = "\U0001f7e1"
-                else:
-                    status = "\U0001f7e2"
-                embed.add_field(
-                    name=f"{status} {lane.channel.name}",
-                    value=self._build_lobby_field_value(guild, lane),
-                    inline=False,
-                )
-            embed.add_field(
-                name="Oder eigene Lobby aufmachen?",
-                value=f"Wenn nichts passt, mach einfach eine **{preferred_label}**-Lane auf — erfahrungsgemäß kommen schnell Leute dazu.",
-                inline=False,
+        if user_in_scanned_vc:
+            player_rank_part = f" ({rank_display})" if rank_display != "Unbekannt" else ""
+            embed = discord.Embed(
+                title="\U0001f465 Mitspieler-Finder",
+                description=(
+                    f"Deine Lobby: <#{message.author.voice.channel.id}>\n"
+                    f"Ich suche passende Mitspieler für dich{player_rank_part}."
+                ),
+                color=discord.Color.orange(),
             )
-        else:
-            staging_suggestions = self._build_staging_suggestions(
-                guild,
-                lanes,
-                preferred_label,
-            )
-            for name, value in staging_suggestions:
-                embed.add_field(name=name, value=value, inline=False)
 
-        # Mitspieler-Vorschläge aus Player Matching ins Embed
-        if matching_players:
-            ping_lines, visible_lines, lobby_cnt, match_cnt = self._build_player_lines(
+            ping_lines, visible_lines, _lobby_cnt, _match_cnt = self._build_player_lines(
                 guild, matching_players
             )
             player_field_parts: list[str] = []
@@ -1966,12 +2061,94 @@ class SmartLFGAgent(commands.Cog):
                 player_field_parts.extend(ping_lines)
             if visible_lines:
                 player_field_parts.append("💬 Auf Discord: " + visible_lines[0])
-            if player_field_parts:
-                embed.add_field(
-                    name="\U0001f465 Mögliche Mitspieler",
-                    value="\n".join(player_field_parts),
-                    inline=False,
+            if not player_field_parts:
+                player_field_parts.append(
+                    "Grad niemand online, der zu dir passt — mach einfach eine Lane auf, "
+                    "dann sehen's andere und kommen erfahrungsgemäß schnell dazu."
                 )
+            embed.add_field(
+                name="\U0001f465 Mögliche Mitspieler",
+                value="\n".join(player_field_parts),
+                inline=False,
+            )
+        else:
+            suggested_lanes = self._select_lobby_suggestions(
+                lanes,
+                routing,
+                routing_rank_val,
+                routing_rank_sub,
+                is_new_player,
+                suggestion_rank_strict,
+            )
+            has_active = len(suggested_lanes) > 0
+            preferred_label = self._resolve_mode_label(
+                routing, is_new_player, has_active, suggestion_rank_strict, routing_rank_val
+            )
+
+            new_player_lane_occupied = any(
+                lane.label == "New Player" and lane.member_count > 0 for lane in lanes
+            )
+            embed = discord.Embed(
+                title="\U0001f3ae Lobby-Finder",
+                description=self._compose_intro_text(
+                    message.author.mention,
+                    rank_display,
+                    is_new_player,
+                    has_active,
+                    new_player_lane_occupied=new_player_lane_occupied,
+                ),
+                color=discord.Color.orange(),
+            )
+
+            requester_rank_float = rank_val + (rank_sub or 5) / 10.0
+            if has_active:
+                for lane in suggested_lanes[:MAX_JOIN_LOBBIES_SHOWN]:
+                    slots = lane.slots_free
+                    if slots <= 2:
+                        status = "\U0001f7e1"
+                    else:
+                        status = "\U0001f7e2"
+
+                    warning_suffix = ""
+                    if lane.member_count > 0 and rank_val > 0:
+                        rank_diff = abs(lane.avg_rank_value - requester_rank_float)
+                        if rank_diff > RANK_WARNING_DIFF:
+                            warning_suffix = " ⚠️ etwas über deinem Rang"
+                    embed.add_field(
+                        name=f"{status} {lane.channel.name}{warning_suffix}",
+                        value=self._build_lobby_field_value(guild, lane),
+                        inline=False,
+                    )
+
+                staging_id = self._resolve_staging_channel(guild, preferred_label, lanes)
+                if staging_id:
+                    embed.add_field(
+                        name="Oder eigene Lobby aufmachen?",
+                        value=(
+                            f"Wenn nichts passt, mach in <#{staging_id}> eine "
+                            f"**{preferred_label}**-Lane auf — erfahrungsgemäß kommen schnell Leute dazu."
+                        ),
+                        inline=False,
+                    )
+            else:
+                staging_id = self._resolve_staging_channel(guild, preferred_label, lanes)
+                if staging_id:
+                    embed.add_field(
+                        name="Oder eigene Lobby aufmachen?",
+                        value=(
+                            f"Wenn nichts passt, mach in <#{staging_id}> eine "
+                            f"**{preferred_label}**-Lane auf — erfahrungsgemäß kommen schnell Leute dazu."
+                        ),
+                        inline=False,
+                    )
+                else:
+                    staging_suggestions = self._build_staging_suggestions(
+                        guild,
+                        lanes,
+                        preferred_label,
+                    )
+                    for name, value in staging_suggestions:
+                        embed.add_field(name=name, value=value, inline=False)
 
         await output_channel.send(
             embed=embed,
@@ -1991,6 +2168,7 @@ class SmartLFGAgent(commands.Cog):
                 color=discord.Color.greyple(),
             )
             icon_map = {
+                "Mode": "\U0001f9ed",
                 "Intent": "\u2699\ufe0f",
                 "Scan": "\U0001f4e1",
                 "Rank-Filter": "\U0001f50e",
@@ -2007,7 +2185,7 @@ class SmartLFGAgent(commands.Cog):
                         break
                 log_text_lines.append(f"{prefix_icon}{line}")
 
-            if matching_players:
+            if user_in_scanned_vc and matching_players:
                 online_cnt = sum(
                     1 for c in matching_players if c.get("stage") in ("lobby", "match")
                 )
@@ -2032,10 +2210,6 @@ class SmartLFGAgent(commands.Cog):
         if message.channel.id != LFG_CHANNEL_ID:
             return
 
-        # Voice-Check: Wenn der User bereits in einem Voice-Channel ist, braucht er kein LFG
-        if message.author.voice and message.author.voice.channel:
-            return
-
         # Keyword-only Intent Check (kein AI)
         if not self._keyword_lfg_intent(message.content):
             return
@@ -2058,7 +2232,8 @@ class SmartLFGAgent(commands.Cog):
         if not guild:
             return
 
-        lanes = self._scan_all_lanes(guild, set())
+        _steam_links, _online_users, steam_online_ids = await self._load_deadlock_presence()
+        lanes = self._scan_all_lanes(guild, set(), steam_online_ids=steam_online_ids)
         lines = []
         for lane in lanes:
             occ = f"{lane.member_count}/{lane.user_limit}"
@@ -2095,7 +2270,8 @@ class SmartLFGAgent(commands.Cog):
 
         now = datetime.utcnow()
         profile = await self._build_user_activity_profile(target.id, now)
-        lanes = self._scan_all_lanes(guild, co_ids)
+        _steam_links, _online_users, steam_online_ids = await self._load_deadlock_presence()
+        lanes = self._scan_all_lanes(guild, co_ids, steam_online_ids=steam_online_ids)
         routing = self._route_to_lane(
             guild,
             target,
