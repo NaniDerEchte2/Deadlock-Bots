@@ -1762,20 +1762,9 @@ class SmartLFGAgent(commands.Cog):
             maybe_full_suffix = " · ⚠️ fast voll"
         if lane.member_count == 0:
             headline = f"{lane.label} · noch leer, eröffne sie doch · Ø {lane.avg_rank_label}"
-        elif lane.deadlock_active_count == lane.member_count:
-            headline = (
-                f"{lane.label} · {lane.member_count} im Voice, alle spielen Deadlock · "
-                f"Ø {lane.avg_rank_label}{maybe_full_suffix}"
-            )
-        elif lane.deadlock_active_count > 0:
-            headline = (
-                f"{lane.label} · {lane.member_count} im Voice "
-                f"({lane.deadlock_active_count} spielen Deadlock) · "
-                f"Ø {lane.avg_rank_label}{maybe_full_suffix}"
-            )
         else:
             headline = (
-                f"{lane.label} · {lane.member_count} im Voice · "
+                f"{lane.label} · {lane.member_count}/{lane.user_limit} im Voice · "
                 f"Ø {lane.avg_rank_label}{maybe_full_suffix}"
             )
         lines = [headline]
@@ -2009,11 +1998,6 @@ class SmartLFGAgent(commands.Cog):
 
         # 3. Lane Routing
         lanes = self._scan_all_lanes(guild, co_player_ids, steam_online_ids=steam_online_ids)
-        user_in_scanned_vc = bool(
-            message.author.voice
-            and message.author.voice.channel
-            and any(lane.channel.id == message.author.voice.channel.id for lane in lanes)
-        )
         routing = self._route_to_lane(
             guild,
             message.author,
@@ -2024,131 +2008,85 @@ class SmartLFGAgent(commands.Cog):
             lanes,
             co_player_ids,
         )
-        mode = "player" if user_in_scanned_vc else "lobby"
-        routing.decision_log.insert(0, f"Mode: {mode}")
+        routing.decision_log.insert(0, "Mode: lobby")
 
-        matching_players: list[dict] = []
-        if user_in_scanned_vc and ENABLE_PLAYER_SUGGESTIONS:
-            matching_players = await self._find_matching_players(
-                message.author,
-                message.content,
-                rank_val,
-                rank_sub,
-                routing_result=routing,
-                steam_links=steam_links,
-                online_users=online_users,
-            )
-            if not ENABLE_PLAYER_PINGS:
-                for candidate in matching_players:
-                    candidate["discord_active"] = True
+        suggested_lanes = self._select_lobby_suggestions(
+            lanes,
+            routing,
+            routing_rank_val,
+            routing_rank_sub,
+            is_new_player,
+            suggestion_rank_strict,
+        )
+        has_active = len(suggested_lanes) > 0
+        preferred_label = self._resolve_mode_label(
+            routing, is_new_player, has_active, suggestion_rank_strict, routing_rank_val
+        )
 
-        if user_in_scanned_vc:
-            player_rank_part = f" ({rank_display})" if rank_display != "Unbekannt" else ""
-            embed = discord.Embed(
-                title="\U0001f465 Mitspieler-Finder",
-                description=(
-                    f"Deine Lobby: <#{message.author.voice.channel.id}>\n"
-                    f"Ich suche passende Mitspieler für dich{player_rank_part}."
-                ),
-                color=discord.Color.orange(),
-            )
-
-            ping_lines, visible_lines, _lobby_cnt, _match_cnt = self._build_player_lines(
-                guild, matching_players
-            )
-            player_field_parts: list[str] = []
-            if ping_lines:
-                player_field_parts.extend(ping_lines)
-            if visible_lines:
-                player_field_parts.append("💬 Auf Discord: " + visible_lines[0])
-            if not player_field_parts:
-                player_field_parts.append(
-                    "Grad niemand online, der zu dir passt — mach einfach eine Lane auf, "
-                    "dann sehen's andere und kommen erfahrungsgemäß schnell dazu."
-                )
-            embed.add_field(
-                name="\U0001f465 Mögliche Mitspieler",
-                value="\n".join(player_field_parts),
-                inline=False,
-            )
-        else:
-            suggested_lanes = self._select_lobby_suggestions(
-                lanes,
-                routing,
-                routing_rank_val,
-                routing_rank_sub,
+        new_player_lane_occupied = any(
+            lane.label == "New Player" and lane.member_count > 0 for lane in lanes
+        )
+        embed = discord.Embed(
+            title="\U0001f3ae Lobby-Finder",
+            description=self._compose_intro_text(
+                message.author.mention,
+                rank_display,
                 is_new_player,
-                suggestion_rank_strict,
-            )
-            has_active = len(suggested_lanes) > 0
-            preferred_label = self._resolve_mode_label(
-                routing, is_new_player, has_active, suggestion_rank_strict, routing_rank_val
-            )
+                has_active,
+                new_player_lane_occupied=new_player_lane_occupied,
+            ),
+            color=discord.Color.orange(),
+        )
 
-            new_player_lane_occupied = any(
-                lane.label == "New Player" and lane.member_count > 0 for lane in lanes
-            )
-            embed = discord.Embed(
-                title="\U0001f3ae Lobby-Finder",
-                description=self._compose_intro_text(
-                    message.author.mention,
-                    rank_display,
-                    is_new_player,
-                    has_active,
-                    new_player_lane_occupied=new_player_lane_occupied,
-                ),
-                color=discord.Color.orange(),
-            )
-
-            requester_rank_float = rank_val + (rank_sub or 5) / 10.0
-            if has_active:
-                for lane in suggested_lanes[:MAX_JOIN_LOBBIES_SHOWN]:
-                    slots = lane.slots_free
-                    if slots <= 2:
-                        status = "\U0001f7e1"
-                    else:
-                        status = "\U0001f7e2"
-
-                    warning_suffix = ""
-                    if lane.member_count > 0 and rank_val > 0:
-                        rank_diff = abs(lane.avg_rank_value - requester_rank_float)
-                        if rank_diff > RANK_WARNING_DIFF:
-                            warning_suffix = " ⚠️ etwas über deinem Rang"
-                    embed.add_field(
-                        name=f"{status} {lane.channel.name}{warning_suffix}",
-                        value=self._build_lobby_field_value(guild, lane),
-                        inline=False,
-                    )
-
-                staging_id = self._resolve_staging_channel(guild, preferred_label, lanes)
-                if staging_id:
-                    embed.add_field(
-                        name="Oder eigene Lobby aufmachen?",
-                        value=(
-                            f"Wenn nichts passt, mach in <#{staging_id}> eine "
-                            f"**{preferred_label}**-Lane auf — erfahrungsgemäß kommen schnell Leute dazu."
-                        ),
-                        inline=False,
-                    )
-            else:
-                staging_id = self._resolve_staging_channel(guild, preferred_label, lanes)
-                if staging_id:
-                    embed.add_field(
-                        name="Oder eigene Lobby aufmachen?",
-                        value=(
-                            f"Wenn nichts passt, mach in <#{staging_id}> eine "
-                            f"**{preferred_label}**-Lane auf — erfahrungsgemäß kommen schnell Leute dazu."
-                        ),
-                        inline=False,
-                    )
+        requester_rank_float = rank_val + (rank_sub or 5) / 10.0
+        if has_active:
+            for lane in suggested_lanes[:MAX_JOIN_LOBBIES_SHOWN]:
+                slots = lane.slots_free
+                if slots <= 2:
+                    status = "\U0001f7e1"
                 else:
-                    staging_suggestions = self._build_staging_suggestions(
-                        guild,
-                        lanes,
-                        preferred_label,
-                    )
-                    for name, value in staging_suggestions:
-                        embed.add_field(name=name, value=value, inline=False)
+                    status = "\U0001f7e2"
+
+                warning_suffix = ""
+                if lane.member_count > 0 and rank_val > 0:
+                    rank_diff = abs(lane.avg_rank_value - requester_rank_float)
+                    if rank_diff > RANK_WARNING_DIFF:
+                        warning_suffix = " ⚠️ etwas über deinem Rang"
+                embed.add_field(
+                    name=f"{status} {lane.channel.name}{warning_suffix}",
+                    value=self._build_lobby_field_value(guild, lane),
+                    inline=False,
+                )
+
+            staging_id = self._resolve_staging_channel(guild, preferred_label, lanes)
+            if staging_id:
+                embed.add_field(
+                    name="Oder eigene Lobby aufmachen?",
+                    value=(
+                        f"Wenn nichts passt, mach in <#{staging_id}> eine "
+                        f"**{preferred_label}**-Lane auf — erfahrungsgemäß kommen schnell Leute dazu."
+                    ),
+                    inline=False,
+                )
+        else:
+            staging_id = self._resolve_staging_channel(guild, preferred_label, lanes)
+            if staging_id:
+                embed.add_field(
+                    name="Oder eigene Lobby aufmachen?",
+                    value=(
+                        f"Wenn nichts passt, mach in <#{staging_id}> eine "
+                        f"**{preferred_label}**-Lane auf — erfahrungsgemäß kommen schnell Leute dazu."
+                    ),
+                    inline=False,
+                )
+            else:
+                staging_suggestions = self._build_staging_suggestions(
+                    guild,
+                    lanes,
+                    preferred_label,
+                )
+                for name, value in staging_suggestions:
+                    embed.add_field(name=name, value=value, inline=False)
 
         await output_channel.send(
             embed=embed,
@@ -2185,15 +2123,6 @@ class SmartLFGAgent(commands.Cog):
                         break
                 log_text_lines.append(f"{prefix_icon}{line}")
 
-            if user_in_scanned_vc and matching_players:
-                online_cnt = sum(
-                    1 for c in matching_players if c.get("stage") in ("lobby", "match")
-                )
-                active_cnt = len(matching_players) - online_cnt
-                log_text_lines.append(
-                    f"\U0001f3d3 Matching: {len(matching_players)} Spieler "
-                    f"({online_cnt} online, {active_cnt} aktiv)"
-                )
 
             log_embed.description = "\n".join(log_text_lines)
             try:
@@ -2208,6 +2137,10 @@ class SmartLFGAgent(commands.Cog):
 
         # Nur im LFG-Channel lauschen
         if message.channel.id != LFG_CHANNEL_ID:
+            return
+
+        # Lobby-Suche: User darf nicht bereits in einer Lane sitzen — das übernimmt player_finder.py
+        if message.author.voice and message.author.voice.channel:
             return
 
         # Keyword-only Intent Check (kein AI)
