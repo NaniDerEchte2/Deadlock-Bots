@@ -441,7 +441,7 @@ class TempVoiceCore(commands.Cog):
         """Extract the trailing number from a lane name (e.g., 'Lane 1' -> '1')."""
         if not base_name:
             return None
-        match = re.search(r'\s+(\d+)$', base_name)
+        match = re.search(r"\s+(\d+)$", base_name)
         return match.group(1) if match else None
 
     def _desired_prefix_for_rules(self, lane: discord.VoiceChannel, rules: dict[str, Any]) -> str:

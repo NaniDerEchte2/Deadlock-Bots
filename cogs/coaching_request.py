@@ -87,8 +87,6 @@ def _format_ai_summary_for_embed(value: str, *, limit: int = DISCORD_EMBED_FIELD
     return truncated + "…"
 
 
-
-
 class CoachClaimButton(discord.ui.Button):
     def __init__(self, request_id: int, author_id: int):
         super().__init__(
@@ -158,9 +156,15 @@ class CoachClaimButton(discord.ui.Button):
                    role_assigned_at, role_expires_at, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)""",
                 (
-                    session_id, request["id"], interaction.user.id, author.id,
-                    author.display_name, interaction.channel.id,
-                    now, expires_at, now,
+                    session_id,
+                    request["id"],
+                    interaction.user.id,
+                    author.id,
+                    author.display_name,
+                    interaction.channel.id,
+                    now,
+                    expires_at,
+                    now,
                 ),
             )
             db.execute(
@@ -334,11 +338,11 @@ class CoachingRequestCog(commands.Cog):
         prompt = f"""Analysiere diese Deadlock Coaching-Anfrage. Die Felder sind Rohtext vom User,
 interpretiere Rang/Subrank und Game/Stunden-Angaben selbst.
 
-- Rang: {request_data.get('rank') or 'N/A'}
-- Hero: {request_data.get('hero') or 'N/A'}
-- Games / Stunden: {request_data.get('games_played') or 'N/A'}
-- Verfügbarkeit: {request_data.get('availability') or 'N/A'}
-- Probleme: {request_data.get('current_problems') or 'N/A'}
+- Rang: {request_data.get("rank") or "N/A"}
+- Hero: {request_data.get("hero") or "N/A"}
+- Games / Stunden: {request_data.get("games_played") or "N/A"}
+- Verfügbarkeit: {request_data.get("availability") or "N/A"}
+- Probleme: {request_data.get("current_problems") or "N/A"}
 
 Erstelle eine präzise, hilfreiche Zusammenfassung für den Coach."""
 
@@ -518,7 +522,9 @@ Erstelle eine präzise, hilfreiche Zusammenfassung für den Coach."""
                         continue
                     ai_summary = await self._analyze_with_ai(request_data)
                     if not ai_summary:
-                        log.info("Coaching request %s aborted (invalid/non-serious)", request_data["id"])
+                        log.info(
+                            "Coaching request %s aborted (invalid/non-serious)", request_data["id"]
+                        )
                         db.execute(
                             "UPDATE coaching_requests SET status='invalid', updated_at=? WHERE id=?",
                             (int(time.time()), request_data["id"]),
