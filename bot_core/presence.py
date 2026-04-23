@@ -70,8 +70,7 @@ class PresenceMixin:
             if hasattr(cog, "on_voice_state_update"):
                 listener_pairs = getattr(type(cog), "__cog_listeners__", [])
                 if any(
-                    event_name == "on_voice_state_update"
-                    and method_name == "on_voice_state_update"
+                    event_name == "on_voice_state_update" and method_name == "on_voice_state_update"
                     for event_name, method_name in listener_pairs
                 ):
                     continue

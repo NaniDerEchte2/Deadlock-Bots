@@ -16,14 +16,15 @@ import hmac
 import json
 import logging
 import os
-import secrets
 import sqlite3
 import time
-from aiohttp import ClientSession, ClientTimeout, web
+from collections.abc import Iterable
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterable
-from urllib.parse import urlencode, urlsplit
+from typing import Any
+from urllib.parse import urlsplit
+
+from aiohttp import ClientSession, ClientTimeout, web
 
 from service import db
 
@@ -96,17 +97,17 @@ RANK_SHORT = {
 }
 
 RANK_COLORS: dict[str, str] = {
-    "initiate":  "#8fa4b4",
-    "seeker":    "#72aa5a",
+    "initiate": "#8fa4b4",
+    "seeker": "#72aa5a",
     "alchemist": "#3dbb44",
-    "arcanist":  "#18bba8",
+    "arcanist": "#18bba8",
     "ritualist": "#2288ee",
-    "emissary":  "#5055ee",
-    "archon":    "#8833dd",
-    "oracle":    "#cc33bb",
-    "phantom":   "#dd3344",
+    "emissary": "#5055ee",
+    "archon": "#8833dd",
+    "oracle": "#cc33bb",
+    "phantom": "#dd3344",
     "ascendant": "#ee9922",
-    "eternus":   "#f5cc11",
+    "eternus": "#f5cc11",
 }
 
 
@@ -222,7 +223,9 @@ async def _call_dashboard_api(path: str, payload: dict[str, Any]) -> dict[str, A
                     body = await response.text()
                     log.warning(
                         "Dashboard-API Fehler (path=%s status=%s body=%s)",
-                        path, response.status, body[:200],
+                        path,
+                        response.status,
+                        body[:200],
                     )
                     return None
                 data = await response.json()
@@ -351,7 +354,9 @@ def _safe_query_all(
         return db.query_all(sql, params)
     except sqlite3.OperationalError as exc:
         message = str(exc).lower()
-        if "no such table" in message and any(table.lower() in message for table in optional_tables):
+        if "no such table" in message and any(
+            table.lower() in message for table in optional_tables
+        ):
             log.warning("Optionale Tabelle fehlt für PublicStats: %s", exc)
             return []
         raise
@@ -367,7 +372,9 @@ def _safe_query_one(
         return db.query_one(sql, params)
     except sqlite3.OperationalError as exc:
         message = str(exc).lower()
-        if "no such table" in message and any(table.lower() in message for table in optional_tables):
+        if "no such table" in message and any(
+            table.lower() in message for table in optional_tables
+        ):
             log.warning("Optionale Tabelle fehlt für PublicStats: %s", exc)
             return None
         raise
@@ -454,7 +461,9 @@ def _parse_user_id_from_session(session: dict[str, Any]) -> int:
             content_type="application/json",
         ) from exc
     if user_id <= 0:
-        raise web.HTTPUnauthorized(text='{"error":"unauthenticated"}', content_type="application/json")
+        raise web.HTTPUnauthorized(
+            text='{"error":"unauthenticated"}', content_type="application/json"
+        )
     return user_id
 
 
@@ -491,7 +500,7 @@ def _build_voice_matrix(rows: Iterable[Any]) -> tuple[list[list[int]], int]:
             continue
         cursor = started
         while cursor < ended:
-            next_hour = (cursor.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1))
+            next_hour = cursor.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
             segment_end = min(next_hour, ended)
             seconds = int((segment_end - cursor).total_seconds())
             if seconds > 0:
@@ -1338,8 +1347,12 @@ async def _handle_public_me_voice_history(request: web.Request) -> web.Response:
         recent_sessions.append(
             {
                 "id": _safe_int(row["id"]),
-                "guild_id": str(_safe_int(row["guild_id"])) if row["guild_id"] is not None else None,
-                "channel_id": str(_safe_int(row["channel_id"])) if row["channel_id"] is not None else None,
+                "guild_id": str(_safe_int(row["guild_id"]))
+                if row["guild_id"] is not None
+                else None,
+                "channel_id": str(_safe_int(row["channel_id"]))
+                if row["channel_id"] is not None
+                else None,
                 "channel_name": row["channel_name"] or None,
                 "started_at": _to_iso(row["started_at"]),
                 "ended_at": _to_iso(row["ended_at"]),
@@ -1397,8 +1410,12 @@ async def _handle_public_me_voice_history(request: web.Request) -> web.Response:
             ),
             "lifetime_seconds": _safe_int(lifetime_stats["total_seconds"] if lifetime_stats else 0),
             "lifetime_points": _safe_int(lifetime_stats["total_points"] if lifetime_stats else 0),
-            "lifetime_sessions": _safe_int(lifetime_sessions_row["sessions"] if lifetime_sessions_row else 0),
-            "lifetime_last_update": _to_iso(lifetime_stats["last_update"] if lifetime_stats else None),
+            "lifetime_sessions": _safe_int(
+                lifetime_sessions_row["sessions"] if lifetime_sessions_row else 0
+            ),
+            "lifetime_last_update": _to_iso(
+                lifetime_stats["last_update"] if lifetime_stats else None
+            ),
             "last_session": _to_iso(last_session),
         },
         "recent_sessions_limit": recent_limit,
@@ -1518,7 +1535,12 @@ async def _handle_public_me_text_history(request: web.Request) -> web.Response:
         buckets = [
             existing.get(
                 str(hour).zfill(2),
-                {"label": str(hour).zfill(2), "total_messages": 0, "total_points": 0, "sessions": 0},
+                {
+                    "label": str(hour).zfill(2),
+                    "total_messages": 0,
+                    "total_points": 0,
+                    "sessions": 0,
+                },
             )
             for hour in range(24)
         ]
@@ -1548,7 +1570,9 @@ async def _handle_public_me_text_history(request: web.Request) -> web.Response:
         "mode": mode,
         "user_summary": {
             "user_id": str(user_id),
-            "lifetime_messages": _safe_int(lifetime_stats["total_messages"] if lifetime_stats else 0),
+            "lifetime_messages": _safe_int(
+                lifetime_stats["total_messages"] if lifetime_stats else 0
+            ),
             "lifetime_points": _safe_int(lifetime_stats["total_points"] if lifetime_stats else 0),
             "range_messages": _safe_int(range_stats["total_messages"] if range_stats else 0),
             "range_points": _safe_int(range_stats["total_points"] if range_stats else 0),
@@ -1572,7 +1596,9 @@ async def _handle_public_me_text_history(request: web.Request) -> web.Response:
         "recent_sessions": [
             {
                 "id": _safe_int(row["id"]),
-                "channel_id": str(_safe_int(row["channel_id"])) if row["channel_id"] is not None else None,
+                "channel_id": str(_safe_int(row["channel_id"]))
+                if row["channel_id"] is not None
+                else None,
                 "started_at": _to_iso(row["started_at"]),
                 "ended_at": _to_iso(row["ended_at"]),
                 "message_count": _safe_int(row["message_count"]),
@@ -1637,7 +1663,11 @@ async def _handle_public_me_co_players(request: web.Request) -> web.Response:
     entries = [
         {
             "user_id": str(_safe_int(row["co_player_id"])),
-            "name": str(row["co_player_display_name"] or fallback_names.get(_safe_int(row["co_player_id"])) or f"User {_safe_int(row['co_player_id'])}"),
+            "name": str(
+                row["co_player_display_name"]
+                or fallback_names.get(_safe_int(row["co_player_id"]))
+                or f"User {_safe_int(row['co_player_id'])}"
+            ),
             "sessions_together": _safe_int(row["sessions_together"]),
             "total_minutes_together": _safe_int(row["total_minutes_together"]),
             "last_played": _to_iso(row["last_played_together"]),
@@ -1658,17 +1688,23 @@ async def _handle_discord_login(request: web.Request) -> web.Response:
         },
     )
     if not data:
-        return web.Response(text="Auth-Service nicht erreichbar.", status=503, content_type="text/plain")
+        return web.Response(
+            text="Auth-Service nicht erreichbar.", status=503, content_type="text/plain"
+        )
     authorize_url = str(data.get("authorize_url") or "").strip()
     state_id = str(data.get("state_id") or "").strip()
     if not authorize_url or not state_id:
-        return web.Response(text="Auth-Service Antwort ungültig.", status=503, content_type="text/plain")
+        return web.Response(
+            text="Auth-Service Antwort ungültig.", status=503, content_type="text/plain"
+        )
 
-    pre_auth = _sign({
-        "state_id": state_id,
-        "redirect": redirect_path,
-        "exp": int(time.time()) + PUBLIC_STATS_PRE_AUTH_TTL,
-    })
+    pre_auth = _sign(
+        {
+            "state_id": state_id,
+            "redirect": redirect_path,
+            "exp": int(time.time()) + PUBLIC_STATS_PRE_AUTH_TTL,
+        }
+    )
     response = web.HTTPFound(authorize_url)
     response.set_cookie(
         PUBLIC_STATS_PRE_AUTH_COOKIE,
@@ -1692,7 +1728,12 @@ async def _handle_discord_complete(request: web.Request) -> web.Response:
         if pre_auth:
             redirect_path = _sanitize_redirect_path(pre_auth.get("redirect"))
 
-    log.info("discord_complete: state_id=%s pre_auth_found=%s redirect=%s", bool(state_id), bool(pre_auth_cookie), redirect_path)
+    log.info(
+        "discord_complete: state_id=%s pre_auth_found=%s redirect=%s",
+        bool(state_id),
+        bool(pre_auth_cookie),
+        redirect_path,
+    )
 
     response = web.HTTPFound(redirect_path)
     response.del_cookie(PUBLIC_STATS_PRE_AUTH_COOKIE, path="/")
@@ -1705,7 +1746,10 @@ async def _handle_discord_complete(request: web.Request) -> web.Response:
         "/internal/v1/discord/consume-result",
         {"state_id": state_id},
     )
-    log.info("discord_complete: consume-result data=%s", {k: v for k, v in (data or {}).items() if k != "discord_avatar"} if data else None)
+    log.info(
+        "discord_complete: consume-result data=%s",
+        {k: v for k, v in (data or {}).items() if k != "discord_avatar"} if data else None,
+    )
     if not data or not data.get("discord_id"):
         log.warning("discord_complete: kein discord_id in consume-result → kein Login")
         return response

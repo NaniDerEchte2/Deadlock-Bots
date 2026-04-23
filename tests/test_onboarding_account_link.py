@@ -42,7 +42,9 @@ class _FakeInteraction:
         self.response = _FakeResponse()
 
 
-@unittest.skipUnless(find_spec("discord") is not None, "discord.py is required for this integration test")
+@unittest.skipUnless(
+    find_spec("discord") is not None, "discord.py is required for this integration test"
+)
 class OnboardingAccountLinkViewTest(unittest.TestCase):
     def setUp(self) -> None:
         self._original_modules: dict[str, object] = {}

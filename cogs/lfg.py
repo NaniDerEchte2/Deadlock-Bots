@@ -395,11 +395,17 @@ class SmartLFGAgent(commands.Cog):
 
         for lane in lanes:
             ch_name = lane.channel.name.lower()
-            if lane.channel.id in (
-                STAGING_CASUAL_ID,
-                STAGING_STREET_BRAWL_ID,
-                STAGING_RANKED_ID,
-            ) or lane.channel.name.startswith("➕") or "öffnen" in ch_name or "lanes" in ch_name:
+            if (
+                lane.channel.id
+                in (
+                    STAGING_CASUAL_ID,
+                    STAGING_STREET_BRAWL_ID,
+                    STAGING_RANKED_ID,
+                )
+                or lane.channel.name.startswith("➕")
+                or "öffnen" in ch_name
+                or "lanes" in ch_name
+            ):
                 lane.is_staging = True
 
         return lanes
@@ -2122,7 +2128,6 @@ class SmartLFGAgent(commands.Cog):
                         prefix_icon = icon + " "
                         break
                 log_text_lines.append(f"{prefix_icon}{line}")
-
 
             log_embed.description = "\n".join(log_text_lines)
             try:
