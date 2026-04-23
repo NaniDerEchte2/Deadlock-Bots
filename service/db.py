@@ -999,6 +999,9 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
               availability_json TEXT DEFAULT '{}',
               status TEXT DEFAULT 'pending',
               website_coach_id TEXT,
+              avg_rating REAL,
+              total_reviews INTEGER DEFAULT 0,
+              total_sessions INTEGER DEFAULT 0,
               created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
               updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
             );
@@ -1180,6 +1183,16 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
             "ALTER TABLE coaching_sessions ADD COLUMN voice_started_at INTEGER",
             "ALTER TABLE coaching_sessions ADD COLUMN voice_last_seen_at INTEGER",
             "ALTER TABLE coaching_sessions ADD COLUMN survey_sent_at INTEGER",
+        ):
+            try:
+                c.execute(alter_sql)
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
+        for alter_sql in (
+            "ALTER TABLE coaches ADD COLUMN avg_rating REAL",
+            "ALTER TABLE coaches ADD COLUMN total_reviews INTEGER DEFAULT 0",
+            "ALTER TABLE coaches ADD COLUMN total_sessions INTEGER DEFAULT 0",
         ):
             try:
                 c.execute(alter_sql)
