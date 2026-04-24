@@ -35,6 +35,7 @@ Blödsinn), antworte AUSSCHLIESSLICH mit dem Wort: INVALID_REQUEST
 Keine Erklärung, kein weiterer Text."""
 
 DISCORD_EMBED_FIELD_LIMIT = 1024
+ANALYZING_STALE_AFTER_SECONDS = 5 * 60
 
 
 def _normalize_inline_text(value: str, *, fallback: str = "N/A", limit: int = 256) -> str:
@@ -241,7 +242,24 @@ class CoachingRequestCog(commands.Cog):
         self.bot = bot
         self._analyze_loop: asyncio.Task | None = None
 
+    def _recover_stale_analyzing_requests(self) -> int:
+        cutoff = int(time.time()) - ANALYZING_STALE_AFTER_SECONDS
+        cur = db.connect_proxy().execute(
+            """UPDATE coaching_requests
+               SET status='pending', updated_at=?
+               WHERE status='analyzing'
+                 AND message_id IS NULL
+                 AND (ai_summary IS NULL OR ai_summary = '')
+                 AND updated_at <= ?""",
+            (int(time.time()), cutoff),
+        )
+        recovered = max(int(cur.rowcount or 0), 0)
+        if recovered:
+            log.warning("Recovered %s stale coaching request(s) from analyzing -> pending", recovered)
+        return recovered
+
     async def cog_load(self):
+        self._recover_stale_analyzing_requests()
         rows = db.query_all(
             "SELECT id, discord_user_id, message_id FROM coaching_requests "
             "WHERE status='analyzed' AND message_id IS NOT NULL"
@@ -450,6 +468,7 @@ Erstelle eine präzise, hilfreiche Zusammenfassung für den Coach."""
             return None
 
     async def _trigger_analysis_for_user(self, user_id: int) -> None:
+        request_id: int | None = None
         try:
             row = db.query_one(
                 """SELECT * FROM coaching_requests
@@ -464,22 +483,23 @@ Erstelle eine präzise, hilfreiche Zusammenfassung für den Coach."""
                 return
 
             request_data = dict(row)
-            affected = db.execute(
+            request_id = int(request_data["id"])
+            affected = db.connect_proxy().execute(
                 "UPDATE coaching_requests SET status='analyzing', updated_at=? WHERE id=? AND status='pending'",
-                (int(time.time()), request_data["id"]),
+                (int(time.time()), request_id),
             ).rowcount
             if not affected:
                 log.info(
                     "Request %s already being processed, skipping immediate trigger",
-                    request_data["id"],
+                    request_id,
                 )
                 return
             ai_summary = await self._analyze_with_ai(request_data)
             if not ai_summary:
-                log.info("Coaching request %s aborted (invalid/non-serious)", request_data["id"])
+                log.info("Coaching request %s aborted (invalid/non-serious)", request_id)
                 db.execute(
                     "UPDATE coaching_requests SET status='invalid', updated_at=? WHERE id=?",
-                    (int(time.time()), request_data["id"]),
+                    (int(time.time()), request_id),
                 )
                 return
             message_id = await self._post_request_to_channel(request_data, ai_summary)
@@ -488,16 +508,28 @@ Erstelle eine präzise, hilfreiche Zusammenfassung für den Coach."""
             else:
                 log.warning(
                     "Coaching request %s could not be posted to the coaching channel",
-                    request_data["id"],
+                    request_id,
+                )
+                db.execute(
+                    "UPDATE coaching_requests SET status='pending', updated_at=? WHERE id=?",
+                    (int(time.time()), request_id),
                 )
         except Exception:
             log.exception("Immediate coaching analysis failed for user %s", user_id)
+            if request_id is not None:
+                db.execute(
+                    """UPDATE coaching_requests
+                       SET status='pending', updated_at=?
+                       WHERE id=? AND status='analyzing'""",
+                    (int(time.time()), request_id),
+                )
 
     async def _analyze_pending_requests(self):
         """Background loop to analyze pending requests with AI"""
         await self.bot.wait_until_ready()
         while True:
             try:
+                self._recover_stale_analyzing_requests()
                 # Find requests that have problems filled but not yet analyzed
                 rows = db.query_all(
                     """SELECT * FROM coaching_requests
@@ -509,10 +541,12 @@ Erstelle eine präzise, hilfreiche Zusammenfassung für den Coach."""
                 )
 
                 for row in rows:
+                    request_id: int | None = None
                     request_data = dict(row)
-                    affected = db.execute(
+                    request_id = int(request_data["id"])
+                    affected = db.connect_proxy().execute(
                         "UPDATE coaching_requests SET status='analyzing', updated_at=? WHERE id=? AND status='pending'",
-                        (int(time.time()), request_data["id"]),
+                        (int(time.time()), request_id),
                     ).rowcount
                     if not affected:
                         log.info(
@@ -530,11 +564,33 @@ Erstelle eine präzise, hilfreiche Zusammenfassung für den Coach."""
                             (int(time.time()), request_data["id"]),
                         )
                         continue
+                    try:
+                        ai_summary = await self._analyze_with_ai(request_data)
+                        if not ai_summary:
+                            log.info("Coaching request %s aborted (invalid/non-serious)", request_id)
+                            db.execute(
+                                "UPDATE coaching_requests SET status='invalid', updated_at=? WHERE id=?",
+                                (int(time.time()), request_id),
+                            )
+                            continue
 
-                    # Post to channel
-                    message_id = await self._post_request_to_channel(request_data, ai_summary)
-                    if message_id:
-                        await self._assign_request_role(request_data)
+                        # Post to channel
+                        message_id = await self._post_request_to_channel(request_data, ai_summary)
+                        if message_id:
+                            await self._assign_request_role(request_data)
+                        else:
+                            db.execute(
+                                "UPDATE coaching_requests SET status='pending', updated_at=? WHERE id=?",
+                                (int(time.time()), request_id),
+                            )
+                    except Exception:
+                        log.exception("Background coaching analysis failed for request %s", request_id)
+                        db.execute(
+                            """UPDATE coaching_requests
+                               SET status='pending', updated_at=?
+                               WHERE id=? AND status='analyzing'""",
+                            (int(time.time()), request_id),
+                        )
 
                     # Small delay between requests
                     await asyncio.sleep(2)

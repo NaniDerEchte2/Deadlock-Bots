@@ -15,7 +15,6 @@ from service.config import settings
 
 log = logging.getLogger(__name__)
 
-BLOCKING_REQUEST_STATUSES = ("analyzed", "matched")
 PANEL_KV_NS = "coaching"
 
 
@@ -218,15 +217,6 @@ class CoachingPanelCog(commands.Cog):
         await _store_panel_msg_id(message.id)
         self._panel_message_id = message.id
 
-    def _has_blocking_request(self, user_id: int) -> bool:
-        existing = db.query_one(
-            f"""SELECT id FROM coaching_requests
-                WHERE discord_user_id=? AND status IN ({",".join("?" for _ in BLOCKING_REQUEST_STATUSES)})
-                ORDER BY created_at DESC LIMIT 1""",
-            (user_id, *BLOCKING_REQUEST_STATUSES),
-        )
-        return existing is not None
-
     def _discard_incomplete_pending_requests(self, user_id: int) -> None:
         db.execute(
             """DELETE FROM coaching_requests
@@ -241,12 +231,6 @@ class CoachingPanelCog(commands.Cog):
     async def _start_coaching_flow(self, interaction: discord.Interaction) -> None:
         await self._db_connect()
         self._discard_incomplete_pending_requests(interaction.user.id)
-        if self._has_blocking_request(interaction.user.id):
-            await interaction.response.send_message(
-                "❌ Du hast bereits eine offene Coaching-Anfrage. Bitte warte, bis sie abgeschlossen oder entfernt wurde.",
-                ephemeral=True,
-            )
-            return
         await interaction.response.send_modal(CoachingRequestModal(self))
 
     async def _submit_coaching_request(
@@ -261,13 +245,6 @@ class CoachingPanelCog(commands.Cog):
     ) -> None:
         await self._db_connect()
         log.info("Submitting coaching request for user %s", interaction.user.id)
-
-        if self._has_blocking_request(interaction.user.id):
-            await interaction.response.send_message(
-                "❌ Du hast bereits eine offene Coaching-Anfrage. Bitte warte, bis sie abgeschlossen oder entfernt wurde.",
-                ephemeral=True,
-            )
-            return
 
         now = int(time.time())
         rank_raw = " ".join(rank_input.split()) or "Nicht angegeben"
