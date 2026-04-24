@@ -1,3 +1,45 @@
+# AI-Moderator Cog (2026-04-24)
+
+## Ziel
+Neues Cog `cogs/ai_moderator.py`, das Nachrichten in Chat-Channel `1289721245281292291` via MiniMax-M2.7 (Text + Bilder) klassifiziert und je nach Konfidenz auto-moderiert oder Moderatoren per Accept/Deny-Buttons im Channel `1315684135175716978` einbindet. Alle Aktionen werden im Log-Channel `1374364800817303632` festgehalten (ohne Buttons, nur Infos + Original-Message). Ragebait wird pro User mit einer 2h-Rolling-Window-Schwelle (4 Hits) zu `persistent_ragebait` eskaliert.
+
+## Plan
+`/home/naniadm/.claude/plans/ich-m-chte-f-r-meinen-dapper-hennessy.md`
+
+## Architektur
+- Einzelnes File: `cogs/ai_moderator.py` (Config, Cog, Views, Modal, SQL-Schema) – Blaupause: `cogs/security_guard.py`
+- `cogs/ai_connector.py` bekommt neue Methode `generate_multimodal(provider, prompt, images, ...)` für MiniMax-Bildinput (Anthropic- und OpenAI-kompatibles Content-Array)
+- Persistenz: neue Tabellen `ai_moderation_cases` + `ai_moderation_ragebait_hits` in `data/deadlock.sqlite3`
+- Persistente Views (`custom_id` mit Case-ID) für Bot-Restart-Resilienz
+
+## Flow
+1. `on_message` – skip Bots/Mods/andere Channels; Cooldown pro User (2s)
+2. Stufe 1: MiniMax-Klassifikation mit `verdict/category/confidence/reason/needs_context`
+3. Bei mittlerer Konfidenz oder `needs_context` → Stufe 2 mit 25-Messages-Kontext
+4. Verdict-Handling: Auto-Delete + 24h-Timeout bei NSFW/Kat. ≥0.90; Mod-Vorschlag bei 0.55–0.89; Ragebait → Counter; sonst nichts
+5. Mod-Buttons (`manage_messages`): Accept = 1D-Timeout + Delete + Log; Deny = Modal mit Pflicht-Begründung + Log
+6. Log-Channel erhält Embed + forwarded Original bei jeder Aktion
+
+## Status
+GPT-Worker 1 (`cogs/ai_connector.py`) und GPT-Worker 2 (`cogs/ai_moderator.py`) haben die Implementierung geliefert. Statische Verifikation fuer beide Files erfolgreich.
+
+## Fortschritt
+- GPT-Worker 1 erweitert `cogs/ai_connector.py` um `generate_multimodal(...)` fuer MiniMax inkl. Bild-Content-Arrays fuer Token-Plan und Standard-Endpoint.
+- Verifikation fuer `cogs/ai_connector.py` erfolgreich: `py_compile` + Signatur-Check fuer `AIConnector.generate_multimodal`.
+- GPT-Worker 2 hat `cogs/ai_moderator.py` komplett neu angelegt: Config, deutsches Moderations-Prompt, `on_message`-Flow, SQLite-Schema, Ragebait-Counter, persistente Accept/Deny-UI, Deny-Modal und Log-Embeds.
+- Verifikation fuer `cogs/ai_moderator.py` erfolgreich: `python3 -m py_compile` + `ast.parse(...)`.
+
+## Offen
+- Live-Smoke-Test im Zielchannel `1289721245281292291` (passiert beim naechsten echten Chat)
+
+## Erledigt nach Review
+- Review durch Claude: DynamicItem-basierte persistente Buttons, saubere DB-Operationen, defensives AI-JSON-Parsing, korrektes `manage_messages`-Gate, Cleanup-Loop aktiv.
+- Bot-Restart via `deadlock-services.sh restart bot`. systemd: active, 47/47 Cogs geladen, `cogs.ai_connector` und `cogs.ai_moderator` beide geladen.
+- DB-Tabellen `ai_moderation_cases` + `ai_moderation_ragebait_hits` im `data/deadlock.sqlite3` verifiziert.
+- Keine Runtime-Errors in journalctl.
+
+---
+
 # LFG Lobby/Lane Vorschlags-Overhaul (2026-04-22)
 
 ## Ziel

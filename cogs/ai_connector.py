@@ -130,6 +130,67 @@ class AIConnector(commands.Cog):
                 inner_self.use_token_plan = use_token_plan
                 inner_self._http = httpx.Client(timeout=60.0)
 
+            @staticmethod
+            def _parse_data_image_uri(image_url: str) -> tuple[str, str] | None:
+                if not image_url.startswith("data:image/"):
+                    return None
+                header, separator, data = image_url.partition(",")
+                if not separator or ";base64" not in header:
+                    return None
+                media_type = header[5:].split(";", 1)[0].strip() or "image/png"
+                if not media_type.startswith("image/"):
+                    return None
+                return media_type, data
+
+            def _build_token_plan_content(
+                inner_self, prompt: str, image_urls: list[str] | None
+            ) -> list[dict[str, Any]]:
+                content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+                for image_url in image_urls or []:
+                    parsed_data_uri = inner_self._parse_data_image_uri(image_url)
+                    if parsed_data_uri:
+                        media_type, data = parsed_data_uri
+                        content.append(
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media_type,
+                                    "data": data,
+                                },
+                            }
+                        )
+                        continue
+
+                    content.append(
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "url",
+                                "url": image_url,
+                            },
+                        }
+                    )
+                return content
+
+            def _build_standard_user_content(
+                inner_self, prompt: str, image_urls: list[str] | None
+            ) -> str | list[dict[str, Any]]:
+                if not image_urls:
+                    return prompt
+
+                content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+                for image_url in image_urls:
+                    content.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": image_url,
+                            },
+                        }
+                    )
+                return content
+
             def generate(
                 inner_self,
                 *,
@@ -138,6 +199,7 @@ class AIConnector(commands.Cog):
                 model: str,
                 max_output_tokens: int,
                 temperature: float,
+                image_urls: list[str] | None = None,
             ) -> str | None:
                 if inner_self.use_token_plan:
                     headers = {
@@ -151,12 +213,7 @@ class AIConnector(commands.Cog):
                         "messages": [
                             {
                                 "role": "user",
-                                "content": [
-                                    {
-                                        "type": "text",
-                                        "text": prompt,
-                                    }
-                                ],
+                                "content": inner_self._build_token_plan_content(prompt, image_urls),
                             }
                         ],
                         "max_tokens": max_output_tokens,
@@ -175,7 +232,12 @@ class AIConnector(commands.Cog):
                     messages = []
                     if system_prompt:
                         messages.append({"role": "system", "content": system_prompt})
-                    messages.append({"role": "user", "content": prompt})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": inner_self._build_standard_user_content(prompt, image_urls),
+                        }
+                    )
 
                     payload = {
                         "model": model,
@@ -275,6 +337,53 @@ class AIConnector(commands.Cog):
 
         meta["error"] = "unknown_provider"
         return None, meta
+
+    async def generate_multimodal(
+        self,
+        *,
+        provider: str,
+        prompt: str,
+        images: list[str],
+        system_prompt: str | None = None,
+        model: str | None = None,
+        max_output_tokens: int | None = None,
+        temperature: float = 0.2,
+    ) -> tuple[str | None, dict[str, Any]]:
+        provider = provider.lower()
+        meta: dict[str, Any] = {
+            "provider": provider,
+            "model": model,
+        }
+
+        if provider != "minimax":
+            meta["error"] = "multimodal_not_supported"
+            return None, meta
+
+        valid_prefixes = ("http://", "https://", "data:image/")
+        valid_images = [image for image in images if image.startswith(valid_prefixes)]
+        invalid_count = len(images) - len(valid_images)
+        if invalid_count:
+            log.debug("MiniMax multimodal: %s ungueltige Bild-URLs uebersprungen.", invalid_count)
+
+        dropped_images = valid_images[4:]
+        if dropped_images:
+            meta["dropped_images"] = dropped_images
+        selected_images = valid_images[:4]
+
+        mot = max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS
+        resolved_model = model or DEFAULT_MINIMAX_MODEL
+        text = await self._generate_minimax_multimodal(
+            prompt=prompt,
+            images=selected_images,
+            system_prompt=system_prompt,
+            model=resolved_model,
+            max_output_tokens=mot,
+            temperature=temperature,
+        )
+        meta["model"] = resolved_model
+        if text is None:
+            meta["error"] = "minimax_unavailable"
+        return text, meta
 
     # ---------- Provider Implementierungen ----------
     async def _generate_gemini(
@@ -416,6 +525,33 @@ class AIConnector(commands.Cog):
                 model=model,
                 max_output_tokens=max_output_tokens,
                 temperature=temperature,
+            )
+
+        return await asyncio.to_thread(_call_model)
+
+    async def _generate_minimax_multimodal(
+        self,
+        *,
+        prompt: str,
+        images: list[str],
+        system_prompt: str | None,
+        model: str,
+        max_output_tokens: int,
+        temperature: float,
+    ) -> str | None:
+        client_data = self._get_minimax_client()
+        if not client_data:
+            return None
+        client, _, _ = client_data
+
+        def _call_model() -> str | None:
+            return client.generate(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                model=model,
+                max_output_tokens=max_output_tokens,
+                temperature=temperature,
+                image_urls=images,
             )
 
         return await asyncio.to_thread(_call_model)
