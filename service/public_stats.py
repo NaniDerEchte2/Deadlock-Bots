@@ -31,7 +31,7 @@ from service import db
 log = logging.getLogger(__name__)
 
 PUBLIC_STATS_PORT = int(os.getenv("PUBLIC_STATS_PORT", "8768"))
-PUBLIC_STATS_HOST = os.getenv("PUBLIC_STATS_HOST", "0.0.0.0")
+PUBLIC_STATS_HOST = os.getenv("PUBLIC_STATS_HOST", "127.0.0.1")
 PUBLIC_STATS_SESSION_COOKIE = "dl_session"
 PUBLIC_STATS_PRE_AUTH_COOKIE = "dl_pre_auth"
 PUBLIC_STATS_SESSION_TTL = 14 * 24 * 60 * 60

@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-PUBLIC_STATS_HOST = "0.0.0.0"
+PUBLIC_STATS_HOST = "127.0.0.1"
 PUBLIC_STATS_PORT = 8768
 
 
