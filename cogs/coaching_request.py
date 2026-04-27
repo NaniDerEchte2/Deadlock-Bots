@@ -255,7 +255,9 @@ class CoachingRequestCog(commands.Cog):
         )
         recovered = max(int(cur.rowcount or 0), 0)
         if recovered:
-            log.warning("Recovered %s stale coaching request(s) from analyzing -> pending", recovered)
+            log.warning(
+                "Recovered %s stale coaching request(s) from analyzing -> pending", recovered
+            )
         return recovered
 
     async def cog_load(self):
@@ -484,10 +486,14 @@ Erstelle eine präzise, hilfreiche Zusammenfassung für den Coach."""
 
             request_data = dict(row)
             request_id = int(request_data["id"])
-            affected = db.connect_proxy().execute(
-                "UPDATE coaching_requests SET status='analyzing', updated_at=? WHERE id=? AND status='pending'",
-                (int(time.time()), request_id),
-            ).rowcount
+            affected = (
+                db.connect_proxy()
+                .execute(
+                    "UPDATE coaching_requests SET status='analyzing', updated_at=? WHERE id=? AND status='pending'",
+                    (int(time.time()), request_id),
+                )
+                .rowcount
+            )
             if not affected:
                 log.info(
                     "Request %s already being processed, skipping immediate trigger",
@@ -544,10 +550,14 @@ Erstelle eine präzise, hilfreiche Zusammenfassung für den Coach."""
                     request_id: int | None = None
                     request_data = dict(row)
                     request_id = int(request_data["id"])
-                    affected = db.connect_proxy().execute(
-                        "UPDATE coaching_requests SET status='analyzing', updated_at=? WHERE id=? AND status='pending'",
-                        (int(time.time()), request_id),
-                    ).rowcount
+                    affected = (
+                        db.connect_proxy()
+                        .execute(
+                            "UPDATE coaching_requests SET status='analyzing', updated_at=? WHERE id=? AND status='pending'",
+                            (int(time.time()), request_id),
+                        )
+                        .rowcount
+                    )
                     if not affected:
                         log.info(
                             "Request %s already claimed by another path, skipping loop",
@@ -567,7 +577,9 @@ Erstelle eine präzise, hilfreiche Zusammenfassung für den Coach."""
                     try:
                         ai_summary = await self._analyze_with_ai(request_data)
                         if not ai_summary:
-                            log.info("Coaching request %s aborted (invalid/non-serious)", request_id)
+                            log.info(
+                                "Coaching request %s aborted (invalid/non-serious)", request_id
+                            )
                             db.execute(
                                 "UPDATE coaching_requests SET status='invalid', updated_at=? WHERE id=?",
                                 (int(time.time()), request_id),
@@ -584,7 +596,9 @@ Erstelle eine präzise, hilfreiche Zusammenfassung für den Coach."""
                                 (int(time.time()), request_id),
                             )
                     except Exception:
-                        log.exception("Background coaching analysis failed for request %s", request_id)
+                        log.exception(
+                            "Background coaching analysis failed for request %s", request_id
+                        )
                         db.execute(
                             """UPDATE coaching_requests
                                SET status='pending', updated_at=?
