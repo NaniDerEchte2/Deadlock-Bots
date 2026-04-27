@@ -223,7 +223,7 @@ class ModerationCase:
         return _case_jump_url(self.guild_id, self.channel_id, self.message_id)
 
     @classmethod
-    def from_row(cls, row: sqlite3.Row) -> "ModerationCase":
+    def from_row(cls, row: sqlite3.Row) -> ModerationCase:
         attachments_raw = row["attachments_json"] or "[]"
         try:
             attachments = json.loads(attachments_raw)
@@ -255,7 +255,7 @@ class ModerationCase:
 
 
 class DenyReasonModal(discord.ui.Modal):
-    def __init__(self, cog: "AIModeratorCog", case_id: str) -> None:
+    def __init__(self, cog: AIModeratorCog, case_id: str) -> None:
         super().__init__(title="Moderation ablehnen")
         self.cog = cog
         self.case_id = case_id
@@ -277,7 +277,7 @@ class AcceptModerationButton(
     discord.ui.DynamicItem[discord.ui.Button[discord.ui.View]],
     template=rf"aimod:accept:{CASE_ID_TEMPLATE}",
 ):
-    def __init__(self, cog: "AIModeratorCog", case_id: str | None = None) -> None:
+    def __init__(self, cog: AIModeratorCog, case_id: str | None = None) -> None:
         self.cog = cog
         self.case_id = case_id or PERSISTENT_CASE_PLACEHOLDER
         super().__init__(
@@ -294,7 +294,7 @@ class AcceptModerationButton(
         interaction: discord.Interaction,
         item: discord.ui.Item[Any],
         match: re.Match[str],
-    ) -> "AcceptModerationButton":
+    ) -> AcceptModerationButton:
         cog = interaction.client.get_cog("AIModeratorCog")
         if cog is None:
             raise RuntimeError("AIModeratorCog nicht geladen")
@@ -308,7 +308,7 @@ class DenyModerationButton(
     discord.ui.DynamicItem[discord.ui.Button[discord.ui.View]],
     template=rf"aimod:deny:{CASE_ID_TEMPLATE}",
 ):
-    def __init__(self, cog: "AIModeratorCog", case_id: str | None = None) -> None:
+    def __init__(self, cog: AIModeratorCog, case_id: str | None = None) -> None:
         self.cog = cog
         self.case_id = case_id or PERSISTENT_CASE_PLACEHOLDER
         super().__init__(
@@ -325,7 +325,7 @@ class DenyModerationButton(
         interaction: discord.Interaction,
         item: discord.ui.Item[Any],
         match: re.Match[str],
-    ) -> "DenyModerationButton":
+    ) -> DenyModerationButton:
         cog = interaction.client.get_cog("AIModeratorCog")
         if cog is None:
             raise RuntimeError("AIModeratorCog nicht geladen")
@@ -336,7 +336,7 @@ class DenyModerationButton(
 
 
 class ModerationProposalView(discord.ui.View):
-    def __init__(self, cog: "AIModeratorCog", case_id: str | None) -> None:
+    def __init__(self, cog: AIModeratorCog, case_id: str | None) -> None:
         super().__init__(timeout=None)
         self.add_item(AcceptModerationButton(cog, case_id))
         self.add_item(DenyModerationButton(cog, case_id))
@@ -391,7 +391,9 @@ class AIModeratorCog(commands.Cog):
                     message_id=case.mod_review_message_id,
                 )
             except Exception as exc:
-                log.debug("Konnte Proposal-View fuer Case %s nicht registrieren: %s", case.case_id, exc)
+                log.debug(
+                    "Konnte Proposal-View fuer Case %s nicht registrieren: %s", case.case_id, exc
+                )
 
         if not self.cleanup_ragebait_hits.is_running():
             self.cleanup_ragebait_hits.start()
@@ -631,7 +633,9 @@ class AIModeratorCog(commands.Cog):
                 raw_json=raw_json,
             )
 
-        payload = self._build_prompt_payload(message, context_lines, len(image_attachments), include_full_context)
+        payload = self._build_prompt_payload(
+            message, context_lines, len(image_attachments), include_full_context
+        )
         prompt = json.dumps(payload, ensure_ascii=False)
         image_urls = [attachment.url for attachment in image_attachments]
 
@@ -796,7 +800,9 @@ class AIModeratorCog(commands.Cog):
         escalated_with_context: bool,
         action: str,
     ) -> None:
-        case = self._make_case(message, verdict, escalated_with_context=escalated_with_context, action=action)
+        case = self._make_case(
+            message, verdict, escalated_with_context=escalated_with_context, action=action
+        )
         await asyncio.to_thread(self._insert_case_sync, case)
 
         review_message_id: int | None = None
@@ -812,7 +818,9 @@ class AIModeratorCog(commands.Cog):
                 except Exception:
                     pass
             except discord.HTTPException as exc:
-                log.warning("Konnte Moderationsvorschlag fuer Case %s nicht posten: %s", case.case_id, exc)
+                log.warning(
+                    "Konnte Moderationsvorschlag fuer Case %s nicht posten: %s", case.case_id, exc
+                )
 
         log_message_id = await self._post_action_log(case, action=action)
         await asyncio.to_thread(
@@ -941,7 +949,9 @@ class AIModeratorCog(commands.Cog):
             value=_safe_message_text(case.original_content, limit=DISCORD_FIELD_LIMIT),
             inline=False,
         )
-        embed.add_field(name="Status", value=_truncate(status_text, DISCORD_FIELD_LIMIT), inline=False)
+        embed.add_field(
+            name="Status", value=_truncate(status_text, DISCORD_FIELD_LIMIT), inline=False
+        )
         embed.add_field(name="Case-ID", value=case.case_id, inline=False)
         self._apply_attachment_rendering(embed, case.attachments)
         return embed
@@ -1000,7 +1010,9 @@ class AIModeratorCog(commands.Cog):
                 inline=False,
             )
         if detail:
-            embed.add_field(name="Detail", value=_truncate(detail, DISCORD_FIELD_LIMIT), inline=False)
+            embed.add_field(
+                name="Detail", value=_truncate(detail, DISCORD_FIELD_LIMIT), inline=False
+            )
         self._apply_attachment_rendering(embed, case.attachments)
         return embed
 
